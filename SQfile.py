@@ -351,8 +351,8 @@ ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Aslamtv2bot"
-CHANNEL = "@Aslammovieschannel"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 # Flutterwave
 FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY")
@@ -363,12 +363,12 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # === PAYMENTS / STORAGE ===
 PAYMENT_NOTIFY_GROUP = -1003553575069
-STORAGE_CHANNEL = -1003478646839
+STORAGE_CHANNEL = -1003794258511
 SEND_ADMIN_PAYMENT_NOTIF = False
 
 FLW_BASE = "https://api.flutterwave.com/v3"
 PAYSTACK_SECRET = None
-ADMIN_USERNAME = "Aslamtv1"
+ADMIN_USERNAME = "Danchirinboss"
 
 # ========= IMPORTS =========
 import requests
