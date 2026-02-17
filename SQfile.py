@@ -5448,18 +5448,18 @@ def receive_hausa_titles(m):
 )
 def series_finalize(m):
 
+    import time
+    import re
+
+    bot.send_message(ADMIN_ID, "=== SERIES FINALIZE STARTED ===")
+
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
-    bot.send_message(ADMIN_ID, "🚀 === SERIES FINALIZE STARTED ===")
-
     if sess.get("stage") != "meta":
-        bot.send_message(ADMIN_ID, "⚠️ Stage not meta. Exiting.")
+        bot.send_message(ADMIN_ID, "Stage not meta. Exiting.")
         return
 
-    # ===============================
-    # CAPTION PARSE
-    # ===============================
     try:
         title, raw_price = m.caption.strip().rsplit("\n", 1)
 
@@ -5467,47 +5467,30 @@ def series_finalize(m):
         price = raw_price.replace(",", "").strip()
         price = int(price)
 
-        bot.send_message(
-            ADMIN_ID,
-            f"✅ Caption parsed\nTitle: {title}\nPrice: {price}"
-        )
+        bot.send_message(ADMIN_ID, f"[OK] Caption parsed | {title} | ₦{price}")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ Caption parsing error:\n{e}")
+        bot.send_message(ADMIN_ID, f"Caption parsing error:\n{e}")
         bot.send_message(uid, "❌ Caption bai dace ba.")
         return
 
     poster_file_id = m.photo[-1].file_id
-    bot.send_message(ADMIN_ID, "🖼 Poster file id captured.")
+    bot.send_message(ADMIN_ID, "Poster file id captured.")
 
-    # ===============================
-    # DB CONNECT
-    # ===============================
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        bot.send_message(ADMIN_ID, "🗄 DB connection opened.")
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ DB connection error:\n{e}")
-        return
+    conn = get_conn()
+    cur = conn.cursor()
+    bot.send_message(ADMIN_ID, "DB connection opened.")
 
-    # ===============================
     # CREATE SERIES
-    # ===============================
     try:
         cur.execute(
             "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
             (title, price, poster_file_id)
         )
         series_id = cur.fetchone()[0]
-
-        bot.send_message(ADMIN_ID, f"✅ Series created. ID: {series_id}")
-
+        bot.send_message(ADMIN_ID, f"[OK] Series created. ID: {series_id}")
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ Series insert error:\n{e}")
-        conn.rollback()
-        cur.close()
-        conn.close()
+        bot.send_message(ADMIN_ID, f"DB series insert error:\n{e}")
         return
 
     item_ids = []
@@ -5515,70 +5498,50 @@ def series_finalize(m):
     group_key = str(uuid.uuid4())
 
     total_files = len(sess["files"])
-
-    bot.send_message(
-        ADMIN_ID,
-        f"📦 Total files to upload: {total_files}"
-    )
+    bot.send_message(ADMIN_ID, f"Total files to upload: {total_files}")
 
     # ===============================
-    # LOOP FILES (ANTI FLOOD SAFE)
+    # SMART UPLOAD LOOP (NO FLOOD BREAK)
     # ===============================
-    import time
-
     for index, f in enumerate(sess["files"], start=1):
 
-        bot.send_message(
-            ADMIN_ID,
-            f"📤 Uploading {index}/{total_files}\n{f['file_name']}"
-        )
+        bot.send_message(ADMIN_ID, f"📤 Uploading {index}/{total_files}")
 
-        # 🔹 SMALL DELAY (ANTI FLOOD)
-        time.sleep(0.7)
-
-        try:
-            msg = bot.send_document(
-                STORAGE_CHANNEL,
-                f["dm_file_id"],
-                caption=f["file_name"]
-            )
-
-        except Exception as e:
-
-            error_text = str(e)
-
-            # 🔴 TELEGRAM FLOOD WAIT HANDLER
-            if "Too Many Requests" in error_text:
-                bot.send_message(
-                    ADMIN_ID,
-                    f"⏳ Flood detected at {index}\nSleeping 5s..."
+        while True:
+            try:
+                msg = bot.send_document(
+                    STORAGE_CHANNEL,
+                    f["dm_file_id"],
+                    caption=f["file_name"]
                 )
-                time.sleep(5)
-                try:
-                    msg = bot.send_document(
-                        STORAGE_CHANNEL,
-                        f["dm_file_id"],
-                        caption=f["file_name"]
-                    )
-                except Exception as e2:
+                break  # success -> exit retry loop
+
+            except Exception as e:
+                error_text = str(e)
+
+                if "Too Many Requests" in error_text:
+
+                    match = re.search(r"retry after (\d+)", error_text)
+                    wait_time = int(match.group(1)) if match else 15
+
                     bot.send_message(
                         ADMIN_ID,
-                        f"❌ Telegram error again at {index}\n{e2}"
+                        f"⏳ Flood detected at {index}. Sleeping {wait_time}s"
                     )
-                    continue
-            else:
-                bot.send_message(
-                    ADMIN_ID,
-                    f"❌ Telegram send error at {index}\n{e}"
-                )
-                continue
 
-        doc = msg.document or msg.video
+                    time.sleep(wait_time + 1)
+                    continue  # retry same file
 
-        # 🔹 Small delay before DB
-        time.sleep(0.2)
+                else:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"❌ Telegram error at file {index}:\n{error_text}"
+                    )
+                    break  # skip file
 
         try:
+            doc = msg.document or msg.video
+
             cur.execute(
                 """
                 INSERT INTO items
@@ -5601,31 +5564,24 @@ def series_finalize(m):
             new_id = cur.fetchone()[0]
             item_ids.append(new_id)
 
-            bot.send_message(
-                ADMIN_ID,
-                f"✅ DB Saved {index}/{total_files}"
-            )
+            bot.send_message(ADMIN_ID, f"✅ DB Saved {index}/{total_files}")
 
         except Exception as e:
-            bot.send_message(
-                ADMIN_ID,
-                f"❌ DB insert error at {index}\n{e}"
-            )
+            bot.send_message(ADMIN_ID, f"DB insert error at {index}:\n{e}")
             continue
 
-    # ===============================
-    # COMMIT
-    # ===============================
+        # 🔥 SMALL SAFE DELAY (ANTI FLOOD)
+        time.sleep(0.8)
+
     try:
         conn.commit()
-        bot.send_message(ADMIN_ID, "✅ DB commit successful.")
+        bot.send_message(ADMIN_ID, "DB commit successful.")
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ Commit error:\n{e}")
-        conn.rollback()
+        bot.send_message(ADMIN_ID, f"DB commit error:\n{e}")
 
     cur.close()
     conn.close()
-    bot.send_message(ADMIN_ID, "🔐 DB connection closed.")
+    bot.send_message(ADMIN_ID, "DB connection closed.")
 
     # ===============================
     # PUBLIC POST
@@ -5646,7 +5602,7 @@ def series_finalize(m):
             )
         )
 
-        time.sleep(1)
+        bot.send_message(ADMIN_ID, "Sending public post...")
 
         bot.send_photo(
             CHANNEL,
@@ -5656,16 +5612,17 @@ def series_finalize(m):
             reply_markup=kb
         )
 
-        bot.send_message(ADMIN_ID, "📢 Public post sent successfully.")
+        bot.send_message(ADMIN_ID, "Public post sent successfully.")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ Public post error:\n{e}")
+        bot.send_message(ADMIN_ID, f"Public post error:\n{e}")
 
     bot.send_message(uid, "🎉 Series an adana dukka series lafiya.")
-    bot.send_message(ADMIN_ID, "🏁 === SERIES FINALIZE ENDED ===")
+    bot.send_message(ADMIN_ID, "User notified.")
 
     del series_sessions[uid]
-
+    bot.send_message(ADMIN_ID, "Session deleted.")
+    bot.send_message(ADMIN_ID, "=== SERIES FINALIZE ENDED ===")
 #======================================================
 # =============== FILTER / SEARCH CORE =================
 # ======================================================
