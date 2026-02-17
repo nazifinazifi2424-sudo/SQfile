@@ -5439,7 +5439,6 @@ def receive_hausa_titles(m):
 
     bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
 
-
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
@@ -5448,15 +5447,19 @@ def receive_hausa_titles(m):
     func=lambda m: m.from_user.id in series_sessions
 )
 def series_finalize(m):
-    print("=== SERIES FINALIZE STARTED ===")
 
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
+    bot.send_message(ADMIN_ID, "🚀 === SERIES FINALIZE STARTED ===")
+
     if sess.get("stage") != "meta":
-        print("Stage not meta. Exiting.")
+        bot.send_message(ADMIN_ID, "⚠️ Stage not meta. Exiting.")
         return
 
+    # ===============================
+    # CAPTION PARSE
+    # ===============================
     try:
         title, raw_price = m.caption.strip().rsplit("\n", 1)
 
@@ -5464,60 +5467,116 @@ def series_finalize(m):
         price = raw_price.replace(",", "").strip()
         price = int(price)
 
-        print(f"[OK] Caption parsed | Title: {title} | Price: {price}")
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ Caption parsed\nTitle: {title}\nPrice: {price}"
+        )
 
     except Exception as e:
-        print("Caption parsing error:", e)
+        bot.send_message(ADMIN_ID, f"❌ Caption parsing error:\n{e}")
         bot.send_message(uid, "❌ Caption bai dace ba.")
         return
 
     poster_file_id = m.photo[-1].file_id
-    print("Poster file id captured.")
+    bot.send_message(ADMIN_ID, "🖼 Poster file id captured.")
 
-    conn = get_conn()
-    cur = conn.cursor()
-    print("DB connection opened.")
+    # ===============================
+    # DB CONNECT
+    # ===============================
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        bot.send_message(ADMIN_ID, "🗄 DB connection opened.")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ DB connection error:\n{e}")
+        return
 
+    # ===============================
     # CREATE SERIES
+    # ===============================
     try:
         cur.execute(
             "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
             (title, price, poster_file_id)
         )
         series_id = cur.fetchone()[0]
-        print(f"[OK] Series created. ID: {series_id}")
+
+        bot.send_message(ADMIN_ID, f"✅ Series created. ID: {series_id}")
+
     except Exception as e:
-        print("DB series insert error:", e)
+        bot.send_message(ADMIN_ID, f"❌ Series insert error:\n{e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
         return
 
     item_ids = []
     created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     group_key = str(uuid.uuid4())
 
-    print(f"Total files to upload: {len(sess['files'])}")
+    total_files = len(sess["files"])
+
+    bot.send_message(
+        ADMIN_ID,
+        f"📦 Total files to upload: {total_files}"
+    )
+
+    # ===============================
+    # LOOP FILES (ANTI FLOOD SAFE)
+    # ===============================
+    import time
 
     for index, f in enumerate(sess["files"], start=1):
-        print(f"--- Processing file {index}/{len(sess['files'])} ---")
+
+        bot.send_message(
+            ADMIN_ID,
+            f"📤 Uploading {index}/{total_files}\n{f['file_name']}"
+        )
+
+        # 🔹 SMALL DELAY (ANTI FLOOD)
+        time.sleep(0.7)
 
         try:
-            print("Sending to storage...")
             msg = bot.send_document(
                 STORAGE_CHANNEL,
                 f["dm_file_id"],
                 caption=f["file_name"]
             )
-            print("Sent to storage successfully.")
 
         except Exception as e:
-            print(f"Telegram send_document error at file {index}:", e)
-            continue
 
-        try:
-            doc = msg.document or msg.video
-            print("File object received.")
-        except Exception as e:
-            print("Document extraction error:", e)
-            continue
+            error_text = str(e)
+
+            # 🔴 TELEGRAM FLOOD WAIT HANDLER
+            if "Too Many Requests" in error_text:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"⏳ Flood detected at {index}\nSleeping 5s..."
+                )
+                time.sleep(5)
+                try:
+                    msg = bot.send_document(
+                        STORAGE_CHANNEL,
+                        f["dm_file_id"],
+                        caption=f["file_name"]
+                    )
+                except Exception as e2:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"❌ Telegram error again at {index}\n{e2}"
+                    )
+                    continue
+            else:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"❌ Telegram send error at {index}\n{e}"
+                )
+                continue
+
+        doc = msg.document or msg.video
+
+        # 🔹 Small delay before DB
+        time.sleep(0.2)
 
         try:
             cur.execute(
@@ -5538,25 +5597,39 @@ def series_finalize(m):
                     STORAGE_CHANNEL
                 )
             )
+
             new_id = cur.fetchone()[0]
             item_ids.append(new_id)
-            print(f"[OK] DB insert success for file {index}. Item ID: {new_id}")
+
+            bot.send_message(
+                ADMIN_ID,
+                f"✅ DB Saved {index}/{total_files}"
+            )
 
         except Exception as e:
-            print(f"DB insert error at file {index}:", e)
+            bot.send_message(
+                ADMIN_ID,
+                f"❌ DB insert error at {index}\n{e}"
+            )
             continue
 
+    # ===============================
+    # COMMIT
+    # ===============================
     try:
         conn.commit()
-        print("DB commit successful.")
+        bot.send_message(ADMIN_ID, "✅ DB commit successful.")
     except Exception as e:
-        print("DB commit error:", e)
+        bot.send_message(ADMIN_ID, f"❌ Commit error:\n{e}")
+        conn.rollback()
 
     cur.close()
     conn.close()
-    print("DB connection closed.")
+    bot.send_message(ADMIN_ID, "🔐 DB connection closed.")
 
+    # ===============================
     # PUBLIC POST
+    # ===============================
     try:
         display_price = f"{price:,}" if has_comma else str(price)
         ids_str = "_".join(str(i) for i in item_ids)
@@ -5573,7 +5646,8 @@ def series_finalize(m):
             )
         )
 
-        print("Sending public post to CHANNEL...")
+        time.sleep(1)
+
         bot.send_photo(
             CHANNEL,
             poster_file_id,
@@ -5581,17 +5655,16 @@ def series_finalize(m):
             parse_mode="HTML",
             reply_markup=kb
         )
-        print("Public post sent successfully.")
+
+        bot.send_message(ADMIN_ID, "📢 Public post sent successfully.")
 
     except Exception as e:
-        print("Public post error:", e)
+        bot.send_message(ADMIN_ID, f"❌ Public post error:\n{e}")
 
     bot.send_message(uid, "🎉 Series an adana dukka series lafiya.")
-    print("User notified.")
+    bot.send_message(ADMIN_ID, "🏁 === SERIES FINALIZE ENDED ===")
 
     del series_sessions[uid]
-    print("Session deleted.")
-    print("=== SERIES FINALIZE ENDED ===") 
 
 #======================================================
 # =============== FILTER / SEARCH CORE =================
