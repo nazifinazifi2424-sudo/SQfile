@@ -336,7 +336,7 @@ from datetime import datetime, timedelta
 import urllib.parse
 admin_states = {}
 # --- Admins configuration ---
-ADMINS = [6210912739, 5009954635] 
+ADMINS = [8537505191, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
