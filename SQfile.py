@@ -4100,44 +4100,73 @@ ka tura wannan Order ID kai tsaye zuwa admin.</i>
     conn.close()
 
 
-# ========= GROUPITEM (ITEMS ONLY | DEEP LINK → DM) =========
+
+# ========= GROUPITEM (IDS + GROUP_KEY SUPPORT) =========
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
 def groupitem_deeplink_handler(msg):
     try:
         uid = msg.from_user.id
-        raw = msg.text.split("groupitem_", 1)[1]
-        sep = "_" if "_" in raw else ","
-        item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
+        raw = msg.text.split("groupitem_", 1)[1].strip()
     except:
         bot.reply_to(msg, "❌ Invalid link.")
-        return
-
-    if not item_ids:
-        bot.send_message(uid, "❌ Babu item.")
         return
 
     conn = get_conn()
     cur = conn.cursor()
 
-    placeholders = ",".join(["%s"] * len(item_ids))
+    items = []
 
-    cur.execute(
-        f"""
-        SELECT id, title, price, file_id, group_key
-        FROM items
-        WHERE id IN ({placeholders})
-        """,
-        item_ids
-    )
-    items = cur.fetchall()
+    # =====================================================
+    # MODE 1: IDS (old system)
+    # =====================================================
+    if all(x.strip().isdigit() for x in raw.replace("_", ",").split(",")):
+        sep = "_" if "_" in raw else ","
+        item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
 
+        if not item_ids:
+            bot.send_message(uid, "❌ Babu item.")
+            return
+
+        placeholders = ",".join(["%s"] * len(item_ids))
+
+        cur.execute(
+            f"""
+            SELECT id, title, price, file_id, group_key
+            FROM items
+            WHERE id IN ({placeholders})
+            """,
+            item_ids
+        )
+
+        items = cur.fetchall()
+
+    # =====================================================
+    # MODE 2: GROUP_KEY (new system)
+    # =====================================================
+    else:
+        group_key = raw
+
+        cur.execute(
+            """
+            SELECT id, title, price, file_id, group_key
+            FROM items
+            WHERE group_key=%s
+            ORDER BY id ASC
+            """,
+            (group_key,)
+        )
+
+        items = cur.fetchall()
+
+    # =====================================================
+    # VALIDATION
+    # =====================================================
     if not items:
         cur.close()
         conn.close()
         bot.send_message(uid, "❌ Items not found.")
         return
 
-    # 🛑 KAR A SAYAR DA ITEM MARA FILE
     items = [i for i in items if i["file_id"]]
     if not items:
         cur.close()
@@ -4145,18 +4174,23 @@ def groupitem_deeplink_handler(msg):
         bot.send_message(uid, "❌ Babu item mai file.")
         return
 
-    # 🔹 DISPLAY TITLE (SERIES NAME)
     display_title = items[0]["title"]
 
-    # 🛑 KARIYA 1: OWNERSHIP (ITEM LEVEL ✔️)
+    # =====================================================
+    # OWNERSHIP CHECK
+    # =====================================================
+    item_ids = [i["id"] for i in items]
+    placeholders = ",".join(["%s"] * len(item_ids))
+
     cur.execute(
         f"""
         SELECT 1 FROM user_movies
         WHERE user_id=%s AND item_id IN ({placeholders})
         LIMIT 1
         """,
-        (uid, *[i["id"] for i in items])
+        (uid, *item_ids)
     )
+
     owned = cur.fetchone()
 
     if owned:
@@ -4166,26 +4200,27 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         bot.send_message(
             uid,
-            "✅ <b>Ka riga ka mallaki wannan fim tini/n/n DUBA MY MOVIES\n Acen zaka rubuta sunansa za'a sake turama kyauta idan kana bukata.</b>",
+            "✅ <b>Ka riga ka mallaki wannan fim.\n\nDUBA MY MOVIES domin sake karɓa kyauta.</b>",
             parse_mode="HTML",
             reply_markup=kb
         )
         return
 
-    # ===============================
-    # ✅ TOTAL (GROUP-AWARE – PRICE 1)
-    # ===============================
+    # =====================================================
+    # TOTAL (GROUP AWARE)
+    # =====================================================
     groups = {}
 
     for i in items:
         key = i["group_key"] or f"single_{i['id']}"
-
         if key not in groups:
             groups[key] = int(i["price"] or 0)
 
     total = sum(groups.values())
 
-    # 🛑 KARIYA 2: UNPAID ORDER MAI WANNAN ITEMS (ITEM LEVEL ✔️)
+    # =====================================================
+    # CHECK EXISTING UNPAID
+    # =====================================================
     cur.execute(
         f"""
         SELECT o.id, o.amount
@@ -4195,8 +4230,9 @@ def groupitem_deeplink_handler(msg):
           AND oi.item_id IN ({placeholders})
         LIMIT 1
         """,
-        (uid, *[i["id"] for i in items])
+        (uid, *item_ids)
     )
+
     old = cur.fetchone()
 
     if old:
@@ -4224,18 +4260,18 @@ def groupitem_deeplink_handler(msg):
 
         conn.commit()
 
-    # 🧪 DEBUG
+    # =====================================================
+    # DEBUG
+    # =====================================================
     dbg = (
         "🤩<b>SERIES ORDER CREATED</b>\n\n"
         f"• {display_title}\n"
         f"📦 Episodes: {len(items)}\n"
     )
-
     bot.send_message(uid, dbg, parse_mode="HTML")
 
-    title = display_title
+    pay_url = create_flutterwave_payment(uid, order_id, total, display_title)
 
-    pay_url = create_flutterwave_payment(uid, order_id, total, title)
     if not pay_url:
         cur.close()
         conn.close()
@@ -4257,9 +4293,7 @@ def groupitem_deeplink_handler(msg):
 <code>{order_id}</code>
 
 ⚠️ <b>MUHIMMI:</b>
-<i>Ajiye wannan Order ID sosai.
-Idan wata matsala ta faru (biyan kudi ko delivery),
-ka tura wannan Order ID kai tsaye zuwa admin.</i>
+<i>Ajiye wannan Order ID sosai.</i>
 """,
         parse_mode="HTML",
         reply_markup=kb
@@ -4267,6 +4301,7 @@ ka tura wannan Order ID kai tsaye zuwa admin.</i>
 
     cur.close()
     conn.close()
+
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("buy_again:"))
 def buy_again_handler(c):
