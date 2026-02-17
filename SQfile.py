@@ -5448,10 +5448,13 @@ def receive_hausa_titles(m):
     func=lambda m: m.from_user.id in series_sessions
 )
 def series_finalize(m):
+    print("=== SERIES FINALIZE STARTED ===")
+
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
     if sess.get("stage") != "meta":
+        print("Stage not meta. Exiting.")
         return
 
     try:
@@ -5461,90 +5464,136 @@ def series_finalize(m):
         price = raw_price.replace(",", "").strip()
         price = int(price)
 
-    except:
+        print(f"[OK] Caption parsed | Title: {title} | Price: {price}")
+
+    except Exception as e:
+        print("Caption parsing error:", e)
         bot.send_message(uid, "❌ Caption bai dace ba.")
         return
 
     poster_file_id = m.photo[-1].file_id
+    print("Poster file id captured.")
 
     conn = get_conn()
     cur = conn.cursor()
+    print("DB connection opened.")
 
-    # CREATE SERIES (POSTGRES FIX)
-    cur.execute(
-        "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
-        (title, price, poster_file_id)
-    )
-    series_id = cur.fetchone()[0]
+    # CREATE SERIES
+    try:
+        cur.execute(
+            "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
+            (title, price, poster_file_id)
+        )
+        series_id = cur.fetchone()[0]
+        print(f"[OK] Series created. ID: {series_id}")
+    except Exception as e:
+        print("DB series insert error:", e)
+        return
 
     item_ids = []
     created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
     group_key = str(uuid.uuid4())
 
-    for f in sess["files"]:
-        msg = bot.send_document(
-            STORAGE_CHANNEL,
-            f["dm_file_id"],
-            caption=f["file_name"]
-        )
-        doc = msg.document or msg.video
+    print(f"Total files to upload: {len(sess['files'])}")
 
-        cur.execute(
-            """
-            INSERT INTO items
-            (title, price, file_id, file_name, group_key, created_at, channel_msg_id, channel_username)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-            RETURNING id
-            """,
-            (
-                title,
-                price,
-                doc.file_id,
-                f["file_name"],
-                group_key,
-                created_at,
-                msg.message_id,
-                STORAGE_CHANNEL
+    for index, f in enumerate(sess["files"], start=1):
+        print(f"--- Processing file {index}/{len(sess['files'])} ---")
+
+        try:
+            print("Sending to storage...")
+            msg = bot.send_document(
+                STORAGE_CHANNEL,
+                f["dm_file_id"],
+                caption=f["file_name"]
             )
-        )
-        new_id = cur.fetchone()[0]
-        item_ids.append(new_id)
+            print("Sent to storage successfully.")
 
-    conn.commit()
+        except Exception as e:
+            print(f"Telegram send_document error at file {index}:", e)
+            continue
+
+        try:
+            doc = msg.document or msg.video
+            print("File object received.")
+        except Exception as e:
+            print("Document extraction error:", e)
+            continue
+
+        try:
+            cur.execute(
+                """
+                INSERT INTO items
+                (title, price, file_id, file_name, group_key, created_at, channel_msg_id, channel_username)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    title,
+                    price,
+                    doc.file_id,
+                    f["file_name"],
+                    group_key,
+                    created_at,
+                    msg.message_id,
+                    STORAGE_CHANNEL
+                )
+            )
+            new_id = cur.fetchone()[0]
+            item_ids.append(new_id)
+            print(f"[OK] DB insert success for file {index}. Item ID: {new_id}")
+
+        except Exception as e:
+            print(f"DB insert error at file {index}:", e)
+            continue
+
+    try:
+        conn.commit()
+        print("DB commit successful.")
+    except Exception as e:
+        print("DB commit error:", e)
+
     cur.close()
     conn.close()
+    print("DB connection closed.")
 
-    # ===============================
-    # PUBLIC POST  ✅ (PRICE FORMAT SAFE)
-    # ===============================
-    display_price = f"{price:,}" if has_comma else str(price)
-    ids_str = "_".join(str(i) for i in item_ids)
+    # PUBLIC POST
+    try:
+        display_price = f"{price:,}" if has_comma else str(price)
+        ids_str = "_".join(str(i) for i in item_ids)
 
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton(
-            "🛒 Add to cart",
-            callback_data=f"addcartdm:{ids_str}"
-        ),
-        InlineKeyboardButton(
-            "💳 Buy now",
-            url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{ids_str}"
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "🛒 Add to cart",
+                callback_data=f"addcartdm:{ids_str}"
+            ),
+            InlineKeyboardButton(
+                "💳 Buy now",
+                url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{ids_str}"
+            )
         )
-    )
 
-    bot.send_photo(
-        CHANNEL,
-        poster_file_id,
-        caption=f"🎬 <b>{title}</b>\n💵Price:₦{display_price}",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+        print("Sending public post to CHANNEL...")
+        bot.send_photo(
+            CHANNEL,
+            poster_file_id,
+            caption=f"🎬 <b>{title}</b>\n💵Price:₦{display_price}",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        print("Public post sent successfully.")
+
+    except Exception as e:
+        print("Public post error:", e)
 
     bot.send_message(uid, "🎉 Series an adana dukka series lafiya.")
-    del series_sessions[uid]
+    print("User notified.")
 
-# ======================================================
+    del series_sessions[uid]
+    print("Session deleted.")
+    print("=== SERIES FINALIZE ENDED ===") 
+
+#======================================================
 # =============== FILTER / SEARCH CORE =================
 # ======================================================
 
