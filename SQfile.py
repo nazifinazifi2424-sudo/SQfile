@@ -5409,36 +5409,6 @@ def handle_hausa_choice(c):
     sess["stage"] = "hausa_names"
     bot.send_message(uid, "✍️ Rubuta sunayen Hausa series (layi-layi)")
 
-
-# ===============================
-# RECEIVE HAUSA TITLES
-# ===============================
-@bot.message_handler(
-    func=lambda m: (
-        m.text
-        and m.from_user.id in series_sessions
-        and series_sessions[m.from_user.id].get("stage") == "hausa_names"
-    )
-)
-def receive_hausa_titles(m):
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    titles = [t.strip().lower() for t in m.text.split("\n") if t.strip()]
-    matches = []
-
-    for f in sess["files"]:
-        fname = f["file_name"].lower()
-        for t in titles:
-            if t in fname:
-                matches.append(f["file_name"])
-                break
-
-    sess["hausa_matches"] = matches
-    sess["stage"] = "meta"
-
-    bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
-
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
@@ -5448,12 +5418,14 @@ def receive_hausa_titles(m):
 )
 def series_finalize(m):
 
-    import time
-    import re
+    try:
+        uid = m.from_user.id
+        data = m.caption or ""
+    except:
+        return
 
     bot.send_message(ADMIN_ID, "=== SERIES FINALIZE STARTED ===")
 
-    uid = m.from_user.id
     sess = series_sessions.get(uid)
 
     if sess.get("stage") != "meta":
@@ -5461,7 +5433,7 @@ def series_finalize(m):
         return
 
     try:
-        title, raw_price = m.caption.strip().rsplit("\n", 1)
+        title, raw_price = data.strip().rsplit("\n", 1)
 
         has_comma = "," in raw_price
         price = raw_price.replace(",", "").strip()
@@ -5470,16 +5442,20 @@ def series_finalize(m):
         bot.send_message(ADMIN_ID, f"[OK] Caption parsed | {title} | ₦{price}")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"Caption parsing error:\n{e}")
+        bot.send_message(ADMIN_ID, f"Caption parsing error: {e}")
         bot.send_message(uid, "❌ Caption bai dace ba.")
         return
 
     poster_file_id = m.photo[-1].file_id
     bot.send_message(ADMIN_ID, "Poster file id captured.")
 
-    conn = get_conn()
-    cur = conn.cursor()
-    bot.send_message(ADMIN_ID, "DB connection opened.")
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        bot.send_message(ADMIN_ID, "DB connection opened.")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DB connection error: {e}")
+        return
 
     # CREATE SERIES
     try:
@@ -5490,58 +5466,42 @@ def series_finalize(m):
         series_id = cur.fetchone()[0]
         bot.send_message(ADMIN_ID, f"[OK] Series created. ID: {series_id}")
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"DB series insert error:\n{e}")
+        bot.send_message(ADMIN_ID, f"Series insert error: {e}")
         return
 
     item_ids = []
     created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     group_key = str(uuid.uuid4())
 
-    total_files = len(sess["files"])
-    bot.send_message(ADMIN_ID, f"Total files to upload: {total_files}")
+    bot.send_message(ADMIN_ID, f"Total files: {len(sess['files'])}")
+    bot.send_message(ADMIN_ID, f"Group Key: {group_key}")
 
     # ===============================
-    # SMART UPLOAD LOOP (NO FLOOD BREAK)
+    # UPLOAD LOOP (WITH RATE LIMIT)
     # ===============================
+    import time
+
     for index, f in enumerate(sess["files"], start=1):
 
-        bot.send_message(ADMIN_ID, f"📤 Uploading {index}/{total_files}")
+        bot.send_message(ADMIN_ID, f"Uploading {index}/{len(sess['files'])}")
 
-        while True:
-            try:
-                msg = bot.send_document(
-                    STORAGE_CHANNEL,
-                    f["dm_file_id"],
-                    caption=f["file_name"]
-                )
-                break  # success -> exit retry loop
-
-            except Exception as e:
-                error_text = str(e)
-
-                if "Too Many Requests" in error_text:
-
-                    match = re.search(r"retry after (\d+)", error_text)
-                    wait_time = int(match.group(1)) if match else 15
-
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"⏳ Flood detected at {index}. Sleeping {wait_time}s"
-                    )
-
-                    time.sleep(wait_time + 1)
-                    continue  # retry same file
-
-                else:
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"❌ Telegram error at file {index}:\n{error_text}"
-                    )
-                    break  # skip file
+        try:
+            msg = bot.send_document(
+                STORAGE_CHANNEL,
+                f["dm_file_id"],
+                caption=f["file_name"]
+            )
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"Telegram send error at {index}: {e}")
+            continue
 
         try:
             doc = msg.document or msg.video
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"Doc extraction error {index}: {e}")
+            continue
 
+        try:
             cur.execute(
                 """
                 INSERT INTO items
@@ -5560,45 +5520,41 @@ def series_finalize(m):
                     STORAGE_CHANNEL
                 )
             )
-
             new_id = cur.fetchone()[0]
             item_ids.append(new_id)
 
-            bot.send_message(ADMIN_ID, f"✅ DB Saved {index}/{total_files}")
-
         except Exception as e:
-            bot.send_message(ADMIN_ID, f"DB insert error at {index}:\n{e}")
+            bot.send_message(ADMIN_ID, f"DB insert error at {index}: {e}")
             continue
 
-        # 🔥 SMALL SAFE DELAY (ANTI FLOOD)
+        # 🔥 RATE LIMIT PROTECTION
         time.sleep(0.8)
 
     try:
         conn.commit()
-        bot.send_message(ADMIN_ID, "DB commit successful.")
+        bot.send_message(ADMIN_ID, f"✅ DB Saved {len(item_ids)}/{len(sess['files'])}")
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"DB commit error:\n{e}")
+        bot.send_message(ADMIN_ID, f"DB commit error: {e}")
 
     cur.close()
     conn.close()
     bot.send_message(ADMIN_ID, "DB connection closed.")
 
     # ===============================
-    # PUBLIC POST
+    # PUBLIC POST (GROUP_KEY SAFE)
     # ===============================
     try:
         display_price = f"{price:,}" if has_comma else str(price)
-        ids_str = "_".join(str(i) for i in item_ids)
 
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
                 "🛒 Add to cart",
-                callback_data=f"addcartdm:{ids_str}"
+                callback_data=f"addcartdm:{group_key}"
             ),
             InlineKeyboardButton(
                 "💳 Buy now",
-                url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{ids_str}"
+                url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{group_key}"
             )
         )
 
@@ -5607,7 +5563,7 @@ def series_finalize(m):
         bot.send_photo(
             CHANNEL,
             poster_file_id,
-            caption=f"🎬 <b>{title}</b>\n💵Price:₦{display_price}",
+            caption=f"🎬 <b>{title}</b>\n💵Price: ₦{display_price}",
             parse_mode="HTML",
             reply_markup=kb
         )
@@ -5615,7 +5571,7 @@ def series_finalize(m):
         bot.send_message(ADMIN_ID, "Public post sent successfully.")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"Public post error:\n{e}")
+        bot.send_message(ADMIN_ID, f"Public post error: {e}")
 
     bot.send_message(uid, "🎉 Series an adana dukka series lafiya.")
     bot.send_message(ADMIN_ID, "User notified.")
@@ -5623,6 +5579,9 @@ def series_finalize(m):
     del series_sessions[uid]
     bot.send_message(ADMIN_ID, "Session deleted.")
     bot.send_message(ADMIN_ID, "=== SERIES FINALIZE ENDED ===")
+
+
+
 #======================================================
 # =============== FILTER / SEARCH CORE =================
 # ======================================================
