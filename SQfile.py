@@ -4099,69 +4099,86 @@ ka tura wannan Order ID kai tsaye zuwa admin.</i>
     cur.close()
     conn.close()
 
-
-
-# ========= GROUPITEM (IDS + GROUP_KEY SUPPORT) =========
+# ========= GROUPITEM (IDS + GROUP_KEY SUPPORT + FULL DEBUG) =========
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
 def groupitem_deeplink_handler(msg):
+
     try:
         uid = msg.from_user.id
         raw = msg.text.split("groupitem_", 1)[1].strip()
-    except:
+
+        bot.send_message(
+            ADMIN_ID,
+            f"🚀 GROUPITEM START\nUser: {uid}\nRaw: {raw}"
+        )
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ LINK PARSE ERROR:\n{e}")
         bot.reply_to(msg, "❌ Invalid link.")
         return
 
-    conn = get_conn()
-    cur = conn.cursor()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        bot.send_message(ADMIN_ID, "✅ DB CONNECTED")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ DB CONNECTION ERROR:\n{e}")
+        return
 
     items = []
 
-    # =====================================================
-    # MODE 1: IDS (old system)
-    # =====================================================
+    # ================= IDS MODE =================
     if all(x.strip().isdigit() for x in raw.replace("_", ",").split(",")):
-        sep = "_" if "_" in raw else ","
-        item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
+        try:
+            sep = "_" if "_" in raw else ","
+            item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
+            placeholders = ",".join(["%s"] * len(item_ids))
 
-        if not item_ids:
-            bot.send_message(uid, "❌ Babu item.")
+            bot.send_message(ADMIN_ID, f"🔎 IDS MODE\nIDs: {item_ids}")
+
+            cur.execute(
+                f"""
+                SELECT id, title, price, file_id, group_key
+                FROM items
+                WHERE id IN ({placeholders})
+                """,
+                item_ids
+            )
+
+            items = cur.fetchall()
+            bot.send_message(ADMIN_ID, f"✅ ITEMS FETCHED: {len(items)}")
+
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"❌ IDS FETCH ERROR:\n{e}")
             return
 
-        placeholders = ",".join(["%s"] * len(item_ids))
-
-        cur.execute(
-            f"""
-            SELECT id, title, price, file_id, group_key
-            FROM items
-            WHERE id IN ({placeholders})
-            """,
-            item_ids
-        )
-
-        items = cur.fetchall()
-
-    # =====================================================
-    # MODE 2: GROUP_KEY (new system)
-    # =====================================================
+    # ================= GROUP KEY MODE =================
     else:
-        group_key = raw
+        try:
+            group_key = raw
 
-        cur.execute(
-            """
-            SELECT id, title, price, file_id, group_key
-            FROM items
-            WHERE group_key=%s
-            ORDER BY id ASC
-            """,
-            (group_key,)
-        )
+            bot.send_message(ADMIN_ID, f"🔎 GROUP_KEY MODE\nKey: {group_key}")
 
-        items = cur.fetchall()
+            cur.execute(
+                """
+                SELECT id, title, price, file_id, group_key
+                FROM items
+                WHERE group_key=%s
+                ORDER BY id ASC
+                """,
+                (group_key,)
+            )
 
-    # =====================================================
-    # VALIDATION
-    # =====================================================
+            items = cur.fetchall()
+            bot.send_message(ADMIN_ID, f"✅ GROUP ITEMS FETCHED: {len(items)}")
+
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"❌ GROUP FETCH ERROR:\n{e}")
+            return
+
+    # ================= VALIDATION =================
     if not items:
+        bot.send_message(ADMIN_ID, "❌ NO ITEMS FOUND")
         cur.close()
         conn.close()
         bot.send_message(uid, "❌ Items not found.")
@@ -4169,76 +4186,61 @@ def groupitem_deeplink_handler(msg):
 
     items = [i for i in items if i["file_id"]]
     if not items:
+        bot.send_message(ADMIN_ID, "❌ NO ITEMS WITH FILE_ID")
         cur.close()
         conn.close()
         bot.send_message(uid, "❌ Babu item mai file.")
         return
 
     display_title = items[0]["title"]
-
-    # =====================================================
-    # OWNERSHIP CHECK
-    # =====================================================
     item_ids = [i["id"] for i in items]
     placeholders = ",".join(["%s"] * len(item_ids))
 
-    cur.execute(
-        f"""
-        SELECT 1 FROM user_movies
-        WHERE user_id=%s AND item_id IN ({placeholders})
-        LIMIT 1
-        """,
-        (uid, *item_ids)
-    )
-
-    owned = cur.fetchone()
-
-    if owned:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))
-        cur.close()
-        conn.close()
-        bot.send_message(
-            uid,
-            "✅ <b>Ka riga ka mallaki wannan fim.\n\nDUBA MY MOVIES domin sake karɓa kyauta.</b>",
-            parse_mode="HTML",
-            reply_markup=kb
+    # ================= OWNERSHIP =================
+    try:
+        cur.execute(
+            f"""
+            SELECT 1 FROM user_movies
+            WHERE user_id=%s AND item_id IN ({placeholders})
+            LIMIT 1
+            """,
+            (uid, *item_ids)
         )
+
+        owned = cur.fetchone()
+        bot.send_message(ADMIN_ID, f"🔐 OWNERSHIP CHECK: {bool(owned)}")
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ OWNERSHIP ERROR:\n{e}")
         return
 
-    # =====================================================
-    # TOTAL (GROUP AWARE)
-    # =====================================================
-    groups = {}
+    if owned:
+        cur.close()
+        conn.close()
+        bot.send_message(uid, "✅ Ka riga ka mallaka.")
+        return
 
-    for i in items:
-        key = i["group_key"] or f"single_{i['id']}"
-        if key not in groups:
-            groups[key] = int(i["price"] or 0)
+    # ================= TOTAL =================
+    try:
+        groups = {}
+        for i in items:
+            key = i["group_key"] or f"single_{i['id']}"
+            if key not in groups:
+                groups[key] = int(i["price"] or 0)
 
-    total = sum(groups.values())
+        total = sum(groups.values())
 
-    # =====================================================
-    # CHECK EXISTING UNPAID
-    # =====================================================
-    cur.execute(
-        f"""
-        SELECT o.id, o.amount
-        FROM orders o
-        JOIN order_items oi ON oi.order_id = o.id
-        WHERE o.user_id=%s AND o.paid=0
-          AND oi.item_id IN ({placeholders})
-        LIMIT 1
-        """,
-        (uid, *item_ids)
-    )
+        bot.send_message(
+            ADMIN_ID,
+            f"💰 TOTAL CALCULATED\nItems: {len(items)}\nTotal: {total}"
+        )
 
-    old = cur.fetchone()
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ TOTAL ERROR:\n{e}")
+        return
 
-    if old:
-        order_id = old["id"]
-        total = old["amount"]
-    else:
+    # ================= CREATE ORDER =================
+    try:
         order_id = str(uuid.uuid4())
 
         cur.execute(
@@ -4260,48 +4262,52 @@ def groupitem_deeplink_handler(msg):
 
         conn.commit()
 
-    # =====================================================
-    # DEBUG
-    # =====================================================
-    dbg = (
-        "🤩<b>SERIES ORDER CREATED</b>\n\n"
-        f"• {display_title}\n"
-        f"📦 Episodes: {len(items)}\n"
-    )
-    bot.send_message(uid, dbg, parse_mode="HTML")
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ ORDER CREATED\nOrder: {order_id}"
+        )
 
-    pay_url = create_flutterwave_payment(uid, order_id, total, display_title)
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ ORDER CREATE ERROR:\n{e}")
+        conn.rollback()
+        return
+
+    # ================= FLUTTERWAVE =================
+    try:
+        bot.send_message(ADMIN_ID, "🌐 Creating Flutterwave payment...")
+
+        pay_url = create_flutterwave_payment(uid, order_id, total, display_title)
+
+        bot.send_message(ADMIN_ID, f"🌐 Flutterwave Response:\n{pay_url}")
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ FLUTTERWAVE ERROR:\n{e}")
+        return
 
     if not pay_url:
-        cur.close()
-        conn.close()
+        bot.send_message(ADMIN_ID, "❌ Flutterwave returned None")
         bot.send_message(uid, "❌ Payment error.")
         return
 
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+    # ================= SEND USER =================
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
 
-    bot.send_message(
-        uid,
-        f"""🧾 <b>FILMS CHECKOUT</b>
+        bot.send_message(
+            uid,
+            f"💵 Total: ₦{total}\nOrder: {order_id}",
+            reply_markup=kb
+        )
 
-📦 <b>Items:</b> {len(items)}
-💵 <b>Total:</b> ₦{total}
+        bot.send_message(ADMIN_ID, "✅ PAY BUTTON SENT TO USER")
 
-🆔 <b>Order ID:</b>
-<code>{order_id}</code>
-
-⚠️ <b>MUHIMMI:</b>
-<i>Ajiye wannan Order ID sosai.</i>
-""",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ USER SEND ERROR:\n{e}")
 
     cur.close()
     conn.close()
-
+    bot.send_message(ADMIN_ID, "🔚 GROUPITEM END")
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("buy_again:"))
 def buy_again_handler(c):
