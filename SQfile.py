@@ -1,4 +1,4 @@
-## bot.py  (PostgreSQL SAFE – FULL FIX, nothing removed)
+d## bot.py  (PostgreSQL SAFE – FULL FIX, nothing removed)
 
 import telebot
 from telebot import types
@@ -5970,17 +5970,24 @@ def handle_callback(c):
         return
 
 
+@bot.callback_query_handler(func=lambda c: True)
+def handle_callback(c):
+    try:
+        uid = c.from_user.id
+        data = c.data or ""
+    except:
+        return
+
+
     # ================= ADD ITEM(S) TO CART (DM / CHANNEL) =================
     if data.startswith("addcartdm:"):
+        import re
+
         raw = data.split(":", 1)[1]
 
-        try:
-            item_ids = [int(x) for x in raw.split("_") if x.isdigit()]
-        except:
-            bot.answer_callback_query(c.id, "❌ Invalid")
-            return
-
-        if not item_ids:
+        # Support: _, comma, space (mixed allowed)
+        tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
+        if not tokens:
             bot.answer_callback_query(c.id, "❌ Invalid")
             return
 
@@ -5991,31 +5998,56 @@ def handle_callback(c):
             conn = get_conn()
             cur = conn.cursor()
 
-            for item_id in item_ids:
+            for token in tokens:
 
-                cur.execute(
-                    "SELECT 1 FROM cart WHERE user_id=%s AND item_id=%s LIMIT 1",
-                    (uid, item_id)
-                )
-                already = cur.fetchone()
+                item_ids = []
 
-                if already:
-                    skipped += 1
+                # ================= IF ID =================
+                if token.isdigit():
+                    item_ids = [int(token)]
+
+                # ================= IF GROUP KEY =================
+                else:
+                    cur.execute(
+                        "SELECT id FROM items WHERE group_key=%s",
+                        (token,)
+                    )
+                    rows = cur.fetchall()
+                    item_ids = [r[0] for r in rows]
+
+                if not item_ids:
                     continue
 
-                cur.execute(
-                    "INSERT INTO cart (user_id, item_id) VALUES (%s, %s)",
-                    (uid, item_id)
-                )
-                added += 1
+                # ================= INSERT ITEMS =================
+                for item_id in item_ids:
+
+                    cur.execute(
+                        "SELECT 1 FROM cart WHERE user_id=%s AND item_id=%s LIMIT 1",
+                        (uid, item_id)
+                    )
+                    if cur.fetchone():
+                        skipped += 1
+                        continue
+
+                    cur.execute(
+                        "INSERT INTO cart (user_id, item_id) VALUES (%s, %s)",
+                        (uid, item_id)
+                    )
+                    added += 1
 
             conn.commit()
             cur.close()
+            conn.close()
+
         except:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except:
+                pass
             bot.answer_callback_query(c.id, "❌ Add to cart failed")
             return
 
+        # ================= RESPONSE =================
         if added and skipped:
             bot.answer_callback_query(
                 c.id,
@@ -6033,8 +6065,6 @@ def handle_callback(c):
             )
 
         return
-
-
     # ==================================================
 
 
@@ -6303,324 +6333,7 @@ def handle_callback(c):
 
 
 
-    # ==================================================
-    # CHECKOUT (GROUP-AWARE – FORMAT FIX ONLY)
-   
-
-
-# ==================================================
-    if data == "checkout":
-        rows = get_cart(uid)
-        if not rows:
-            bot.answer_callback_query(c.id, "❌ Cart ɗinka babu komai.")
-            return
-
-        order_id = str(uuid.uuid4())
-        total = 0
-
-        # ===============================
-        # GROUP ITEMS BY group_key
-        # ===============================
-        groups = {}
-
-        for item_id, title, price, file_id, group_key in rows:
-            if not file_id:
-                continue
-
-            p = int(price or 0)
-            if p <= 0:
-                continue
-
-            key = group_key or f"single_{item_id}"
-
-            if key not in groups:
-                groups[key] = {
-                    "price": p,
-                    "items": []
-                }
-
-            groups[key]["items"].append(
-                (item_id, title, file_id)
-            )
-
-        if not groups:
-            bot.answer_callback_query(c.id, "❌ Babu item mai delivery a cart.")
-            return
-
-        # ===============================
-        # TOTAL (PER GROUP – NO DOUBLE)
-        # ===============================
-        for g in groups.values():
-            total += g["price"]
-
-        if total <= 0:
-            bot.answer_callback_query(c.id, "❌ Farashi bai dace ba.")
-            return
-
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            # ===============================
-            # 1️⃣ CREATE ORDER
-            # ===============================
-            cur.execute(
-                """
-                INSERT INTO orders (id, user_id, movie_id, amount, paid)
-                VALUES (%s, %s, NULL, %s, 0)
-                """,
-                (order_id, uid, total)
-            )
-
-            # ===============================
-            # 2️⃣ ORDER ITEMS (ALL FILES)
-            # ===============================
-            for g in groups.values():
-                group_price = g["price"]
-                for item_id, title, file_id in g["items"]:
-                    cur.execute(
-                        """
-                        INSERT INTO order_items
-                        (order_id, item_id, file_id, price)
-                        VALUES (%s, %s, %s, %s)
-                        """,
-                        (order_id, item_id, file_id, group_price)
-                    )
-
-            conn.commit()
-            cur.close()
-        except:
-            conn.rollback()
-            bot.answer_callback_query(c.id, "❌ Checkout failed.")
-            return
-
-        clear_cart(uid)
-
-        # ===============================
-        # 🧾 CLEAN DISPLAY (NO DUPLICATE TITLES)
-        # ===============================
-        dbg = "🤩 <b>CHECKOUT ORDER CREATED</b>\n\n"
-
-        for key, g in groups.items():
-            items = g["items"]
-
-            # GROUP (SERIES)
-            if not key.startswith("single_"):
-                title = items[0][1]
-                count = len(items)
-                dbg += f"• {title} — 📦 Series (Episodes: {count})\n"
-
-            # SINGLE
-            else:
-                title = items[0][1]
-                dbg += f"• {title}\n"
-
-        bot.send_message(uid, dbg, parse_mode="HTML")
-
-        # ===============================
-        # PAYMENT
-        # ===============================
-        pay_url = create_flutterwave_payment(uid, order_id, total, "Cart Order")
-
-        if not pay_url:
-            bot.answer_callback_query(c.id, "❌ Payment error.")
-            return
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
-
-        bot.send_message(
-            uid,
-            f"""🧾 <b>CART ORDER</b>
-
-💵 <b>Price:</b> ₦{total}
-🎞 <b>Items:</b> {len(groups)}
-
-🆔 <b>Order ID:</b>
-<code>{order_id}</code>
-
-⚠️ <b>MUHIMMI:</b>
-<i>Ajiye wannan Order ID sosai.
-Idan wata matsala ta faru (biyan kudi ko delivery),
-ka tura wannan Order ID kai tsaye zuwa admin.
-Ba za a iya taimakawa ba tare da Order ID ba.</i>
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        bot.answer_callback_query(c.id)
-        return     #==================================================
-    # BUY / BUYDM
-    # ==================================================
-    if data.startswith("buy:") or data.startswith("buydm:"):
-        try:
-            raw = data.split(":", 1)[1]
-            item_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
-        except:
-            bot.answer_callback_query(c.id, "❌ Invalid buy data.")
-            return
-
-        if not item_ids:
-            bot.answer_callback_query(c.id, "❌ No item selected.")
-            return
-
-        items = []
-
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            # 1️⃣ KARANTA ITEMS
-            for iid in item_ids:
-                cur.execute(
-                    "SELECT id, title, price, file_id FROM items WHERE id=%s",
-                    (iid,)
-                )
-                row = cur.fetchone()
-
-                if not row:
-                    continue
-
-                if not row[3]:
-                    continue
-
-                items.append({
-                    "id": row[0],
-                    "title": row[1],
-                    "price": int(row[2] or 0),
-                    "file_id": row[3]
-                })
-
-            if not items:
-                cur.close()
-                bot.answer_callback_query(c.id, "❌ Babu item mai delivery.", show_alert=True)
-                return
-
-            # 2️⃣ OWNERSHIP CHECK
-            format_ids = ",".join(["%s"] * len(item_ids))
-            cur.execute(
-                f"""
-                SELECT 1 FROM user_movies
-                WHERE user_id=%s
-                AND item_id IN ({format_ids})
-                LIMIT 1
-                """,
-                (uid, *item_ids)
-            )
-            owned = cur.fetchone()
-
-            if owned:
-                cur.close()
-                kb = InlineKeyboardMarkup()
-                kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))
-                bot.send_message(
-                    uid,
-                    "✅ <b>Ka riga ka mallaki wannan fim tini/n/n DUBA MY MOVIES\n Acen zaka rubuta sunansa za'a sake turama kyauta idan kana bukata.</b>",
-                    parse_mode="HTML",
-                    reply_markup=kb
-                )
-                bot.answer_callback_query(c.id)
-                return
-
-            # 3️⃣ 🔒 DUBA UNPAID ORDER MAI WANNAN ITEM
-            cur.execute(
-                """
-                SELECT o.id, o.amount
-                FROM orders o
-                JOIN order_items oi ON oi.order_id = o.id
-                WHERE o.user_id=%s AND o.paid=0 AND oi.item_id=%s
-                LIMIT 1
-                """,
-                (uid, items[0]["id"])
-            )
-            old = cur.fetchone()
-
-            if old:
-                order_id = old[0]
-                total = old[1]
-            else:
-                order_id = str(uuid.uuid4())
-
-                cur.execute(
-                    "INSERT INTO orders (id, user_id, amount, paid) VALUES (%s, %s, 0, 0)",
-                    (order_id, uid)
-                )
-
-                for it in items:
-                    cur.execute(
-                        """
-                        INSERT INTO order_items
-                        (order_id, item_id, file_id, price)
-                        VALUES (%s, %s, %s, %s)
-                        """,
-                        (order_id, it["id"], it["file_id"], it["price"])
-                    )
-
-                cur.execute(
-                    "SELECT COALESCE(SUM(price),0) FROM order_items WHERE order_id=%s",
-                    (order_id,)
-                )
-                total = cur.fetchone()[0]
-
-                cur.execute(
-                    "UPDATE orders SET amount=%s WHERE id=%s",
-                    (total, order_id)
-                )
-
-                conn.commit()
-
-            cur.close()
-
-        except:
-            conn.rollback()
-            bot.answer_callback_query(c.id, "❌ Buy failed.")
-            return
-
-        # 🧪 DEBUG — BUY (BA ID)
-        dbg = "🤩 <b>BUY ORDER CREATED</b>\n\n"
-        for it in items:
-            dbg += f"• {it['title']}\n"
-
-        bot.send_message(uid, dbg, parse_mode="HTML")
-
-        # 4️⃣ PAYMENT
-        title = items[0]["title"] if len(items) == 1 else f"{len(items)} Items"
-        pay_url = create_flutterwave_payment(uid, order_id, total, title)
-
-        if not pay_url:
-            bot.send_message(uid, "❌ <b>Payment error.</b>", parse_mode="HTML")
-            bot.answer_callback_query(c.id)
-            return
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
-
-        bot.send_message(
-            uid,
-            f"""🧾 <b>{title}</b>
-
-💵 <b>Price:</b> ₦{total}
-📦 <b>Items:</b> {len(items)}
-
-🆔 <b>Order ID:</b>
-<code>{order_id}</code>
-
-⚠️ <b>MUHIMMI:</b>
-<i>Ajiye wannan Order ID sosai.
-Idan wata matsala ta faru (biyan kudi ko delivery),
-ka tura wannan Order ID kai tsaye zuwa admin.
-Ba za a iya taimakawa ba tare da Order ID ba.</i>
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        bot.answer_callback_query(c.id)
-        return     
-
+    
     # ================= MY MOVIES =================
     if data == "my_movies":
         kb = InlineKeyboardMarkup()
