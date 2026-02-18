@@ -504,111 +504,151 @@ def send_feedback_prompt(user_id, order_id):
 @app.route("/webhook", methods=["POST"])
 def flutterwave_webhook():
 
-    # ================= SIGNATURE =================
-    signature = request.headers.get("verif-hash")
-    if not signature or signature != FLW_WEBHOOK_SECRET:
-        return "Invalid signature", 401
+    try:
+        bot.send_message(ADMIN_ID, "🚀 WEBHOOK CALLED")
 
-    # ================= PAYLOAD =================
-    payload = request.json or {}
-    data = payload.get("data") or {}
+        # ================= SIGNATURE =================
+        signature = request.headers.get("verif-hash")
+        bot.send_message(ADMIN_ID, f"🔐 Signature: {signature}")
 
-    status = (data.get("status") or "").lower()
-    if status not in ("successful", "success"):
-        return "Ignored", 200
+        if not signature or signature != FLW_WEBHOOK_SECRET:
+            bot.send_message(ADMIN_ID, "❌ Invalid signature")
+            return "Invalid signature", 401
 
-    order_id = str(data.get("tx_ref") or "")
-    currency = data.get("currency")
-    paid_amount = int(float(data.get("amount", 0)))
+        bot.send_message(ADMIN_ID, "✅ Signature OK")
 
-    if not order_id:
-        return "Missing order id", 200
+        # ================= PAYLOAD =================
+        payload = request.json or {}
+        bot.send_message(ADMIN_ID, f"📦 Payload received")
 
-    # ================= DB =================
-    conn = get_conn()
-    cur = conn.cursor()
+        data = payload.get("data") or {}
 
-    cur.execute(
-        "SELECT user_id, amount, paid FROM orders WHERE id=%s",
-        (order_id,)
-    )
-    row = cur.fetchone()
+        status = (data.get("status") or "").lower()
+        bot.send_message(ADMIN_ID, f"💳 Status: {status}")
 
-    if not row:
-        cur.close()
-        conn.close()
-        return "Order not found", 200
+        if status not in ("successful", "success"):
+            bot.send_message(ADMIN_ID, "⚠️ Status ignored")
+            return "Ignored", 200
 
-    user_id, expected_amount, paid = row
+        order_id = str(data.get("tx_ref") or "")
+        currency = data.get("currency")
+        paid_amount = int(float(data.get("amount", 0)))
 
-    if paid == 1:
-        cur.close()
-        conn.close()
-        return "Already processed", 200
-
-    if paid_amount != expected_amount or currency != "NGN":
-        cur.close()
-        conn.close()
-        return "Wrong payment", 200
-
-    # ================= ITEMS =================
-    cur.execute(
-        """
-        SELECT i.title
-        FROM order_items oi
-        JOIN items i ON i.id = oi.item_id
-        WHERE oi.order_id=%s
-        """,
-        (order_id,)
-    )
-    titles = [r[0] for r in cur.fetchall()]
-
-    if not titles:
-        cur.close()
-        conn.close()
-        return "Empty order", 200
-
-    titles_text = "\n".join(f"• {t}" for t in titles)
-    items_count = len(titles)
-
-    # ================= USER INFO =================
-    cur.execute(
-        "SELECT first_name, last_name FROM visited_users WHERE user_id=%s",
-        (user_id,)
-    )
-    u = cur.fetchone()
-
-    if u and (u[0] or u[1]):
-        full_name = f"{u[0] or ''} {u[1] or ''}".strip()
-    else:
-        try:
-            chat = bot.get_chat(user_id)
-            full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
-        except:
-            full_name = "User"
-
-    # ================= MARK AS PAID =================
-    cur.execute(
-        "UPDATE orders SET paid=1 WHERE id=%s",
-        (order_id,)
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    # ================= USER MESSAGE (OLD FORMAT) =================
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton(
-            "⬇️ DOWNLOAD ITEMS",
-            callback_data=f"deliver:{order_id}"
+        bot.send_message(
+            ADMIN_ID,
+            f"🧾 Ref: {order_id} | 💰 Amount: {paid_amount} | 💱 Currency: {currency}"
         )
-    )
 
-    bot.send_message(
-        user_id,
-        f"""Hi {full_name} 👋
+        if not order_id:
+            bot.send_message(ADMIN_ID, "❌ Missing order id")
+            return "Missing order id", 200
+
+        # ================= DB =================
+        bot.send_message(ADMIN_ID, "🔌 Connecting DB")
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            "SELECT user_id, amount, paid FROM orders WHERE id=%s",
+            (order_id,)
+        )
+        row = cur.fetchone()
+
+        bot.send_message(ADMIN_ID, f"📂 Order row: {row}")
+
+        if not row:
+            cur.close()
+            conn.close()
+            bot.send_message(ADMIN_ID, "❌ Order not found")
+            return "Order not found", 200
+
+        user_id, expected_amount, paid = row
+
+        if paid == 1:
+            cur.close()
+            conn.close()
+            bot.send_message(ADMIN_ID, "⚠️ Already processed")
+            return "Already processed", 200
+
+        if paid_amount != expected_amount or currency != "NGN":
+            cur.close()
+            conn.close()
+            bot.send_message(
+                ADMIN_ID,
+                f"❌ Wrong payment | Expected: {expected_amount} NGN"
+            )
+            return "Wrong payment", 200
+
+        bot.send_message(ADMIN_ID, "✅ Payment matches DB")
+
+        # ================= ITEMS =================
+        cur.execute(
+            """
+            SELECT i.title
+            FROM order_items oi
+            JOIN items i ON i.id = oi.item_id
+            WHERE oi.order_id=%s
+            """,
+            (order_id,)
+        )
+        titles = [r[0] for r in cur.fetchall()]
+
+        bot.send_message(ADMIN_ID, f"🎬 Items count: {len(titles)}")
+
+        if not titles:
+            cur.close()
+            conn.close()
+            bot.send_message(ADMIN_ID, "❌ Empty order")
+            return "Empty order", 200
+
+        titles_text = "\n".join(f"• {t}" for t in titles)
+        items_count = len(titles)
+
+        # ================= USER INFO =================
+        cur.execute(
+            "SELECT first_name, last_name FROM visited_users WHERE user_id=%s",
+            (user_id,)
+        )
+        u = cur.fetchone()
+
+        if u and (u[0] or u[1]):
+            full_name = f"{u[0] or ''} {u[1] or ''}".strip()
+        else:
+            try:
+                chat = bot.get_chat(user_id)
+                full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
+            except Exception as e:
+                bot.send_message(ADMIN_ID, f"⚠️ get_chat error: {e}")
+                full_name = "User"
+
+        bot.send_message(ADMIN_ID, f"👤 User: {full_name} ({user_id})")
+
+        # ================= MARK AS PAID =================
+        cur.execute(
+            "UPDATE orders SET paid=1 WHERE id=%s",
+            (order_id,)
+        )
+
+        conn.commit()
+        bot.send_message(ADMIN_ID, "✅ DB Updated paid=1")
+
+        cur.close()
+        conn.close()
+
+        # ================= USER MESSAGE (OLD FORMAT) =================
+        bot.send_message(ADMIN_ID, "📨 Sending message to user...")
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "⬇️ DOWNLOAD ITEMS",
+                callback_data=f"deliver:{order_id}"
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            f"""Hi {full_name} 👋
 
 🎉 <b>An tabbatar da biyanka cikin nasara.</b>
 
@@ -624,15 +664,19 @@ def flutterwave_webhook():
 Mun gode da amincewa da mu 🤍  
 Danna <b>DOWNLOAD ITEMS</b> domin karɓa yanzu.
 """,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+            parse_mode="HTML",
+            reply_markup=kb
+        )
 
-    # ================= ADMIN GROUP =================
-    if PAYMENT_NOTIFY_GROUP:
-        bot.send_message(
-            PAYMENT_NOTIFY_GROUP,
-            f"""🟢 <b>TRANSACTION COMPLETED</b>
+        bot.send_message(ADMIN_ID, "✅ User notified successfully")
+
+        # ================= ADMIN GROUP =================
+        if PAYMENT_NOTIFY_GROUP:
+            bot.send_message(ADMIN_ID, "📢 Sending to admin group...")
+
+            bot.send_message(
+                PAYMENT_NOTIFY_GROUP,
+                f"""🟢 <b>TRANSACTION COMPLETED</b>
 
 📦 Status: Confirmed
 🎬 Items: {items_count} files
@@ -645,10 +689,17 @@ Item names:
 💳 Total amount: ₦{paid_amount}
 🧾 Ref: <code>{order_id}</code>
 """,
-            parse_mode="HTML"
-        )
+                parse_mode="HTML"
+            )
 
-    return "OK", 200
+            bot.send_message(ADMIN_ID, "✅ Admin group notified")
+
+        bot.send_message(ADMIN_ID, "🏁 WEBHOOK FINISHED OK")
+        return "OK", 200
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"🔥 WEBHOOK CRASHED: {e}")
+        return "ERROR", 500
 
 
 @app.route("/telegram", methods=["POST"])
