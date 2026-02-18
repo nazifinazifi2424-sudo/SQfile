@@ -502,6 +502,7 @@ def send_feedback_prompt(user_id, order_id):
         print("FEEDBACK SEND ERROR:", e)
 
 
+
 @app.route("/webhook", methods=["POST"])
 def flutterwave_webhook():
 
@@ -556,25 +557,46 @@ def flutterwave_webhook():
             conn.close()
             return "Wrong payment", 200
 
-        # ================= ITEMS =================
+        # ================= ITEMS (GROUPED - NO DUPLICATE TITLES) =================
         cur.execute(
             """
-            SELECT i.title
+            SELECT i.title, i.group_key
             FROM order_items oi
             JOIN items i ON i.id = oi.item_id
             WHERE oi.order_id=%s
             """,
             (order_id,)
         )
-        titles = [r[0] for r in cur.fetchall()]
 
-        if not titles:
+        rows = cur.fetchall()
+
+        if not rows:
             cur.close()
             conn.close()
             return "Empty order", 200
 
-        titles_text = "\n".join(f"• {t}" for t in titles)
-        items_count = len(titles)
+        groups = {}
+
+        for title, group_key in rows:
+            key = group_key or f"single_{title}"
+
+            if key not in groups:
+                groups[key] = {
+                    "title": title,
+                    "count": 0
+                }
+
+            groups[key]["count"] += 1
+
+        lines = []
+        for g in groups.values():
+            if g["count"] > 1:
+                lines.append(f"• {g['title']} ({g['count']})")
+            else:
+                lines.append(f"• {g['title']}")
+
+        titles_text = "\n".join(lines)
+        items_count = len(groups)
 
         # ================= USER INFO =================
         cur.execute(
@@ -658,6 +680,7 @@ Item names:
 
     except Exception as e:
         return "ERROR", 500
+
 
 
 
