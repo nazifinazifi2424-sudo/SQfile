@@ -816,69 +816,70 @@ def start_allfilms(uid):
 
     send_allfilms_page(uid, 0)
 
+import time
+from telebot.apihelper import ApiTelegramException
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("deliver:"))
 def deliver_items(call):
+
     user_id = call.from_user.id
 
     try:
         _, order_id = call.data.split(":", 1)
     except:
-        bot.answer_callback_query(call.id, "❌ Error a bayanan order")
+        bot.answer_callback_query(call.id, "❌ Invalid order info.")
         return
 
     conn = get_conn()
     cur = conn.cursor()
 
-    # 1️⃣ DUBA ORDER
+    # ================= CHECK ORDER =================
     cur.execute(
         "SELECT paid FROM orders WHERE id=%s AND user_id=%s",
         (order_id, user_id)
     )
     row = cur.fetchone()
 
-    if not row:
+    if not row or row[0] != 1:
         cur.close()
         conn.close()
-        bot.answer_callback_query(call.id, "❌ Order ba'a samu ba")
+        bot.answer_callback_query(
+            call.id,
+            "❌ Your payment has not been confirmed yet."
+        )
         return
 
-    if row[0] != 1:
-        cur.close()
-        conn.close()
-        bot.answer_callback_query(call.id, "❌ Ba a tabbatar da biyanka ba")
-        return
-
-    # 2️⃣ KAR A SAKE TURAWA (ORDER LEVEL)
+    # ================= PREVENT RESEND =================
     cur.execute(
         "SELECT 1 FROM user_movies WHERE order_id=%s LIMIT 1",
         (order_id,)
     )
-    already = cur.fetchone()
-
-    if already:
+    if cur.fetchone():
         cur.close()
         conn.close()
 
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))
+        kb.add(
+            InlineKeyboardButton(
+                "📽 PAID MOVIES",
+                callback_data="my_movies"
+            )
+        )
 
         bot.send_message(
             user_id,
-            "ℹ️ Ka riga ka karɓi fim ɗinka.",
+            "ℹ️ You have already received this movie.\n\n"
+            "📽 You can download it again from Paid Movies.",
             reply_markup=kb
         )
         return
 
-    bot.answer_callback_query(call.id, "📤 Ana turo maka fim ɗinka...")
+    bot.answer_callback_query(call.id, "📤 Sending your items…")
 
-    # 3️⃣ DAUKO ITEMS (SOURCE NA GASKIYA ✔️)
+    # ================= FETCH ITEMS =================
     cur.execute(
         """
-        SELECT 
-            oi.item_id,
-            oi.file_id,
-            i.title
+        SELECT oi.item_id, oi.file_id, i.title
         FROM order_items oi
         JOIN items i ON i.id = oi.item_id
         WHERE oi.order_id=%s
@@ -890,87 +891,97 @@ def deliver_items(call):
     if not items:
         cur.close()
         conn.close()
-        bot.send_message(
-            user_id,
-            "❌ Order ɗinka yana da matsala.\nDa fatan za a tuntubi admin."
-        )
+        bot.send_message(user_id, "❌ Order items not found.")
         return
 
+    total = len(items)
+
+    if total >= 20:
+        bot.send_message(
+            user_id,
+            "⏳ Your movies are many.\n"
+            "Please wait while delivery continues..."
+        )
+
+    # ================= SAFE SEND FUNCTION =================
+    def safe_send(chat_id, file_id, title):
+
+        while True:
+            try:
+                try:
+                    return bot.send_video(
+                        chat_id,
+                        file_id,
+                        caption=f"🎬 {title}"
+                    )
+                except:
+                    return bot.send_document(
+                        chat_id,
+                        file_id,
+                        caption=f"📁 {title}"
+                    )
+
+            except ApiTelegramException as e:
+
+                if e.error_code == 429:
+                    retry = int(e.result_json["parameters"]["retry_after"])
+                    time.sleep(retry)
+                    continue
+                else:
+                    return None
+
+            except Exception:
+                return None
+
+    # ================= SEND LOOP =================
     sent = 0
 
-    # 4️⃣ TURAWA (ITEM BY ITEM ✔️)
-    for item_id, file_id, title in items:
+    for index, (item_id, file_id, title) in enumerate(items, start=1):
 
         if not file_id:
-            print("❌ NO FILE_ID:", item_id)
             continue
 
-        # 🔒 KAR A SA ITEM SAU BIYU
+        # avoid duplicate per item
         cur.execute(
-            """
-            SELECT 1 FROM user_movies
-            WHERE user_id=%s AND item_id=%s
-            """,
+            "SELECT 1 FROM user_movies WHERE user_id=%s AND item_id=%s",
             (user_id, item_id)
         )
-        exists = cur.fetchone()
-
-        if exists:
+        if cur.fetchone():
             continue
 
-        sent_ok = False
+        msg = safe_send(user_id, file_id, title)
 
-        try:
-            bot.send_video(
-                user_id,
-                file_id,
-                caption=f"🎬 {title}"
-            )
-            sent_ok = True
-        except:
-            try:
-                bot.send_document(
-                    user_id,
-                    file_id,
-                    caption=f"📁 {title}"
-                )
-                sent_ok = True
-            except Exception as e:
-                print("❌ SEND FAILED:", e)
+        if not msg:
+            continue
 
-        if sent_ok:
-            cur.execute(
-                """
-                INSERT INTO user_movies (user_id, item_id, order_id)
-                VALUES (%s, %s, %s)
-                """,
-                (user_id, item_id, order_id)
-            )
-            sent += 1
+        cur.execute(
+            """
+            INSERT INTO user_movies (user_id, item_id, order_id)
+            VALUES (%s,%s,%s)
+            """,
+            (user_id, item_id, order_id)
+        )
+
+        sent += 1
+
+        # Soft delay (extra safety)
+        time.sleep(1.0)
 
     conn.commit()
     cur.close()
     conn.close()
 
-    # 5️⃣ FEEDBACK
     if sent == 0:
-        bot.send_message(
-            user_id,
-            "❌ Ba a samu nasarar tura fim ba.\nDa fatan za a tuntubi admin."
-        )
+        bot.send_message(user_id, "❌ Items could not be sent.")
         return
 
     bot.send_message(
         user_id,
-        f"✅ An tura fim ɗinka ({sent}).\nMun gode 🙏🥰"
+        f"✅ Your movie(s) have been delivered ({sent}).\n"
+        "Thank you for your purchase 🤗"
     )
 
     send_feedback_prompt(user_id, order_id)
-
-
-
-
-
 # =========================================================
 # ========= HARD START HOWTO (DEEPLINK LOCK) ===============
 # =========================================================
