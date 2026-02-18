@@ -4099,215 +4099,249 @@ ka tura wannan Order ID kai tsaye zuwa admin.</i>
     cur.close()
     conn.close()
 
-# ========= GROUPITEM (IDS + GROUP_KEY SUPPORT + FULL DEBUG) =========
+
+# ========= GROUPITEM (IDS + GROUP_KEY SUPPORT | DEBUG SAFE) =========
+from psycopg2.extras import RealDictCursor
+import uuid
+
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
 def groupitem_deeplink_handler(msg):
+
+    bot.send_message(ADMIN_ID, "🚀 GROUPITEM START")
 
     try:
         uid = msg.from_user.id
         raw = msg.text.split("groupitem_", 1)[1].strip()
 
-        bot.send_message(
-            ADMIN_ID,
-            f"🚀 GROUPITEM START\nUser: {uid}\nRaw: {raw}"
-        )
+        bot.send_message(ADMIN_ID, f"User: {uid}")
+        bot.send_message(ADMIN_ID, f"Raw: {raw}")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ LINK PARSE ERROR:\n{e}")
-        bot.reply_to(msg, "❌ Invalid link.")
+        bot.send_message(ADMIN_ID, f"❌ Parse error: {e}")
         return
 
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        bot.send_message(ADMIN_ID, "✅ DB CONNECTED")
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ DB CONNECTION ERROR:\n{e}")
+    conn = get_conn()
+    if not conn:
+        bot.send_message(ADMIN_ID, "❌ DB connection failed")
         return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     items = []
 
-    # ================= IDS MODE =================
+    # =====================================================
+    # MODE 1: IDS (OLD SYSTEM)
+    # =====================================================
     if all(x.strip().isdigit() for x in raw.replace("_", ",").split(",")):
-        try:
-            sep = "_" if "_" in raw else ","
-            item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
-            placeholders = ",".join(["%s"] * len(item_ids))
 
-            bot.send_message(ADMIN_ID, f"🔎 IDS MODE\nIDs: {item_ids}")
+        bot.send_message(ADMIN_ID, "🔎 IDS MODE")
 
-            cur.execute(
-                f"""
-                SELECT id, title, price, file_id, group_key
-                FROM items
-                WHERE id IN ({placeholders})
-                """,
-                item_ids
-            )
+        sep = "_" if "_" in raw else ","
+        item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
 
-            items = cur.fetchall()
-            bot.send_message(ADMIN_ID, f"✅ ITEMS FETCHED: {len(items)}")
-
-        except Exception as e:
-            bot.send_message(ADMIN_ID, f"❌ IDS FETCH ERROR:\n{e}")
+        if not item_ids:
+            bot.send_message(ADMIN_ID, "❌ No valid IDs")
+            cur.close()
+            conn.close()
             return
 
-    # ================= GROUP KEY MODE =================
+        placeholders = ",".join(["%s"] * len(item_ids))
+
+        cur.execute(
+            f"""
+            SELECT id, title, price, file_id, group_key
+            FROM items
+            WHERE id IN ({placeholders})
+            """,
+            tuple(item_ids)
+        )
+
+        items = cur.fetchall()
+
+    # =====================================================
+    # MODE 2: GROUP_KEY (NEW SYSTEM)
+    # =====================================================
     else:
-        try:
-            group_key = raw
 
-            bot.send_message(ADMIN_ID, f"🔎 GROUP_KEY MODE\nKey: {group_key}")
+        bot.send_message(ADMIN_ID, "🔎 GROUP_KEY MODE")
+        bot.send_message(ADMIN_ID, f"Key: {raw}")
 
-            cur.execute(
-                """
-                SELECT id, title, price, file_id, group_key
-                FROM items
-                WHERE group_key=%s
-                ORDER BY id ASC
-                """,
-                (group_key,)
-            )
+        cur.execute(
+            """
+            SELECT id, title, price, file_id, group_key
+            FROM items
+            WHERE group_key=%s
+            ORDER BY id ASC
+            """,
+            (raw,)
+        )
 
-            items = cur.fetchall()
-            bot.send_message(ADMIN_ID, f"✅ GROUP ITEMS FETCHED: {len(items)}")
+        items = cur.fetchall()
 
-        except Exception as e:
-            bot.send_message(ADMIN_ID, f"❌ GROUP FETCH ERROR:\n{e}")
-            return
-
-    # ================= VALIDATION =================
     if not items:
-        bot.send_message(ADMIN_ID, "❌ NO ITEMS FOUND")
+        bot.send_message(ADMIN_ID, "❌ No items found")
         cur.close()
         conn.close()
-        bot.send_message(uid, "❌ Items not found.")
         return
 
-    items = [i for i in items if i["file_id"]]
+    bot.send_message(ADMIN_ID, f"✅ GROUP ITEMS FETCHED: {len(items)}")
+
+    # =====================================================
+    # FILE CHECK
+    # =====================================================
+    items = [i for i in items if i.get("file_id")]
+
     if not items:
-        bot.send_message(ADMIN_ID, "❌ NO ITEMS WITH FILE_ID")
+        bot.send_message(ADMIN_ID, "❌ No valid file_id items")
         cur.close()
         conn.close()
-        bot.send_message(uid, "❌ Babu item mai file.")
         return
 
-    display_title = items[0]["title"]
-    item_ids = [i["id"] for i in items]
-    placeholders = ",".join(["%s"] * len(item_ids))
+    item_ids_clean = [i["id"] for i in items]
+    placeholders = ",".join(["%s"] * len(item_ids_clean))
 
-    # ================= OWNERSHIP =================
+    # =====================================================
+    # OWNERSHIP CHECK
+    # =====================================================
     try:
         cur.execute(
             f"""
             SELECT 1 FROM user_movies
-            WHERE user_id=%s AND item_id IN ({placeholders})
+            WHERE user_id=%s
+              AND item_id IN ({placeholders})
             LIMIT 1
             """,
-            (uid, *item_ids)
+            (uid, *item_ids_clean)
         )
-
         owned = cur.fetchone()
-        bot.send_message(ADMIN_ID, f"🔐 OWNERSHIP CHECK: {bool(owned)}")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ OWNERSHIP ERROR:\n{e}")
+        bot.send_message(ADMIN_ID, f"❌ Ownership check error: {e}")
+        cur.close()
+        conn.close()
         return
 
     if owned:
+        bot.send_message(ADMIN_ID, "⚠️ User already owns item")
         cur.close()
         conn.close()
-        bot.send_message(uid, "✅ Ka riga ka mallaka.")
         return
 
-    # ================= TOTAL =================
+    # =====================================================
+    # GROUP PRICING (SAFE)
+    # =====================================================
+    groups = {}
+
+    for i in items:
+        key = i["group_key"] or f"single_{i['id']}"
+        if key not in groups:
+            groups[key] = int(i["price"] or 0)
+
+    total = sum(groups.values())
+    bot.send_message(ADMIN_ID, f"💰 TOTAL: {total}")
+
+    if total <= 0:
+        bot.send_message(ADMIN_ID, "❌ Invalid total amount")
+        cur.close()
+        conn.close()
+        return
+
+    # =====================================================
+    # REUSE / CREATE ORDER
+    # =====================================================
     try:
-        groups = {}
-        for i in items:
-            key = i["group_key"] or f"single_{i['id']}"
-            if key not in groups:
-                groups[key] = int(i["price"] or 0)
-
-        total = sum(groups.values())
-
-        bot.send_message(
-            ADMIN_ID,
-            f"💰 TOTAL CALCULATED\nItems: {len(items)}\nTotal: {total}"
+        cur.execute(
+            f"""
+            SELECT o.id
+            FROM orders o
+            JOIN order_items oi ON oi.order_id = o.id
+            WHERE o.user_id=%s
+              AND o.paid=0
+              AND oi.item_id IN ({placeholders})
+            GROUP BY o.id
+            HAVING COUNT(DISTINCT oi.item_id)=%s
+            LIMIT 1
+            """,
+            (uid, *item_ids_clean, len(item_ids_clean))
         )
+        row = cur.fetchone()
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ TOTAL ERROR:\n{e}")
+        bot.send_message(ADMIN_ID, f"❌ Order reuse check error: {e}")
+        cur.close()
+        conn.close()
         return
 
-    # ================= CREATE ORDER =================
-    try:
+    if row:
+        order_id = row["id"]
+        bot.send_message(ADMIN_ID, f"♻️ Reusing order: {order_id}")
+
+    else:
         order_id = str(uuid.uuid4())
+        bot.send_message(ADMIN_ID, f"🆕 Creating order: {order_id}")
 
-        cur.execute(
-            """
-            INSERT INTO orders (id, user_id, amount, paid)
-            VALUES (%s, %s, %s, 0)
-            """,
-            (order_id, uid, total)
-        )
-
-        for i in items:
+        try:
             cur.execute(
-                """
-                INSERT INTO order_items (order_id, item_id, file_id, price)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (order_id, i["id"], i["file_id"], int(i["price"] or 0))
+                "INSERT INTO orders (id, user_id, amount, paid) VALUES (%s,%s,%s,0)",
+                (order_id, uid, total)
             )
 
-        conn.commit()
+            for i in items:
+                cur.execute(
+                    """
+                    INSERT INTO order_items (order_id, item_id, file_id, price)
+                    VALUES (%s,%s,%s,%s)
+                    """,
+                    (order_id, i["id"], i["file_id"], int(i["price"] or 0))
+                )
 
-        bot.send_message(
-            ADMIN_ID,
-            f"✅ ORDER CREATED\nOrder: {order_id}"
-        )
+            conn.commit()
+            bot.send_message(ADMIN_ID, "✅ Order committed")
 
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ ORDER CREATE ERROR:\n{e}")
-        conn.rollback()
-        return
+        except Exception as e:
+            conn.rollback()
+            bot.send_message(ADMIN_ID, f"❌ Order insert error: {e}")
+            cur.close()
+            conn.close()
+            return
 
-    # ================= FLUTTERWAVE =================
+    # =====================================================
+    # PAYMENT LINK
+    # =====================================================
     try:
-        bot.send_message(ADMIN_ID, "🌐 Creating Flutterwave payment...")
-
-        pay_url = create_flutterwave_payment(uid, order_id, total, display_title)
-
-        bot.send_message(ADMIN_ID, f"🌐 Flutterwave Response:\n{pay_url}")
+        pay_url = create_flutterwave_payment(uid, order_id, total, items[0]["title"])
+        bot.send_message(ADMIN_ID, f"🔗 Payment link created: {bool(pay_url)}")
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ FLUTTERWAVE ERROR:\n{e}")
+        bot.send_message(ADMIN_ID, f"❌ Payment creation error: {e}")
+        cur.close()
+        conn.close()
         return
 
     if not pay_url:
-        bot.send_message(ADMIN_ID, "❌ Flutterwave returned None")
-        bot.send_message(uid, "❌ Payment error.")
+        bot.send_message(ADMIN_ID, "❌ Payment returned None")
+        cur.close()
+        conn.close()
         return
 
-    # ================= SEND USER =================
-    try:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
+    # =====================================================
+    # SEND BUTTON
+    # =====================================================
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
 
-        bot.send_message(
-            uid,
-            f"💵 Total: ₦{total}\nOrder: {order_id}",
-            reply_markup=kb
-        )
+    bot.send_message(
+        uid,
+        f"🧾 Order Created\n\n💵 Amount: ₦{total}\n🆔 {order_id}",
+        reply_markup=kb
+    )
 
-        bot.send_message(ADMIN_ID, "✅ PAY BUTTON SENT TO USER")
-
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"❌ USER SEND ERROR:\n{e}")
+    bot.send_message(ADMIN_ID, "🎉 GROUPITEM FINISHED SUCCESSFULLY")
 
     cur.close()
     conn.close()
-    bot.send_message(ADMIN_ID, "🔚 GROUPITEM END")
+
+# ==
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("buy_again:"))
 def buy_again_handler(c):
