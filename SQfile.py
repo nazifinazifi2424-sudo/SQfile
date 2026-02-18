@@ -5413,6 +5413,7 @@ def handle_hausa_choice(c):
     sess["stage"] = "hausa_names"
     bot.send_message(uid, "✍️ Rubuta sunayen Hausa series (layi-layi)")
 
+
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
@@ -5433,25 +5434,17 @@ def series_finalize(m):
     except:
         return
 
-    bot.send_message(ADMIN_ID, "=== SERIES FINALIZE STARTED ===")
-
     sess = series_sessions.get(uid)
 
     if sess.get("stage") != "meta":
-        bot.send_message(ADMIN_ID, "Stage not meta. Exiting.")
         return
 
     # ================= PARSE CAPTION =================
     try:
         title, raw_price = data.strip().rsplit("\n", 1)
-
         has_comma = "," in raw_price
         price = int(raw_price.replace(",", "").strip())
-
-        bot.send_message(ADMIN_ID, f"[OK] Caption parsed | {title} | ₦{price}")
-
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"Caption parsing error: {e}")
+    except:
         bot.send_message(uid, "❌ Caption bai dace ba.")
         return
 
@@ -5461,8 +5454,7 @@ def series_finalize(m):
     try:
         conn = get_conn()
         cur = conn.cursor()
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DB connection error: {e}")
+    except:
         return
 
     # ================= CREATE SERIES =================
@@ -5472,8 +5464,7 @@ def series_finalize(m):
             (title, price, poster_file_id)
         )
         series_id = cur.fetchone()[0]
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"Series insert error: {e}")
+    except:
         return
 
     item_ids = []
@@ -5481,8 +5472,10 @@ def series_finalize(m):
     group_key = str(uuid.uuid4())
 
     total_files = len(sess["files"])
-    bot.send_message(ADMIN_ID, f"Total files: {total_files}")
-    bot.send_message(ADMIN_ID, f"Group Key: {group_key}")
+    saved_count = 0
+
+    # 🔹 Sako ɗaya kawai
+    loading_msg = bot.send_message(ADMIN_ID, "⏳ Loading...")
 
     # ================= SAFE SEND FUNCTION =================
     def safe_send_document(chat_id, file_id, caption):
@@ -5495,34 +5488,29 @@ def series_finalize(m):
 
                 if e.error_code == 429:
                     retry = int(e.result_json["parameters"]["retry_after"])
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"⚠️ Rate limit hit. Sleeping {retry}s..."
-                    )
-                    time.sleep(retry)
-                    continue
 
-                else:
-                    bot.send_message(
+                    bot.edit_message_text(
+                        f"⚠️ Rate limit hit.\nSleeping {retry}s...\n\n{saved_count}/{total_files} saved",
                         ADMIN_ID,
-                        f"Telegram error: {e}"
+                        loading_msg.message_id
                     )
+
+                    time.sleep(retry)
+
+                    bot.edit_message_text(
+                        f"⏳ Loading...\n\n{saved_count}/{total_files} saved",
+                        ADMIN_ID,
+                        loading_msg.message_id
+                    )
+                    continue
+                else:
                     return None
 
-            except Exception as e:
-                bot.send_message(
-                    ADMIN_ID,
-                    f"Unexpected send error: {e}"
-                )
+            except:
                 return None
 
     # ================= UPLOAD LOOP =================
     for index, f in enumerate(sess["files"], start=1):
-
-        bot.send_message(
-            ADMIN_ID,
-            f"Uploading {index}/{total_files}"
-        )
 
         msg = safe_send_document(
             STORAGE_CHANNEL,
@@ -5535,7 +5523,6 @@ def series_finalize(m):
 
         doc = msg.document or msg.video
         if not doc:
-            bot.send_message(ADMIN_ID, f"File extraction failed at {index}")
             continue
 
         try:
@@ -5560,29 +5547,42 @@ def series_finalize(m):
             )
             new_id = cur.fetchone()[0]
             item_ids.append(new_id)
+            saved_count += 1
 
-        except Exception as e:
-            bot.send_message(
-                ADMIN_ID,
-                f"DB insert error at {index}: {e}"
-            )
+        except:
             continue
 
-        # Extra safety delay
+        # Update progress every 5 files only (domin rage spam)
+        if saved_count % 5 == 0 or saved_count == total_files:
+            try:
+                bot.edit_message_text(
+                    f"⏳ Loading...\n\n{saved_count}/{total_files} saved",
+                    ADMIN_ID,
+                    loading_msg.message_id
+                )
+            except:
+                pass
+
         time.sleep(1.2)
 
     # ================= COMMIT =================
     try:
         conn.commit()
-        bot.send_message(
-            ADMIN_ID,
-            f"✅ DB Saved {len(item_ids)}/{total_files}"
-        )
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DB commit error: {e}")
+    except:
+        pass
 
     cur.close()
     conn.close()
+
+    # Final update
+    try:
+        bot.edit_message_text(
+            f"✅ Completed!\n\n{saved_count}/{total_files} saved",
+            ADMIN_ID,
+            loading_msg.message_id
+        )
+    except:
+        pass
 
     # ================= PUBLIC POST =================
     try:
@@ -5608,18 +5608,14 @@ def series_finalize(m):
             reply_markup=kb
         )
 
-    except Exception as e:
-        bot.send_message(
-            ADMIN_ID,
-            f"Public post error: {e}"
-        )
+    except:
+        pass
 
     bot.send_message(uid, "🎉 Series an adana dukka lafiya.")
     del series_sessions[uid]
 
-    bot.send_message(ADMIN_ID, "=== SERIES FINALIZE ENDED ===")
-#======================================================
-# =============== FILTER / SEARCH CORE =================
+
+
 # ======================================================
 
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
