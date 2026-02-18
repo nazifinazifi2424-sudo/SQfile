@@ -5315,18 +5315,15 @@ def buy_all_handler(c):
     cur.close()
     conn.close()
 
-import uuid 
+
+import uuid
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# ===============================
-# SERIES UPLOAD – FULL FLOW (FIXED)
-# ===============================
 
 series_sessions = {}
 
 # ===============================
-# COLLECT SERIES FILES (DM → MEMORY ONLY)
+# COLLECT SERIES FILES
 # ===============================
 @bot.message_handler(
     content_types=["video", "document"],
@@ -5339,6 +5336,7 @@ def series_collect_files(m):
     if not sess or sess.get("stage") != "collect":
         return
 
+    # ===== GET FILE INFO =====
     if m.video:
         dm_file_id = m.video.file_id
         file_name = m.video.file_name or "video.mp4"
@@ -5346,16 +5344,17 @@ def series_collect_files(m):
         dm_file_id = m.document.file_id
         file_name = m.document.file_name or "file"
 
+    # ===== SAVE FILE =====
     sess["files"].append({
         "dm_file_id": dm_file_id,
         "file_name": file_name
     })
 
-    bot.send_message(
-        uid,
-        f"✅ An karɓi: <b>{file_name}</b>",
-        parse_mode="HTML"
-    )
+    # ===== COUNTER =====
+    total = len(sess["files"])
+
+    # ===== CLEAN RESPONSE (NO FILE NAME) =====
+    bot.send_message(uid, f"✅ An karɓi ({total})")
 
 
 # ===============================
