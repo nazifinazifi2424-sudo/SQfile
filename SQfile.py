@@ -816,6 +816,7 @@ def start_allfilms(uid):
 
     send_allfilms_page(uid, 0)
 
+
 import time
 from telebot.apihelper import ApiTelegramException
 
@@ -827,7 +828,7 @@ def deliver_items(call):
     try:
         _, order_id = call.data.split(":", 1)
     except:
-        bot.answer_callback_query(call.id, "❌ Invalid order info.")
+        bot.answer_callback_query(call.id, "Invalid order information.")
         return
 
     conn = get_conn()
@@ -845,7 +846,7 @@ def deliver_items(call):
         conn.close()
         bot.answer_callback_query(
             call.id,
-            "❌ Your payment has not been confirmed yet."
+            "Your payment has not been confirmed yet."
         )
         return
 
@@ -861,20 +862,21 @@ def deliver_items(call):
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
-                "📽 PAID MOVIES",
+                "PAID MOVIES",
                 callback_data="my_movies"
             )
         )
 
         bot.send_message(
             user_id,
-            "ℹ️ You have already received this movie.\n\n"
-            "📽 You can download it again from Paid Movies.",
+            "You have already received this movie.\n\n"
+            "You can download it again from Paid Movies.",
             reply_markup=kb
         )
         return
 
-    bot.answer_callback_query(call.id, "📤 Sending your items…")
+    # remove popup message completely
+    bot.answer_callback_query(call.id)
 
     # ================= FETCH ITEMS =================
     cur.execute(
@@ -891,17 +893,8 @@ def deliver_items(call):
     if not items:
         cur.close()
         conn.close()
-        bot.send_message(user_id, "❌ Order items not found.")
+        bot.send_message(user_id, "Order items not found.")
         return
-
-    total = len(items)
-
-    if total >= 20:
-        bot.send_message(
-            user_id,
-            "⏳ Your movies are many.\n"
-            "Please wait while delivery continues..."
-        )
 
     # ================= SAFE SEND FUNCTION =================
     def safe_send(chat_id, file_id, title):
@@ -912,36 +905,43 @@ def deliver_items(call):
                     return bot.send_video(
                         chat_id,
                         file_id,
-                        caption=f"🎬 {title}"
+                        caption=f"{title}"
                     )
                 except:
                     return bot.send_document(
                         chat_id,
                         file_id,
-                        caption=f"📁 {title}"
+                        caption=f"{title}"
                     )
 
             except ApiTelegramException as e:
 
                 if e.error_code == 429:
                     retry = int(e.result_json["parameters"]["retry_after"])
+
+                    # ONLY visible message to user
+                    bot.send_message(
+                        chat_id,
+                        "Wait...\n"
+                        "Please wait, delivery will continue in a few seconds."
+                    )
+
                     time.sleep(retry)
                     continue
                 else:
                     return None
 
-            except Exception:
+            except:
                 return None
 
     # ================= SEND LOOP =================
     sent = 0
 
-    for index, (item_id, file_id, title) in enumerate(items, start=1):
+    for item_id, file_id, title in items:
 
         if not file_id:
             continue
 
-        # avoid duplicate per item
         cur.execute(
             "SELECT 1 FROM user_movies WHERE user_id=%s AND item_id=%s",
             (user_id, item_id)
@@ -964,7 +964,6 @@ def deliver_items(call):
 
         sent += 1
 
-        # Soft delay (extra safety)
         time.sleep(1.0)
 
     conn.commit()
@@ -972,16 +971,19 @@ def deliver_items(call):
     conn.close()
 
     if sent == 0:
-        bot.send_message(user_id, "❌ Items could not be sent.")
+        bot.send_message(user_id, "Items could not be delivered.")
         return
 
     bot.send_message(
         user_id,
-        f"✅ Your movie(s) have been delivered ({sent}).\n"
-        "Thank you for your purchase 🤗"
+        f"Your movie(s) have been delivered ({sent}).\n"
+        "Thank you for your purchase."
     )
 
     send_feedback_prompt(user_id, order_id)
+
+
+
 # =========================================================
 # ========= HARD START HOWTO (DEEPLINK LOCK) ===============
 # =========================================================
