@@ -501,50 +501,35 @@ def send_feedback_prompt(user_id, order_id):
     except Exception as e:
         print("FEEDBACK SEND ERROR:", e)
 
+
 @app.route("/webhook", methods=["POST"])
 def flutterwave_webhook():
 
     try:
-        bot.send_message(ADMIN_ID, "🚀 WEBHOOK CALLED")
 
         # ================= SIGNATURE =================
         signature = request.headers.get("verif-hash")
-        bot.send_message(ADMIN_ID, f"🔐 Signature: {signature}")
 
         if not signature or signature != FLW_WEBHOOK_SECRET:
-            bot.send_message(ADMIN_ID, "❌ Invalid signature")
             return "Invalid signature", 401
-
-        bot.send_message(ADMIN_ID, "✅ Signature OK")
 
         # ================= PAYLOAD =================
         payload = request.json or {}
-        bot.send_message(ADMIN_ID, f"📦 Payload received")
-
         data = payload.get("data") or {}
 
         status = (data.get("status") or "").lower()
-        bot.send_message(ADMIN_ID, f"💳 Status: {status}")
 
         if status not in ("successful", "success"):
-            bot.send_message(ADMIN_ID, "⚠️ Status ignored")
             return "Ignored", 200
 
         order_id = str(data.get("tx_ref") or "")
         currency = data.get("currency")
         paid_amount = int(float(data.get("amount", 0)))
 
-        bot.send_message(
-            ADMIN_ID,
-            f"🧾 Ref: {order_id} | 💰 Amount: {paid_amount} | 💱 Currency: {currency}"
-        )
-
         if not order_id:
-            bot.send_message(ADMIN_ID, "❌ Missing order id")
             return "Missing order id", 200
 
         # ================= DB =================
-        bot.send_message(ADMIN_ID, "🔌 Connecting DB")
         conn = get_conn()
         cur = conn.cursor()
 
@@ -554,12 +539,9 @@ def flutterwave_webhook():
         )
         row = cur.fetchone()
 
-        bot.send_message(ADMIN_ID, f"📂 Order row: {row}")
-
         if not row:
             cur.close()
             conn.close()
-            bot.send_message(ADMIN_ID, "❌ Order not found")
             return "Order not found", 200
 
         user_id, expected_amount, paid = row
@@ -567,19 +549,12 @@ def flutterwave_webhook():
         if paid == 1:
             cur.close()
             conn.close()
-            bot.send_message(ADMIN_ID, "⚠️ Already processed")
             return "Already processed", 200
 
         if paid_amount != expected_amount or currency != "NGN":
             cur.close()
             conn.close()
-            bot.send_message(
-                ADMIN_ID,
-                f"❌ Wrong payment | Expected: {expected_amount} NGN"
-            )
             return "Wrong payment", 200
-
-        bot.send_message(ADMIN_ID, "✅ Payment matches DB")
 
         # ================= ITEMS =================
         cur.execute(
@@ -593,12 +568,9 @@ def flutterwave_webhook():
         )
         titles = [r[0] for r in cur.fetchall()]
 
-        bot.send_message(ADMIN_ID, f"🎬 Items count: {len(titles)}")
-
         if not titles:
             cur.close()
             conn.close()
-            bot.send_message(ADMIN_ID, "❌ Empty order")
             return "Empty order", 200
 
         titles_text = "\n".join(f"• {t}" for t in titles)
@@ -617,11 +589,8 @@ def flutterwave_webhook():
             try:
                 chat = bot.get_chat(user_id)
                 full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
-            except Exception as e:
-                bot.send_message(ADMIN_ID, f"⚠️ get_chat error: {e}")
+            except Exception:
                 full_name = "User"
-
-        bot.send_message(ADMIN_ID, f"👤 User: {full_name} ({user_id})")
 
         # ================= MARK AS PAID =================
         cur.execute(
@@ -630,14 +599,11 @@ def flutterwave_webhook():
         )
 
         conn.commit()
-        bot.send_message(ADMIN_ID, "✅ DB Updated paid=1")
 
         cur.close()
         conn.close()
 
         # ================= USER MESSAGE (OLD FORMAT) =================
-        bot.send_message(ADMIN_ID, "📨 Sending message to user...")
-
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
@@ -668,12 +634,8 @@ Danna <b>DOWNLOAD ITEMS</b> domin karɓa yanzu.
             reply_markup=kb
         )
 
-        bot.send_message(ADMIN_ID, "✅ User notified successfully")
-
         # ================= ADMIN GROUP =================
         if PAYMENT_NOTIFY_GROUP:
-            bot.send_message(ADMIN_ID, "📢 Sending to admin group...")
-
             bot.send_message(
                 PAYMENT_NOTIFY_GROUP,
                 f"""🟢 <b>TRANSACTION COMPLETED</b>
@@ -692,14 +654,11 @@ Item names:
                 parse_mode="HTML"
             )
 
-            bot.send_message(ADMIN_ID, "✅ Admin group notified")
-
-        bot.send_message(ADMIN_ID, "🏁 WEBHOOK FINISHED OK")
         return "OK", 200
 
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"🔥 WEBHOOK CRASHED: {e}")
         return "ERROR", 500
+
 
 
 @app.route("/telegram", methods=["POST"])
