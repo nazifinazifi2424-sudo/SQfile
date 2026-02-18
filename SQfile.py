@@ -5411,32 +5411,39 @@ def finish_series_collection(uid):
             f"✅ An karɓi ({total})\n🎉 An karɓi dukka lafiya."
         )
 
+
 # ===============================
-# DONE
+# DONE (CLEAN VERSION - NO LIST)
 # ===============================
 @bot.message_handler(
-    func=lambda m: (
-        m.text
-        and m.text.lower().strip() == "done"
-        and m.from_user.id in series_sessions
-    )
+    func=lambda m: m.text and m.text.lower().strip() == "done" and m.from_user.id in series_sessions
 )
 def series_done(m):
+
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
     if not sess or sess.get("stage") != "collect":
         return
 
-    if not sess.get("files"):
+    files = sess.get("files", [])
+
+    if not files:
         bot.send_message(uid, "❌ Babu fim da aka turo.")
         return
 
-    text = "✅ <b>An karɓi fina-finai:</b>\n\n"
-    for f in sess["files"]:
-        text += f"• {f['file_name']}\n"
+    total = len(files)
 
-    text += "\n❓ <b>Akwai Hausa series a ciki?</b>"
+    # sunan fim na ƙarshe da aka karɓa
+    last_name = files[-1]["file_name"]
+
+    # ================= MESSAGE =================
+    text = (
+        f"✅ <b>An karɓi:</b> {last_name}\n"
+        f"📦 <b>Adadi:</b> ({total})\n\n"
+        f"❓ <b>Akwai Hausa series a ciki?</b>"
+    )
+
     sess["stage"] = "ask_hausa"
 
     kb = InlineKeyboardMarkup()
@@ -5446,7 +5453,6 @@ def series_done(m):
     )
 
     bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
-
 
 # ===============================
 # HAUSA CHOICE
