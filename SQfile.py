@@ -5970,14 +5970,6 @@ def handle_callback(c):
         return
 
 
-@bot.callback_query_handler(func=lambda c: True)
-def handle_callback(c):
-    try:
-        uid = c.from_user.id
-        data = c.data or ""
-    except:
-        return
-
 
     # ================= ADD ITEM(S) TO CART (DM / CHANNEL) =================
     if data.startswith("addcartdm:"):
