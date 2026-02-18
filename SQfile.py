@@ -5405,6 +5405,11 @@ def handle_hausa_choice(c):
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
+from telebot.apihelper import ApiTelegramException
+import time
+import uuid
+from datetime import datetime
+
 @bot.message_handler(
     content_types=["photo"],
     func=lambda m: m.from_user.id in series_sessions
@@ -5425,12 +5430,12 @@ def series_finalize(m):
         bot.send_message(ADMIN_ID, "Stage not meta. Exiting.")
         return
 
+    # ================= PARSE CAPTION =================
     try:
         title, raw_price = data.strip().rsplit("\n", 1)
 
         has_comma = "," in raw_price
-        price = raw_price.replace(",", "").strip()
-        price = int(price)
+        price = int(raw_price.replace(",", "").strip())
 
         bot.send_message(ADMIN_ID, f"[OK] Caption parsed | {title} | ₦{price}")
 
@@ -5440,24 +5445,22 @@ def series_finalize(m):
         return
 
     poster_file_id = m.photo[-1].file_id
-    bot.send_message(ADMIN_ID, "Poster file id captured.")
 
+    # ================= DB CONNECT =================
     try:
         conn = get_conn()
         cur = conn.cursor()
-        bot.send_message(ADMIN_ID, "DB connection opened.")
     except Exception as e:
         bot.send_message(ADMIN_ID, f"DB connection error: {e}")
         return
 
-    # CREATE SERIES
+    # ================= CREATE SERIES =================
     try:
         cur.execute(
             "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
             (title, price, poster_file_id)
         )
         series_id = cur.fetchone()[0]
-        bot.send_message(ADMIN_ID, f"[OK] Series created. ID: {series_id}")
     except Exception as e:
         bot.send_message(ADMIN_ID, f"Series insert error: {e}")
         return
@@ -5466,39 +5469,70 @@ def series_finalize(m):
     created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     group_key = str(uuid.uuid4())
 
-    bot.send_message(ADMIN_ID, f"Total files: {len(sess['files'])}")
+    total_files = len(sess["files"])
+    bot.send_message(ADMIN_ID, f"Total files: {total_files}")
     bot.send_message(ADMIN_ID, f"Group Key: {group_key}")
 
-    # ===============================
-    # UPLOAD LOOP (WITH RATE LIMIT)
-    # ===============================
-    import time
+    # ================= SAFE SEND FUNCTION =================
+    def safe_send_document(chat_id, file_id, caption):
 
+        while True:
+            try:
+                return bot.send_document(chat_id, file_id, caption=caption)
+
+            except ApiTelegramException as e:
+
+                if e.error_code == 429:
+                    retry = int(e.result_json["parameters"]["retry_after"])
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ Rate limit hit. Sleeping {retry}s..."
+                    )
+                    time.sleep(retry)
+                    continue
+
+                else:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"Telegram error: {e}"
+                    )
+                    return None
+
+            except Exception as e:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"Unexpected send error: {e}"
+                )
+                return None
+
+    # ================= UPLOAD LOOP =================
     for index, f in enumerate(sess["files"], start=1):
 
-        bot.send_message(ADMIN_ID, f"Uploading {index}/{len(sess['files'])}")
+        bot.send_message(
+            ADMIN_ID,
+            f"Uploading {index}/{total_files}"
+        )
 
-        try:
-            msg = bot.send_document(
-                STORAGE_CHANNEL,
-                f["dm_file_id"],
-                caption=f["file_name"]
-            )
-        except Exception as e:
-            bot.send_message(ADMIN_ID, f"Telegram send error at {index}: {e}")
+        msg = safe_send_document(
+            STORAGE_CHANNEL,
+            f["dm_file_id"],
+            f["file_name"]
+        )
+
+        if not msg:
             continue
 
-        try:
-            doc = msg.document or msg.video
-        except Exception as e:
-            bot.send_message(ADMIN_ID, f"Doc extraction error {index}: {e}")
+        doc = msg.document or msg.video
+        if not doc:
+            bot.send_message(ADMIN_ID, f"File extraction failed at {index}")
             continue
 
         try:
             cur.execute(
                 """
                 INSERT INTO items
-                (title, price, file_id, file_name, group_key, created_at, channel_msg_id, channel_username)
+                (title, price, file_id, file_name, group_key,
+                 created_at, channel_msg_id, channel_username)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id
                 """,
@@ -5517,25 +5551,29 @@ def series_finalize(m):
             item_ids.append(new_id)
 
         except Exception as e:
-            bot.send_message(ADMIN_ID, f"DB insert error at {index}: {e}")
+            bot.send_message(
+                ADMIN_ID,
+                f"DB insert error at {index}: {e}"
+            )
             continue
 
-        # 🔥 RATE LIMIT PROTECTION
-        time.sleep(0.8)
+        # Extra safety delay
+        time.sleep(1.2)
 
+    # ================= COMMIT =================
     try:
         conn.commit()
-        bot.send_message(ADMIN_ID, f"✅ DB Saved {len(item_ids)}/{len(sess['files'])}")
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ DB Saved {len(item_ids)}/{total_files}"
+        )
     except Exception as e:
         bot.send_message(ADMIN_ID, f"DB commit error: {e}")
 
     cur.close()
     conn.close()
-    bot.send_message(ADMIN_ID, "DB connection closed.")
 
-    # ===============================
-    # PUBLIC POST (GROUP_KEY SAFE)
-    # ===============================
+    # ================= PUBLIC POST =================
     try:
         display_price = f"{price:,}" if has_comma else str(price)
 
@@ -5551,8 +5589,6 @@ def series_finalize(m):
             )
         )
 
-        bot.send_message(ADMIN_ID, "Sending public post...")
-
         bot.send_photo(
             CHANNEL,
             poster_file_id,
@@ -5561,20 +5597,16 @@ def series_finalize(m):
             reply_markup=kb
         )
 
-        bot.send_message(ADMIN_ID, "Public post sent successfully.")
-
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"Public post error: {e}")
+        bot.send_message(
+            ADMIN_ID,
+            f"Public post error: {e}"
+        )
 
-    bot.send_message(uid, "🎉 Series an adana dukka series lafiya.")
-    bot.send_message(ADMIN_ID, "User notified.")
-
+    bot.send_message(uid, "🎉 Series an adana dukka lafiya.")
     del series_sessions[uid]
-    bot.send_message(ADMIN_ID, "Session deleted.")
+
     bot.send_message(ADMIN_ID, "=== SERIES FINALIZE ENDED ===")
-
-
-
 #======================================================
 # =============== FILTER / SEARCH CORE =================
 # ======================================================
