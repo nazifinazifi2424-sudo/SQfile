@@ -5319,43 +5319,97 @@ def buy_all_handler(c):
 import uuid
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.apihelper import ApiTelegramException
 
 series_sessions = {}
 
 # ===============================
-# COLLECT SERIES FILES
+# COLLECT SERIES FILES (PRO EDIT VERSION)
 # ===============================
 @bot.message_handler(
     content_types=["video", "document"],
     func=lambda m: m.from_user.id in series_sessions
 )
 def series_collect_files(m):
+
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
     if not sess or sess.get("stage") != "collect":
         return
 
-    # ===== GET FILE INFO =====
-    if m.video:
-        dm_file_id = m.video.file_id
-        file_name = m.video.file_name or "video.mp4"
-    else:
-        dm_file_id = m.document.file_id
-        file_name = m.document.file_name or "file"
+    try:
+        # ================= GET FILE =================
+        if m.video:
+            dm_file_id = m.video.file_id
+            file_name = m.video.file_name or "video.mp4"
+        else:
+            dm_file_id = m.document.file_id
+            file_name = m.document.file_name or "file"
 
-    # ===== SAVE FILE =====
-    sess["files"].append({
-        "dm_file_id": dm_file_id,
-        "file_name": file_name
-    })
+        # ================= SAVE =================
+        sess["files"].append({
+            "dm_file_id": dm_file_id,
+            "file_name": file_name
+        })
 
-    # ===== COUNTER =====
-    total = len(sess["files"])
+        total = len(sess["files"])
 
-    # ===== CLEAN RESPONSE (NO FILE NAME) =====
-    bot.send_message(uid, f"✅ An karɓi ({total})")
+        # ================= CREATE OR EDIT MESSAGE =================
+        if not sess.get("progress_msg_id"):
 
+            msg = bot.send_message(
+                uid,
+                f"✅ An karɓi (1)\n📂 {file_name}"
+            )
+            sess["progress_msg_id"] = msg.message_id
+
+        else:
+            bot.edit_message_text(
+                f"✅ An karɓi ({total})\n📂 {file_name}",
+                uid,
+                sess["progress_msg_id"]
+            )
+
+    except ApiTelegramException as e:
+        bot.send_message(
+            uid,
+            f"❌ Telegram error:\n{str(e)}"
+        )
+
+    except Exception as e:
+        bot.send_message(
+            uid,
+            f"❌ System error:\n{str(e)}"
+        )
+
+
+# ===============================
+# OPTIONAL: CALL THIS WHEN DONE BUTTON IS PRESSED
+# ===============================
+def finish_series_collection(uid):
+
+    sess = series_sessions.get(uid)
+    if not sess:
+        return
+
+    total = len(sess.get("files", []))
+
+    if total == 0:
+        bot.send_message(uid, "⚠️ Babu file da aka karɓa.")
+        return
+
+    try:
+        bot.edit_message_text(
+            f"✅ An karɓi ({total})\n\n🎉 An karɓi dukkan files lafiya.",
+            uid,
+            sess.get("progress_msg_id")
+        )
+    except:
+        bot.send_message(
+            uid,
+            f"✅ An karɓi ({total})\n🎉 An karɓi dukka lafiya."
+        )
 
 # ===============================
 # DONE
