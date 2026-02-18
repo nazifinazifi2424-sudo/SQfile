@@ -6037,6 +6037,272 @@ def handle_callback(c):
 
     # ==================================================
 
+
+    from psycopg2.extras import RealDictCursor
+    import uuid
+
+    # ==================================================
+    # CHECKOUT (CART)
+    # ==================================================
+    if data == "checkout":
+        rows = get_cart(uid)
+        if not rows:
+            bot.answer_callback_query(c.id, "❌ Cart ɗinka babu komai.")
+            return
+
+        groups = {}
+        total = 0
+
+        for item_id, title, price, file_id, group_key in rows:
+            if not file_id:
+                continue
+
+            p = int(price or 0)
+            if p <= 0:
+                continue
+
+            key = group_key or f"single_{item_id}"
+
+            if key not in groups:
+                groups[key] = {
+                    "price": p,
+                    "items": []
+                }
+
+            groups[key]["items"].append((item_id, title, file_id))
+
+        if not groups:
+            bot.answer_callback_query(c.id, "❌ Babu item mai delivery a cart.")
+            return
+
+        for g in groups.values():
+            total += g["price"]
+
+        if total <= 0:
+            bot.answer_callback_query(c.id, "❌ Farashi bai dace ba.")
+            return
+
+        order_id = str(uuid.uuid4())
+
+        try:
+            conn = get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+
+            cur.execute(
+                "INSERT INTO orders (id,user_id,amount,paid) VALUES (%s,%s,%s,0)",
+                (order_id, uid, total)
+            )
+
+            for g in groups.values():
+                for item_id, title, file_id in g["items"]:
+                    cur.execute(
+                        """
+                        INSERT INTO order_items
+                        (order_id,item_id,file_id,price)
+                        VALUES (%s,%s,%s,%s)
+                        """,
+                        (order_id, item_id, file_id, g["price"])
+                    )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+        except:
+            try:
+                conn.rollback()
+            except:
+                pass
+            bot.answer_callback_query(c.id, "❌ Checkout failed.")
+            return
+
+        clear_cart(uid)
+
+        pay_url = create_flutterwave_payment(uid, order_id, total, "Cart Order")
+        if not pay_url:
+            return
+
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+        bot.send_message(
+            uid,
+            f"""🎉 Thank you
+
+🧾 CART ORDER
+📦 Groups: {len(groups)}
+💰 Total: ₦{total}
+
+🆔 Order ID:
+{order_id}
+
+💳 Please complete your payment below 👇""",
+            reply_markup=kb
+        )
+
+        bot.answer_callback_query(c.id)
+        return
+
+    # ==================================================
+    # BUY / BUYDM
+    # ==================================================
+    if data.startswith("buy:") or data.startswith("buydm:"):
+
+        try:
+            raw = data.split(":", 1)[1]
+            item_ids = [int(x) for x in raw.split(",") if x.strip().isdigit()]
+        except:
+            bot.answer_callback_query(c.id, "❌ Invalid buy data.")
+            return
+
+        if not item_ids:
+            bot.answer_callback_query(c.id, "❌ No item selected.")
+            return
+
+        try:
+            conn = get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+
+            placeholders = ",".join(["%s"] * len(item_ids))
+
+            cur.execute(
+                f"""
+                SELECT id,title,price,file_id,group_key
+                FROM items
+                WHERE id IN ({placeholders})
+                """,
+                tuple(item_ids)
+            )
+            rows = cur.fetchall()
+
+            items = [
+                r for r in rows
+                if r["file_id"] and int(r["price"] or 0) > 0
+            ]
+
+            if not items:
+                cur.close()
+                conn.close()
+                bot.answer_callback_query(c.id, "❌ Babu item mai delivery.")
+                return
+
+            # OWNERSHIP CHECK
+            ids_clean = [i["id"] for i in items]
+            placeholders2 = ",".join(["%s"] * len(ids_clean))
+
+            cur.execute(
+                f"""
+                SELECT 1 FROM user_movies
+                WHERE user_id=%s AND item_id IN ({placeholders2})
+                LIMIT 1
+                """,
+                (uid, *ids_clean)
+            )
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+
+                kb = InlineKeyboardMarkup()
+                kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))
+
+                bot.send_message(
+                    uid,
+                    "✅ <b>Ka riga ka mallaki wannan fim.</b>",
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+                return
+
+            # GROUP TOTAL
+            groups = {}
+            for i in items:
+                key = i["group_key"] or f"single_{i['id']}"
+                if key not in groups:
+                    groups[key] = int(i["price"] or 0)
+
+            total = sum(groups.values())
+
+            # EXACT UNPAID REUSE
+            cur.execute(
+                f"""
+                SELECT o.id
+                FROM orders o
+                JOIN order_items oi ON oi.order_id=o.id
+                WHERE o.user_id=%s
+                  AND o.paid=0
+                  AND oi.item_id IN ({placeholders2})
+                GROUP BY o.id
+                HAVING COUNT(DISTINCT oi.item_id)=%s
+                LIMIT 1
+                """,
+                (uid, *ids_clean, len(ids_clean))
+            )
+            old = cur.fetchone()
+
+            if old:
+                order_id = old["id"]
+            else:
+                order_id = str(uuid.uuid4())
+
+                cur.execute(
+                    "INSERT INTO orders (id,user_id,amount,paid) VALUES (%s,%s,%s,0)",
+                    (order_id, uid, total)
+                )
+
+                for i in items:
+                    cur.execute(
+                        """
+                        INSERT INTO order_items
+                        (order_id,item_id,file_id,price)
+                        VALUES (%s,%s,%s,%s)
+                        """,
+                        (order_id, i["id"], i["file_id"], int(i["price"] or 0))
+                    )
+
+                conn.commit()
+
+            cur.close()
+            conn.close()
+
+        except:
+            try:
+                conn.rollback()
+            except:
+                pass
+            bot.answer_callback_query(c.id, "❌ Buy failed.")
+            return
+
+        title = items[0]["title"] if len(items) == 1 else f"{len(items)} Items"
+
+        pay_url = create_flutterwave_payment(uid, order_id, total, title)
+        if not pay_url:
+            return
+
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+        bot.send_message(
+            uid,
+            f"""🎉 Thank you
+
+🧾 {title}
+📦 Items: {len(items)}
+💰 Total: ₦{total}
+
+🆔 Order ID:
+{order_id}
+
+💳 Please complete your payment below 👇""",
+            reply_markup=kb
+        )
+
+        bot.answer_callback_query(c.id)
+        return
+
+
+
     # ==================================================
     # CHECKOUT (GROUP-AWARE – FORMAT FIX ONLY)
    
