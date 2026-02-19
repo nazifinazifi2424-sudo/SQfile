@@ -2756,8 +2756,10 @@ def get_cart(uid):
     conn.close()
     return rows 
 
+
 # ========== BUILD CART VIEW (GROUP-AWARE - FIXED) ==========
 def build_cart_view(uid):
+    uid = str(uid)  # 🔐 MUHIMMI (kamar wancan block)
     rows = get_cart(uid)
 
     kb = InlineKeyboardMarkup()
@@ -2814,17 +2816,16 @@ def build_cart_view(uid):
         else:
             lines.append(f"🎬 {title} — ₦{price}")
 
-        # ===== THIS IS THE ONLY CHANGE =====
+        # ===== KWAFI DABI'AR SAFE VERSION =====
         if group_key:
-            callback_value = f"removecart:{group_key}"
+            callback_value = group_key
         else:
-            ids_str = "_".join(str(i) for i in ids)
-            callback_value = f"removecart:{ids_str}"
+            callback_value = ids[0]   # SINGLE ITEM → ID ɗaya kawai
 
         kb.add(
             InlineKeyboardButton(
                 f"❌ Cire: {title[:25]}",
-                callback_data=callback_value
+                callback_data=f"removecart:{callback_value}"
             )
         )
 
@@ -2837,13 +2838,13 @@ def build_cart_view(uid):
         + "\n".join(lines)
     )
 
-    # ===== ACTION BUTTONS =====
-    kb.add(
+    # ===== ACTION BUTTONS (BA A CIRE SU BA) =====
+    kb.row(
         InlineKeyboardButton("🧹 Clear Cart", callback_data="clearcart"),
         InlineKeyboardButton("💵 CHECKOUT", callback_data="checkout")
     )
 
-    # ===== NAV BUTTONS =====
+    # ===== NAV BUTTONS (BA A CIRE SU BA) =====
     kb.row(
         InlineKeyboardButton("⤴️ KOMA FARKO", callback_data="go_home"),
         InlineKeyboardButton(
@@ -2853,6 +2854,8 @@ def build_cart_view(uid):
     )
 
     return text, kb
+
+
 # ================= ADMIN ON / OFF =================
 @bot.message_handler(commands=["on"])
 def admin_on(m):
