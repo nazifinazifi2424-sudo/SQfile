@@ -2738,14 +2738,15 @@ def get_cart(uid):
     cur.execute(
         """
         SELECT
-            c.item_id,          -- movie_id
-            i.title,            -- title
-            i.price,            -- price (GROUP price)
-            i.file_id,          -- file_id
-            i.group_key         -- GROUP KEY
+            c.item_id,
+            i.title,
+            i.price,
+            i.file_id,
+            i.group_key
         FROM cart c
         JOIN items i ON i.id = c.item_id
         WHERE c.user_id = %s
+        ORDER BY c.id DESC
         """,
         (uid,)
     )
@@ -2754,13 +2755,15 @@ def get_cart(uid):
     cur.close()
     conn.close()
     return rows
+
+
 # ========== BUILD CART VIEW (GROUP-AWARE - FIXED) ==========
 def build_cart_view(uid):
     rows = get_cart(uid)
 
     kb = InlineKeyboardMarkup()
 
-    # ===== IDAN CART BABU KOMAI =====
+    # ===== EMPTY CART =====
     if not rows:
         text = "🛒 <b>Cart ɗinka babu komai.</b>"
 
@@ -2771,17 +2774,19 @@ def build_cart_view(uid):
                 url=f"https://t.me/{CHANNEL.lstrip('@')}"
             )
         )
+
         return text, kb
 
     total = 0
     lines = []
 
     # ===============================
-    # HADA ITEMS TA GROUP_KEY
+    # GROUP BY group_key
     # ===============================
     grouped = {}
 
     for movie_id, title, price, file_id, group_key in rows:
+
         key = group_key or f"single_{movie_id}"
 
         if key not in grouped:
@@ -2796,20 +2801,23 @@ def build_cart_view(uid):
     # ===============================
     # DISPLAY ITEMS
     # ===============================
-    for g in grouped.values():
+    for key, g in grouped.items():
         ids = g["ids"]
         title = g["title"]
         price = g["price"]
 
         total += price
 
-        lines.append(f"🎬 {title} — ₦{price}")
+        if price == 0:
+            lines.append(f"🎬 {title} — 📦 Series")
+        else:
+            lines.append(f"🎬 {title} — ₦{price}")
 
         ids_str = "_".join(str(i) for i in ids)
 
         kb.add(
             InlineKeyboardButton(
-                f"❌ Cire: {title}",
+                f"❌ Cire: {title[:25]}",
                 callback_data=f"removecart:{ids_str}"
             )
         )
@@ -2825,9 +2833,7 @@ def build_cart_view(uid):
 
     # ===== ACTION BUTTONS =====
     kb.add(
-        InlineKeyboardButton("🧹 Clear Cart", callback_data="clearcart")
-    )
-    kb.add(
+        InlineKeyboardButton("🧹 Clear Cart", callback_data="clearcart"),
         InlineKeyboardButton("💵 CHECKOUT", callback_data="checkout")
     )
 
@@ -2841,7 +2847,6 @@ def build_cart_view(uid):
     )
 
     return text, kb
-
 # ================= ADMIN ON / OFF =================
 @bot.message_handler(commands=["on"])
 def admin_on(m):
@@ -3389,29 +3394,47 @@ def handle_forwarded_post(m):
 def show_cart(chat_id, user_id):
     rows = get_cart(user_id)
 
+    # ===============================
+    # EMPTY CART
+    # ===============================
     if not rows:
         kb = InlineKeyboardMarkup()
         kb.row(
             InlineKeyboardButton("⤴️ KOMA FARKO", callback_data="go_home"),
             InlineKeyboardButton("🫂Our Channel", url=f"https://t.me/{CHANNEL.lstrip('@')}")
         )
+
         change_label = tr_user(user_id, "change_language_button", default="🌐 Change your language")
-        kb.row(InlineKeyboardButton(change_label, callback_data="change_language"))
+        kb.row(
+            InlineKeyboardButton(change_label, callback_data="change_language")
+        )
+
         s = tr_user(user_id, "cart_empty", default="🧾 Cart ɗinka babu komai.")
-        bot.send_message(chat_id, s, reply_markup=kb)
+
+        msg = bot.send_message(
+            chat_id,
+            s,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+
+        cart_sessions[str(user_id)] = msg.message_id
         return
 
-    text_lines = ["🧾 Kayayyakin da ka zaba:"]
+    # ===============================
+    # BUILD CART
+    # ===============================
+    text_lines = ["🧾 <b>Kayayyakin da ka zaba:</b>"]
     kb = InlineKeyboardMarkup()
-
-    total = 0  # ✅ total ɗaya kacal
+    total = 0
 
     # ===============================
-    # HADA ITEMS TA GROUP_KEY
+    # GROUP BY group_key
     # ===============================
     grouped = {}
 
     for movie_id, title, price, file_id, group_key in rows:
+
         key = group_key or f"single_{movie_id}"
 
         if key not in grouped:
@@ -3424,14 +3447,14 @@ def show_cart(chat_id, user_id):
         grouped[key]["ids"].append(movie_id)
 
     # ===============================
-    # DISPLAY (SINGLE + GROUP)
+    # DISPLAY ITEMS
     # ===============================
-    for g in grouped.values():
+    for key, g in grouped.items():
         ids = g["ids"]
         title = g["title"]
         price = g["price"]
 
-        total += price  # ✅ ba ya ninkawa
+        total += price
 
         if price == 0:
             text_lines.append(f"• {title} — 📦 Series")
@@ -3447,16 +3470,17 @@ def show_cart(chat_id, user_id):
             )
         )
 
-    text_lines.append(f"\nJimillar: ₦{total}")
+    text_lines.append(f"\n<b>Jimillar:</b> ₦{total}")
 
     # ===============================
-    # CREDIT INFO (KAMAR YADDA YAKE)
+    # CREDIT INFO
     # ===============================
     total_available, credit_rows = get_credits_for_user(user_id)
     credit_info = ""
+
     if total_available > 0:
         credit_info = (
-            f"\n\nNote: Available referral credit: N{total_available}. "
+            f"\n\n<b>Note:</b> Available referral credit: ₦{total_available}. "
             f"It will be automatically applied at checkout."
         )
 
@@ -3474,14 +3498,18 @@ def show_cart(chat_id, user_id):
     )
 
     change_label = tr_user(user_id, "change_language_button", default="🌐 Change your language")
-    kb.row(InlineKeyboardButton(change_label, callback_data="change_language"))
-
-    bot.send_message(
-        chat_id,
-        "\n".join(text_lines) + credit_info,
-        reply_markup=kb
+    kb.row(
+        InlineKeyboardButton(change_label, callback_data="change_language")
     )
 
+    msg = bot.send_message(
+        chat_id,
+        "\n".join(text_lines) + credit_info,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+    cart_sessions[str(user_id)] = msg.message_id
 
 
 def send_weekly_list(msg):
@@ -5334,7 +5362,44 @@ def handle_callback(c):
         return
 
 
+    # =====================
+    # VIEW CART
+    # =====================
+    if data == "viewcart":
 
+        try:
+            text, kb = build_cart_view(uid)
+
+        except Exception as e:
+            bot.send_message(
+                uid,
+                f"❌ ERROR inside build_cart_view:\n<code>{str(e)}</code>",
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, "❌ build_cart_view error")
+            return
+
+        try:
+            msg = bot.send_message(
+                uid,
+                text,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+
+            cart_sessions[uid] = msg.message_id
+
+        except Exception as e:
+            bot.send_message(
+                uid,
+                f"❌ ERROR sending cart message:\n<code>{str(e)}</code>",
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, "❌ Send message failed")
+            return
+
+        bot.answer_callback_query(c.id)
+        return
 
     # =====================
     # REMOVE FROM CART (SINGLE + GROUP + MIXED)
@@ -5454,22 +5519,7 @@ def handle_callback(c):
 # ======================= MAIN CALLBACK HANDLER =======================
 
 
-    # =====================
-    # VIEW CART (SEND + SAVE MESSAGE)
-    # =====================
-    if data == "viewcart":
-        text, kb = build_cart_view(uid)
-
-        msg = bot.send_message(
-            uid,
-            text,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
-
-        cart_sessions[uid] = msg.message_id
-        bot.answer_callback_query(c.id)
-        return
+  
 
 
 
