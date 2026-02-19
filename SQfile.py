@@ -5349,7 +5349,102 @@ def handle_search_cancel(c):
 
 # ================== END RUKUNI A ==================
 
+@bot.callback_query_handler(func=lambda c: True)
+def handle_callback(c):
+    try:
+        uid = c.from_user.id
+        data = c.data or ""
 
+        # DEBUG 1
+        bot.send_message(uid, f"🐞 DEBUG 1\nUID: {uid}\nDATA: {data}")
+
+    except Exception as e:
+        try:
+            bot.send_message(c.from_user.id, f"❌ DEBUG ERROR (callback init):\n<code>{str(e)}</code>", parse_mode="HTML")
+        except:
+            pass
+        return
+
+
+    # =====================
+    # VIEW CART
+    # =====================
+    if data == "viewcart":
+
+        # DEBUG 2
+        bot.send_message(uid, "🐞 DEBUG 2\nEntered viewcart block")
+
+        try:
+            text, kb = build_cart_view(uid)
+
+            # DEBUG 3
+            bot.send_message(
+                uid,
+                f"🐞 DEBUG 3\nbuild_cart_view success\n\nTEXT LENGTH: {len(text)}\nKB TYPE: {type(kb)}"
+            )
+
+        except Exception as e:
+            bot.send_message(
+                uid,
+                f"❌ ERROR inside build_cart_view:\n<code>{str(e)}</code>",
+                parse_mode="HTML"
+            )
+            bot.answer_callback_query(c.id, "❌ build_cart_view error")
+            return
+
+        try:
+            # DEBUG 4
+            bot.send_message(uid, "🐞 DEBUG 4\nSending cart message now...")
+
+            msg = bot.send_message(
+                uid,
+                text,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+
+            # DEBUG 5
+            bot.send_message(
+                uid,
+                f"🐞 DEBUG 5\nMessage sent successfully\nMESSAGE_ID: {msg.message_id}"
+            )
+
+            cart_sessions[uid] = msg.message_id
+
+            # DEBUG 6
+            bot.send_message(
+                uid,
+                f"🐞 DEBUG 6\ncart_sessions updated\nStored ID: {cart_sessions[uid]}"
+            )
+
+        except Exception as e:
+            bot.send_message(
+                uid,
+                f"❌ ERROR sending cart message:\n<code>{str(e)}</code>",
+                parse_mode="HTML"
+            )
+
+            # DEBUG 7
+            bot.send_message(
+                uid,
+                f"🐞 DEBUG 7\nTelegram send failed\nLikely cause:\n"
+                f"- BUTTON_DATA too long\n"
+                f"- callback_data invalid\n"
+                f"- keyboard malformed\n"
+                f"- HTML parse error\n\n"
+                f"ERROR:\n<code>{str(e)}</code>",
+                parse_mode="HTML"
+            )
+
+            bot.answer_callback_query(c.id, "❌ Send message failed")
+            return
+
+        bot.answer_callback_query(c.id)
+
+        # DEBUG 8
+        bot.send_message(uid, "🐞 DEBUG 8\nCallback answered successfully")
+
+        return
 # DUKKAN HANDLERS SUN GAMA ↑↑↑
 
 
