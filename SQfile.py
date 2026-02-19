@@ -2754,8 +2754,7 @@ def get_cart(uid):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return rows
-
+    return rows 
 
 # ========== BUILD CART VIEW (GROUP-AWARE - FIXED) ==========
 def build_cart_view(uid):
@@ -2793,7 +2792,8 @@ def build_cart_view(uid):
             grouped[key] = {
                 "ids": [],
                 "title": title or "📦 Group / Series Item",
-                "price": int(price or 0)
+                "price": int(price or 0),
+                "group_key": group_key
             }
 
         grouped[key]["ids"].append(movie_id)
@@ -2805,6 +2805,7 @@ def build_cart_view(uid):
         ids = g["ids"]
         title = g["title"]
         price = g["price"]
+        group_key = g["group_key"]
 
         total += price
 
@@ -2813,12 +2814,17 @@ def build_cart_view(uid):
         else:
             lines.append(f"🎬 {title} — ₦{price}")
 
-        ids_str = "_".join(str(i) for i in ids)
+        # ===== THIS IS THE ONLY CHANGE =====
+        if group_key:
+            callback_value = f"removecart:{group_key}"
+        else:
+            ids_str = "_".join(str(i) for i in ids)
+            callback_value = f"removecart:{ids_str}"
 
         kb.add(
             InlineKeyboardButton(
                 f"❌ Cire: {title[:25]}",
-                callback_data=f"removecart:{ids_str}"
+                callback_data=callback_value
             )
         )
 
