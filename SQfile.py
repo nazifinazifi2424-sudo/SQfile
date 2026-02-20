@@ -2047,7 +2047,7 @@ def reply_menu(uid=None):
     kb.add(
         InlineKeyboardButton(
             support_label,
-            url=f"https://t.me/{CHANNEL.lstrip('@')}"
+            url=f"https://t.me/{ADMIN_USERNAME}"
         )
     )
 
