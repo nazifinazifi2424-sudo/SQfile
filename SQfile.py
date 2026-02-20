@@ -5691,6 +5691,7 @@ def handle_callback(c):
     from psycopg2.extras import RealDictCursor
     import uuid
 
+    
     # ==================================================
     # CHECKOUT (CART)
     # ==================================================
@@ -5784,26 +5785,43 @@ def handle_callback(c):
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
+        # ================= NEW FORMAT (LIKE GROUPITEM) =================
+        first_name = c.from_user.first_name or ""
+        last_name = c.from_user.last_name or ""
+        full_name = f"{first_name} {last_name}".strip()
+
+        # Get first title for preview
+        first_title = None
+        for g in groups.values():
+            if g["items"]:
+                first_title = g["items"][0][1]
+                break
+
+        item_count = sum(len(g["items"]) for g in groups.values())
+
         bot.send_message(
             uid,
-            f"""🛒 <b>CART ORDER SUMMARY</b>
+            f"""🧾 <b>Order Created</b>
 
-📦 Groups: <b>{len(groups)}</b>
-💰 Total: <b>₦{total:,}</b>
+👤 <b>Name:</b> {full_name}
 
-━━━━━━━━━━━━━━
-🆔 <b>Order ID:</b>
+🎬 <b>You will buy this film</b>
+🎥 {first_title}
+
+📦 Films: {item_count}
+💵 Total: ₦{total}
+
+🆔 Order ID:
 <code>{order_id}</code>
-━━━━━━━━━━━━━━
 
-💳 Click PAY NOW to complete payment.""",
+Danna Pay now domin biya 👇👇
+""",
             parse_mode="HTML",
             reply_markup=kb
         )
 
         bot.answer_callback_query(c.id)
         return
-
     # ==================================================
     # BUY / BUYDM  ✅ (Support IDS + GROUP_KEY)
     # ==================================================
