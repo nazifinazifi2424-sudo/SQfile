@@ -5442,6 +5442,8 @@ def handle_callback(c):
         return
 
 
+   
+
     # =====================
     # VIEW CART
     # =====================
@@ -5491,7 +5493,7 @@ def handle_callback(c):
             conn = get_conn()
             cur = conn.cursor()
 
-            parts = [p.strip() for p in raw.split("_") if p.strip()]
+            parts = [p.strip() for p in raw.replace(",", "_").split("_") if p.strip()]
             ids_to_remove = set()
 
             for part in parts:
@@ -5596,20 +5598,12 @@ def handle_callback(c):
             except:
                 pass
         return
-# ======================= MAIN CALLBACK HANDLER =======================
-
-
-
-
-
 
     # ================= ADD ITEM(S) TO CART (DM / CHANNEL) =================
     if data.startswith("addcartdm:"):
         import re
 
         raw = data.split(":", 1)[1]
-
-        # Support: _, comma, space (mixed allowed)
         tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
         if not tokens:
             bot.answer_callback_query(c.id, "❌ Invalid")
@@ -5642,8 +5636,7 @@ def handle_callback(c):
                 if not item_ids:
                     continue
 
-                # ================= INSERT ITEMS =================
-                for item_id in item_ids:
+                for item_id in set(item_ids):
 
                     cur.execute(
                         "SELECT 1 FROM cart WHERE user_id=%s AND item_id=%s LIMIT 1",
@@ -5671,7 +5664,6 @@ def handle_callback(c):
             bot.answer_callback_query(c.id, "❌ Add to cart failed")
             return
 
-        # ================= RESPONSE =================
         if added and skipped:
             bot.answer_callback_query(
                 c.id,
@@ -5691,12 +5683,11 @@ def handle_callback(c):
         return
 
 
-
     from psycopg2.extras import RealDictCursor
     import uuid
 
     # ==================================================
-    # CHECKOUT (CART)  ✅ (BA A CANJA MANUFARSA BA)
+    # CHECKOUT (CART)
     # ==================================================
     if data == "checkout":
 
@@ -5717,7 +5708,7 @@ def handle_callback(c):
             if p <= 0:
                 continue
 
-            key = group_key or f"single_{item_id}"
+            key = group_key if group_key else f"single_{item_id}"
 
             if key not in groups:
                 groups[key] = {
@@ -5731,6 +5722,7 @@ def handle_callback(c):
             bot.answer_callback_query(c.id, "❌ Babu item mai delivery a cart.")
             return
 
+        # ===== TOTAL PER GROUP (BA A MAIMAITAWA) =====
         for g in groups.values():
             total += g["price"]
 
