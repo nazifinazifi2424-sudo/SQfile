@@ -2214,6 +2214,7 @@ def user_buttons(message):
     txt = message.text
     uid = message.from_user.id
 
+    # ======= FILMS =======
     if txt == "Films din wannan satin":
         try:
             send_weekly_list(message)
@@ -2224,27 +2225,81 @@ def user_buttons(message):
                 "⚠️ An samu matsala wajen nuna fina-finan wannan satin."
             )
         return
-# ======= TAIMAKO =======                
-    if txt == "Taimako":                
-        kb = InlineKeyboardMarkup()                
+
+    # ======= TAIMAKO =======
+    if txt == "Taimako":
+        kb = InlineKeyboardMarkup()
 
         # ALWAYS open admin DM directly – no callback, no message sending
-        if ADMIN_USERNAME:                
-            kb.add(InlineKeyboardButton("Contact Admin", url=f"https://t.me/{ADMIN_USERNAME}"))                
-        else:                
-            kb.add(InlineKeyboardButton("🆘 Support Help", url="https://t.me/{}".format(ADMIN_USERNAME)))                
+        if ADMIN_USERNAME:
+            kb.add(
+                InlineKeyboardButton(
+                    "Contact Admin",
+                    url=f"https://t.me/{ADMIN_USERNAME}"
+                )
+            )
+        else:
+            kb.add(
+                InlineKeyboardButton(
+                    "🆘 Support Help",
+                    url="https://t.me/{}".format(ADMIN_USERNAME)
+                )
+            )
 
-        bot.send_message(                
-            message.chat.id,                
-            "Idan kana bukatar taimako, Yi magana da admin.",                
-            reply_markup=kb                
-        )                
-        return            
-
-    # ======= CART =======            
-    if txt == "🧾 Cart":            
-        show_cart(message.chat.id, message.from_user.id)            
+        bot.send_message(
+            message.chat.id,
+            "Idan kana bukatar taimako, Yi magana da admin.",
+            reply_markup=kb
+        )
         return
+
+    #farko
+    # ======= CART =======
+    if txt == "🧾 Cart":
+        try:
+            print("🛒 CART BUTTON CLICKED")
+            print("User:", message.from_user.id)
+            print("Chat:", message.chat.id)
+
+            try:
+                show_cart(message.chat.id, message.from_user.id)
+                print("✅ show_cart executed successfully")
+
+            except Exception as cart_error:
+                err_text = f"""
+🚨 CART FUNCTION ERROR
+
+User: {message.from_user.id}
+Chat: {message.chat.id}
+
+Error:
+{str(cart_error)}
+"""
+                print(err_text)
+
+                try:
+                    bot.send_message(ADMIN_ID, err_text)
+                except Exception as tg_error:
+                    print("❌ Failed sending error to admin:", tg_error)
+
+        except Exception as fatal_error:
+            fatal_text = f"""
+💥 FATAL CART HANDLER ERROR
+
+User: {message.from_user.id if message.from_user else 'Unknown'}
+
+Error:
+{str(fatal_error)}
+"""
+            print(fatal_text)
+
+            try:
+                bot.send_message(ADMIN_ID, fatal_text)
+            except:
+                print("❌ Completely failed to notify admin")
+
+        return
+    #karshe
 
 # ================== FINAL ISOLATED ERASER SYSTEM ==================
 
@@ -2726,36 +2781,49 @@ def cancel_cmd(message):
         bot.reply_to(message, "An soke aikin admin na yanzu.")
         return
 
-# ==================================================
-# ========== GET CART (GROUP-AWARE SAFE) ============
-# ==================================================
+#farko
 def get_cart(uid):
-    conn = get_conn()
-    cur = conn.cursor()
+    conn = None
+    cur = None
+    try:
+        conn = get_conn()
+        if not conn:
+            return []
 
-    cur.execute(
-        """
-        SELECT
-            c.item_id,
-            i.title,
-            i.price,
-            i.file_id,
-            i.group_key
-        FROM cart c
-        JOIN items i ON i.id = c.item_id
-        WHERE c.user_id = %s
-        ORDER BY c.id DESC
-        """,
-        (uid,)
-    )
+        cur = conn.cursor()
 
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+        cur.execute(
+            """
+            SELECT
+                c.item_id,
+                i.title,
+                i.price,
+                i.file_id,
+                i.group_key
+            FROM cart c
+            JOIN items i ON i.id = c.item_id
+            WHERE c.user_id = %s
+            ORDER BY c.id DESC
+            """,
+            (uid,)
+        )
+
+        rows = cur.fetchall()
+        return rows
+
+    except Exception as e:
+        print("GET_CART ERROR:", e)
+        return []
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+#karshe
 
 
-# ========== BUILD CART VIEW (GROUP-AWARE - FIXED) ==========
+# ========== BUILD CART VIEW (GROUP-AWARE - SAFE IDS + GROUPKEY) ==========
 def build_cart_view(uid):
     rows = get_cart(uid)
 
@@ -2791,7 +2859,8 @@ def build_cart_view(uid):
             grouped[key] = {
                 "ids": [],
                 "title": title or "📦 Group / Series Item",
-                "price": int(price or 0)
+                "price": int(price or 0),
+                "group_key": group_key
             }
 
         grouped[key]["ids"].append(movie_id)
@@ -2803,6 +2872,7 @@ def build_cart_view(uid):
         ids = g["ids"]
         title = g["title"]
         price = g["price"]
+        gkey = g["group_key"]
 
         total += price
 
@@ -2811,12 +2881,20 @@ def build_cart_view(uid):
         else:
             lines.append(f"🎬 {title} — ₦{price}")
 
-        ids_str = "_".join(str(i) for i in ids)
+        # ==========================================
+        # 🔐 SAFE CALLBACK (avoid >64 bytes)
+        # ==========================================
+        if gkey:
+            # NEW SYSTEM (short + safe)
+            callback_value = f"removecartg:{gkey}"
+        else:
+            # OLD SYSTEM (single item)
+            callback_value = f"removecart:{ids[0]}"
 
         kb.add(
             InlineKeyboardButton(
                 f"❌ Cire: {title[:25]}",
-                callback_data=f"removecart:{ids_str}"
+                callback_data=callback_value
             )
         )
 
