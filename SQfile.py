@@ -6,7 +6,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 import psycopg2
 import time
 import os
-
+import html
 # ======================
 # DATABASE CONNECTION
 # ======================
