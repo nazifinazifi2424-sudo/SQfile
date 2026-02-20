@@ -4684,7 +4684,8 @@ def pay_all_unpaid(call):
         last_name = call.from_user.last_name or ""
         full_name = f"{first_name} {last_name}".strip()
 
-        # ==========================================
+        
+# ==========================================
         # MESSAGE FORMAT
         # ==========================================
         bot.send_message(
@@ -4698,6 +4699,8 @@ def pay_all_unpaid(call):
 
 🆔 <b>Order ID:</b>
 <code>{order_id}</code>
+
+Danna Pay now domin biya 👇👇
 """,
             parse_mode="HTML",
             reply_markup=kb
@@ -4709,7 +4712,6 @@ def pay_all_unpaid(call):
     finally:
         cur.close()
         conn.close()
-
 
 
 
