@@ -510,12 +510,18 @@ def send_feedback_prompt(user_id, order_id):
 @app.route("/webhook", methods=["POST"])
 def flutterwave_webhook():
 
+    import time
+    start_time = time.time()
+
     try:
+
+        bot.send_message(ADMIN_ID, "🔔 WEBHOOK HIT")
 
         # ================= SIGNATURE =================
         signature = request.headers.get("verif-hash")
 
         if not signature or signature != FLW_WEBHOOK_SECRET:
+            bot.send_message(ADMIN_ID, "❌ Invalid signature")
             return "Invalid signature", 401
 
         # ================= PAYLOAD =================
@@ -525,9 +531,9 @@ def flutterwave_webhook():
         status = (data.get("status") or "").lower()
 
         if status not in ("successful", "success"):
+            bot.send_message(ADMIN_ID, "⚠️ Payment not successful")
             return "Ignored", 200
 
-        # ===== FIX: MATCH ORDER ID WITH DB =====
         raw_ref = str(data.get("tx_ref") or "")
         order_id = raw_ref.split("_")[0]
 
@@ -535,6 +541,7 @@ def flutterwave_webhook():
         paid_amount = int(float(data.get("amount", 0)))
 
         if not order_id:
+            bot.send_message(ADMIN_ID, "❌ Missing order id")
             return "Missing order id", 200
 
         # ================= DB =================
@@ -550,6 +557,7 @@ def flutterwave_webhook():
         if not row:
             cur.close()
             conn.close()
+            bot.send_message(ADMIN_ID, "❌ Order not found")
             return "Order not found", 200
 
         user_id, expected_amount, paid = row
@@ -557,11 +565,13 @@ def flutterwave_webhook():
         if paid == 1:
             cur.close()
             conn.close()
+            bot.send_message(ADMIN_ID, "⚠️ Already processed")
             return "Already processed", 200
 
         if paid_amount != expected_amount or currency != "NGN":
             cur.close()
             conn.close()
+            bot.send_message(ADMIN_ID, "❌ Wrong payment")
             return "Wrong payment", 200
 
         # ================= ITEMS =================
@@ -580,19 +590,15 @@ def flutterwave_webhook():
         if not rows:
             cur.close()
             conn.close()
+            bot.send_message(ADMIN_ID, "❌ Empty order")
             return "Empty order", 200
 
         groups = {}
 
         for title, group_key in rows:
             key = group_key or f"single_{title}"
-
             if key not in groups:
-                groups[key] = {
-                    "title": title,
-                    "count": 0
-                }
-
+                groups[key] = {"title": title, "count": 0}
             groups[key]["count"] += 1
 
         lines = []
@@ -682,11 +688,17 @@ Item names:
                 parse_mode="HTML"
             )
 
+        # ================= DEBUG TIMING =================
+        bot.send_message(
+            ADMIN_ID,
+            f"⏱ TOTAL EXECUTION TIME: {time.time() - start_time:.2f}s"
+        )
+
         return "OK", 200
 
-    except Exception:
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"🔥 WEBHOOK CRASH: {str(e)}")
         return "ERROR", 500
-
 
 
 
