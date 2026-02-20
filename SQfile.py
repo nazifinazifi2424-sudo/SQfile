@@ -6,7 +6,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 import psycopg2
 import time
 import os
-import html
+
 # ======================
 # DATABASE CONNECTION
 # ======================
@@ -2754,11 +2754,11 @@ def get_cart(uid):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return rows 
+    return rows
+
 
 # ========== BUILD CART VIEW (GROUP-AWARE - FIXED) ==========
 def build_cart_view(uid):
-    uid = str(uid)  # 🔐 MUHIMMI (kamar wancan block)
     rows = get_cart(uid)
 
     kb = InlineKeyboardMarkup()
@@ -2793,8 +2793,7 @@ def build_cart_view(uid):
             grouped[key] = {
                 "ids": [],
                 "title": title or "📦 Group / Series Item",
-                "price": int(price or 0),
-                "group_key": group_key
+                "price": int(price or 0)
             }
 
         grouped[key]["ids"].append(movie_id)
@@ -2804,9 +2803,8 @@ def build_cart_view(uid):
     # ===============================
     for key, g in grouped.items():
         ids = g["ids"]
-        title = html.escape(str(g["title"]))  # ✅ SAFE FIX (BA A CANZA LOGIC BA)
+        title = g["title"]
         price = g["price"]
-        group_key = g["group_key"]
 
         total += price
 
@@ -2815,16 +2813,12 @@ def build_cart_view(uid):
         else:
             lines.append(f"🎬 {title} — ₦{price}")
 
-        # ===== KWAFI DABI'AR SAFE VERSION =====
-        if group_key:
-            callback_value = group_key
-        else:
-            callback_value = ids[0]   # SINGLE ITEM → ID ɗaya kawai
+        ids_str = "_".join(str(i) for i in ids)
 
         kb.add(
             InlineKeyboardButton(
                 f"❌ Cire: {title[:25]}",
-                callback_data=f"removecart:{callback_value}"
+                callback_data=f"removecart:{ids_str}"
             )
         )
 
@@ -2837,13 +2831,13 @@ def build_cart_view(uid):
         + "\n".join(lines)
     )
 
-    # ===== ACTION BUTTONS (BA A CIRE SU BA) =====
-    kb.row(
+    # ===== ACTION BUTTONS =====
+    kb.add(
         InlineKeyboardButton("🧹 Clear Cart", callback_data="clearcart"),
         InlineKeyboardButton("💵 CHECKOUT", callback_data="checkout")
     )
 
-    # ===== NAV BUTTONS (BA A CIRE SU BA) =====
+    # ===== NAV BUTTONS =====
     kb.row(
         InlineKeyboardButton("⤴️ KOMA FARKO", callback_data="go_home"),
         InlineKeyboardButton(
@@ -5355,102 +5349,7 @@ def handle_search_cancel(c):
 
 # ================== END RUKUNI A ==================
 
-@bot.callback_query_handler(func=lambda c: True)
-def handle_callback(c):
-    try:
-        uid = c.from_user.id
-        data = c.data or ""
 
-        # DEBUG 1
-        bot.send_message(uid, f"🐞 DEBUG 1\nUID: {uid}\nDATA: {data}")
-
-    except Exception as e:
-        try:
-            bot.send_message(c.from_user.id, f"❌ DEBUG ERROR (callback init):\n<code>{str(e)}</code>", parse_mode="HTML")
-        except:
-            pass
-        return
-
-
-    # =====================
-    # VIEW CART
-    # =====================
-    if data == "viewcart":
-
-        # DEBUG 2
-        bot.send_message(uid, "🐞 DEBUG 2\nEntered viewcart block")
-
-        try:
-            text, kb = build_cart_view(uid)
-
-            # DEBUG 3
-            bot.send_message(
-                uid,
-                f"🐞 DEBUG 3\nbuild_cart_view success\n\nTEXT LENGTH: {len(text)}\nKB TYPE: {type(kb)}"
-            )
-
-        except Exception as e:
-            bot.send_message(
-                uid,
-                f"❌ ERROR inside build_cart_view:\n<code>{str(e)}</code>",
-                parse_mode="HTML"
-            )
-            bot.answer_callback_query(c.id, "❌ build_cart_view error")
-            return
-
-        try:
-            # DEBUG 4
-            bot.send_message(uid, "🐞 DEBUG 4\nSending cart message now...")
-
-            msg = bot.send_message(
-                uid,
-                text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-
-            # DEBUG 5
-            bot.send_message(
-                uid,
-                f"🐞 DEBUG 5\nMessage sent successfully\nMESSAGE_ID: {msg.message_id}"
-            )
-
-            cart_sessions[uid] = msg.message_id
-
-            # DEBUG 6
-            bot.send_message(
-                uid,
-                f"🐞 DEBUG 6\ncart_sessions updated\nStored ID: {cart_sessions[uid]}"
-            )
-
-        except Exception as e:
-            bot.send_message(
-                uid,
-                f"❌ ERROR sending cart message:\n<code>{str(e)}</code>",
-                parse_mode="HTML"
-            )
-
-            # DEBUG 7
-            bot.send_message(
-                uid,
-                f"🐞 DEBUG 7\nTelegram send failed\nLikely cause:\n"
-                f"- BUTTON_DATA too long\n"
-                f"- callback_data invalid\n"
-                f"- keyboard malformed\n"
-                f"- HTML parse error\n\n"
-                f"ERROR:\n<code>{str(e)}</code>",
-                parse_mode="HTML"
-            )
-
-            bot.answer_callback_query(c.id, "❌ Send message failed")
-            return
-
-        bot.answer_callback_query(c.id)
-
-        # DEBUG 8
-        bot.send_message(uid, "🐞 DEBUG 8\nCallback answered successfully")
-
-        return
 # DUKKAN HANDLERS SUN GAMA ↑↑↑
 
 
