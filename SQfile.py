@@ -2021,7 +2021,6 @@ def reply_menu(uid=None):
     all_films_label = "🎬 All Films"
     my_orders_label = "🛒 MY=ORDERS"
 
-    invite_label  = tr_user(uid, "btn_invite", default="📨 Invite Friends")
     cart_label    = tr_user(uid, "btn_cart", default="🧾 Cart")
     support_label = tr_user(uid, "btn_support", default="🆘 Support Help")
     channel_label = tr_user(uid, "btn_channel", default="📺 Our Channel")
@@ -2038,19 +2037,19 @@ def reply_menu(uid=None):
         InlineKeyboardButton(my_orders_label, callback_data="myorders_new")
     )
 
-    # ===== ROW 2 =====
-    kb.add(
-        InlineKeyboardButton(invite_label, callback_data="invite")
-    )
-
     if uid in ADMINS:
 
         kb.add(InlineKeyboardButton("☢SERIES&ADD🎬", callback_data="groupitems"))
-        kb.add(InlineKeyboardButton("🧹 ERASER", callback_data="eraser_menu"))
-        kb.add(InlineKeyboardButton("📂WEAK UPDATE", callback_data="weak_update"))
 
     kb.add(InlineKeyboardButton(cart_label, callback_data="viewcart"))
-    kb.add(InlineKeyboardButton(support_label, callback_data="support_help"))
+
+    # ✅ Support Help yanzu URL ne kamar Our Channel
+    kb.add(
+        InlineKeyboardButton(
+            support_label,
+            url=f"https://t.me/{CHANNEL.lstrip('@')}"
+        )
+    )
 
     # Add a full-width Our Channel row (as in original layout screenshot)
     kb.add(InlineKeyboardButton(channel_label, url=f"https://t.me/{CHANNEL.lstrip('@')}"))
@@ -2112,7 +2111,6 @@ def movie_buttons_inline(mid, user_id=None):
 
     return kb
 #END
-
 # ========== START ==========
 @bot.message_handler(commands=["start"])
 def start(message):
