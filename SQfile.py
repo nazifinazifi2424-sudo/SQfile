@@ -3951,7 +3951,7 @@ def buyd_deeplink_handler(msg):
         last_name = msg.from_user.last_name or ""
         full_name = f"{first_name} {last_name}".strip()
 
-        # ================= NEW FORMAT =================
+   # ================= NEW FORMAT =================
         bot.send_message(
             uid,
             f"""🧾 <b>Order Created</b>
@@ -3966,6 +3966,8 @@ def buyd_deeplink_handler(msg):
 
 🆔 Order ID:
 <code>{order_id}</code>
+
+Danna Pay now domin biya 👇👇
 """,
             parse_mode="HTML",
             reply_markup=kb
@@ -3976,7 +3978,7 @@ def buyd_deeplink_handler(msg):
 
     finally:
         cur.close()
-        conn.close()
+        conn.close()    
 
 
 # ======= GROUPITEM (IDS + GROUP_KEY SUPPORT | UPDATED FORMAT) =========
@@ -4161,7 +4163,7 @@ def groupitem_deeplink_handler(msg):
     last_name = msg.from_user.last_name or ""
     full_name = f"{first_name} {last_name}".strip()
 
-    # ================= NEW FORMAT MESSAGE =================
+ # ================= NEW FORMAT MESSAGE =================
     bot.send_message(
         uid,
         f"""🧾 <b>Order Created</b>
@@ -4176,15 +4178,15 @@ def groupitem_deeplink_handler(msg):
 
 🆔 Order ID:
 <code>{order_id}</code>
+
+Danna Pay now domin biya 👇👇
 """,
         parse_mode="HTML",
         reply_markup=kb
     )
 
     cur.close()
-    conn.close()
-
-
+    conn.close()   
 
 
 
@@ -5517,7 +5519,7 @@ def handle_callback(c):
 # ======================= MAIN CALLBACK HANDLER =======================
 
 
-  
+
 
 
 
@@ -5607,7 +5609,7 @@ def handle_callback(c):
             )
 
         return
-    
+
 
 
     from psycopg2.extras import RealDictCursor
