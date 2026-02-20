@@ -3465,7 +3465,6 @@ def handle_forwarded_post(m):
     except Exception as e:
         print("forward handler error:", e)
 
-
 # ========== show_cart ==========
 def show_cart(chat_id, user_id):
     rows = get_cart(user_id)
@@ -3505,19 +3504,20 @@ def show_cart(chat_id, user_id):
     total = 0
 
     # ===============================
-    # GROUP BY group_key
+    # GROUP BY group_key (SAFE)
     # ===============================
     grouped = {}
 
     for movie_id, title, price, file_id, group_key in rows:
 
-        key = group_key or f"single_{movie_id}"
+        key = group_key if group_key else f"single_{movie_id}"
 
         if key not in grouped:
             grouped[key] = {
                 "ids": [],
                 "title": title or "📦 Group / Series Item",
-                "price": int(price or 0)
+                "price": int(price or 0),
+                "group_key": group_key
             }
 
         grouped[key]["ids"].append(movie_id)
@@ -3526,9 +3526,10 @@ def show_cart(chat_id, user_id):
     # DISPLAY ITEMS
     # ===============================
     for key, g in grouped.items():
-        ids = g["ids"]
+        ids = list(set(g["ids"]))  # prevent duplicates
         title = g["title"]
         price = g["price"]
+        group_key = g["group_key"]
 
         total += price
 
@@ -3537,12 +3538,18 @@ def show_cart(chat_id, user_id):
         else:
             text_lines.append(f"• {title} — ₦{price}")
 
-        ids_str = "_".join(str(i) for i in ids)
+        # ===============================
+        # REMOVE SUPPORT: GROUPKEY OR IDS
+        # ===============================
+        if group_key:
+            remove_value = group_key
+        else:
+            remove_value = "_".join(str(i) for i in ids)
 
         kb.add(
             InlineKeyboardButton(
                 f"❌ Remove: {title[:18]}",
-                callback_data=f"removecart:{ids_str}"
+                callback_data=f"removecart:{remove_value}"
             )
         )
 
@@ -3586,8 +3593,6 @@ def show_cart(chat_id, user_id):
     )
 
     cart_sessions[str(user_id)] = msg.message_id
-
-
 def send_weekly_list(msg):
     conn = get_conn()
     cur = conn.cursor()
