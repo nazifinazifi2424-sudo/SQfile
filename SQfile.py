@@ -313,7 +313,7 @@ from datetime import datetime, timedelta
 import urllib.parse
 admin_states = {}
 # --- Admins configuration ---
-ADMINS = [6210912739, 5009954635] 
+ADMINS = [8537505191, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
@@ -324,12 +324,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
-ADMIN_ID = 6210912739
+ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Aslamtv2bot"
-CHANNEL = "@Aslammovieschannel"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 # Flutterwave
 FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY")
@@ -340,7 +340,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # === PAYMENTS / STORAGE ===
 PAYMENT_NOTIFY_GROUP = -1003553575069
-STORAGE_CHANNEL = -1003478646839
+STORAGE_CHANNEL = -1003794258511
 SEND_ADMIN_PAYMENT_NOTIF = False
 
 FLW_BASE = "https://api.flutterwave.com/v3"
