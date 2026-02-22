@@ -4735,6 +4735,12 @@ def pay_all_unpaid(call):
         if total_amount <= 0:
             return
 
+        # ============================
+        # ➕ NEW ADDITION 1
+        # ============================
+        film_titles = list({r["title"] for r in rows})
+        films_count = len(rows)
+
         # ==========================================
         # USE EXISTING UNPAID ORDER
         # ==========================================
@@ -4794,6 +4800,11 @@ def pay_all_unpaid(call):
 
 👤 <b>Name:</b> {full_name}
 
+🎬 <b>You will buy this film:</b>
+{", ".join(film_titles)}
+
+📦 <b>Films:</b> {films_count}
+
 📦 <b>Groups:</b> {len(groups)}
 💵 <b>Total:</b> ₦{int(total_amount)}
 
@@ -4812,9 +4823,6 @@ Danna Pay now domin biya 👇👇
     finally:
         cur.close()
         conn.close()
-
-
-
 
 import uuid
 from datetime import datetime
