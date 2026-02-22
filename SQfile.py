@@ -4629,7 +4629,6 @@ def admin_sendall_cmd(m):
     cur.close()
     conn.close()
 
-
 from psycopg2.extras import RealDictCursor
 import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -4655,7 +4654,7 @@ def pay_all_unpaid(call):
     try:
 
         # ==========================================
-        # FETCH ITEMS (DEFAULT OR FILTERED)
+        # FETCH ITEMS
         # ==========================================
         base_query = """
             SELECT
@@ -4673,7 +4672,6 @@ def pay_all_unpaid(call):
 
         params = [user_id]
 
-        # ===== IF IDS =====
         if raw and raw.replace("_", ",").replace(",", "").isdigit():
             ids = [int(x) for x in raw.replace("_", ",").split(",") if x.strip().isdigit()]
             if not ids:
@@ -4681,7 +4679,6 @@ def pay_all_unpaid(call):
             base_query += " AND oi.item_id = ANY(%s)"
             params.append(ids)
 
-        # ===== IF GROUP_KEY =====
         elif raw:
             base_query += " AND i.group_key=%s"
             params.append(raw)
@@ -4704,27 +4701,42 @@ def pay_all_unpaid(call):
             return
 
         # ==========================================
-        # REMOVE ALREADY PAID ITEMS
+        # REMOVE OWNED + SHOW WARNING
         # ==========================================
-        valid_items = []
+        clean_rows = []
+        owned_detected = False
 
         for r in rows:
             cur.execute(
                 """
-                SELECT 1
-                FROM orders o
-                JOIN order_items oi ON oi.order_id=o.id
-                WHERE o.user_id=%s
-                AND o.paid=1
-                AND oi.item_id=%s
+                SELECT 1 FROM user_movies
+                WHERE user_id=%s AND item_id=%s
                 LIMIT 1
                 """,
                 (user_id, r["item_id"])
             )
-            if not cur.fetchone():
-                valid_items.append(r)
+            if cur.fetchone():
+                owned_detected = True
+            else:
+                clean_rows.append(r)
 
-        rows = valid_items
+        rows = clean_rows
+
+        # ===== IF EVERYTHING ALREADY OWNED =====
+        if not rows and owned_detected:
+
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))
+
+            bot.send_message(
+                user_id,
+                """✅ <b>Ka riga ka taba siyan wannan fim.</b>
+
+Zaka iya duba shi ka sake karba in kana bukata anan👇👇""",
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            return
 
         if not rows:
             return
@@ -4735,8 +4747,8 @@ def pay_all_unpaid(call):
         groups = {}
 
         for r in rows:
-            price = int(r["price"] or 0)
             key = r["group_key"] or f"single_{r['item_id']}"
+            price = int(r["price"] or 0)
 
             if key not in groups:
                 groups[key] = {
@@ -4751,14 +4763,11 @@ def pay_all_unpaid(call):
         if total_amount <= 0:
             return
 
-        # ============================
-        # ➕ NEW ADDITION 1
-        # ============================
         film_titles = list({r["title"] for r in rows})
         films_count = len(rows)
 
         # ==========================================
-        # USE EXISTING UNPAID ORDER
+        # EXISTING UNPAID ORDER
         # ==========================================
         cur.execute(
             """
@@ -4781,11 +4790,9 @@ def pay_all_unpaid(call):
             "UPDATE orders SET amount=%s WHERE id=%s",
             (total_amount, order_id)
         )
+
         conn.commit()
 
-        # ==========================================
-        # PAYMENT (PAYSTACK VERSION)
-        # ==========================================
         pay_url = create_paystack_payment(
             user_id,
             order_id,
@@ -4796,9 +4803,6 @@ def pay_all_unpaid(call):
         if not pay_url:
             return
 
-        # ==========================================
-        # BUTTONS
-        # ==========================================
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
@@ -4807,9 +4811,6 @@ def pay_all_unpaid(call):
         last_name = call.from_user.last_name or ""
         full_name = f"{first_name} {last_name}".strip()
 
-        # ==========================================
-        # MESSAGE FORMAT
-        # ==========================================
         bot.send_message(
             user_id,
             f"""🧾 <b>Pay All Orders</b>
@@ -4820,15 +4821,13 @@ def pay_all_unpaid(call):
 {", ".join(film_titles)}
 
 📦 <b>Films:</b> {films_count}
-
 📦 <b>Groups:</b> {len(groups)}
 💵 <b>Total:</b> ₦{int(total_amount)}
 
 🆔 <b>Order ID:</b>
 <code>{order_id}</code>
 
-Danna Pay now domin biya 👇👇
-""",
+Danna Pay now domin biya 👇👇""",
             parse_mode="HTML",
             reply_markup=kb
         )
