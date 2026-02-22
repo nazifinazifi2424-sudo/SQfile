@@ -3688,8 +3688,19 @@ def build_unpaid_orders_view(uid, page):
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT COUNT(*) FROM orders WHERE user_id=%s AND paid=0",
-        (uid,)
+        """
+        SELECT COUNT(*) 
+        FROM orders o
+        WHERE o.user_id=%s 
+        AND o.paid=0
+        AND NOT EXISTS (
+            SELECT 1
+            FROM user_movies um
+            WHERE um.user_id=%s
+            AND um.order_id = o.id
+        )
+        """,
+        (uid, uid)
     )
     total = cur.fetchone()[0]
 
@@ -3700,7 +3711,7 @@ def build_unpaid_orders_view(uid, page):
         conn.close()
         return "🧾 <b>Babu unpaid order.</b>", kb
 
-    # ✅ GYARA KAƊAI: TOTAL DIN YANA GANE GROUP_KEY
+    # ✅ TOTAL DIN YANA GANE GROUP_KEY + YA CIRE WANDA AKA RIGA AKA SIYA
     cur.execute(
         """
         SELECT COALESCE(SUM(
@@ -3718,11 +3729,18 @@ def build_unpaid_orders_view(uid, page):
             FROM orders o
             JOIN order_items oi ON oi.order_id = o.id
             LEFT JOIN items i ON i.id = oi.item_id
-            WHERE o.user_id=%s AND o.paid=0
+            WHERE o.user_id=%s 
+            AND o.paid=0
+            AND NOT EXISTS (
+                SELECT 1
+                FROM user_movies um
+                WHERE um.user_id=%s
+                AND um.order_id = o.id
+            )
             GROUP BY o.id
         ) sub
         """,
-        (uid,)
+        (uid, uid)
     )
     total_amount = cur.fetchone()[0]
 
@@ -3739,12 +3757,19 @@ def build_unpaid_orders_view(uid, page):
         FROM orders o
         JOIN order_items oi ON oi.order_id = o.id
         LEFT JOIN items i ON i.id = oi.item_id
-        WHERE o.user_id=%s AND o.paid=0
+        WHERE o.user_id=%s 
+        AND o.paid=0
+        AND NOT EXISTS (
+            SELECT 1
+            FROM user_movies um
+            WHERE um.user_id=%s
+            AND um.order_id = o.id
+        )
         GROUP BY o.id
         ORDER BY o.id DESC
         LIMIT %s OFFSET %s
         """,
-        (uid, ORDERS_PER_PAGE, offset)
+        (uid, uid, ORDERS_PER_PAGE, offset)
     )
     rows = cur.fetchall()
 
@@ -3795,6 +3820,7 @@ def build_unpaid_orders_view(uid, page):
     conn.close()
 
     return text, kb
+
 
 
 def build_paid_orders_view(uid, page):
