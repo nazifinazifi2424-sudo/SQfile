@@ -3687,17 +3687,19 @@ def build_unpaid_orders_view(uid, page):
     conn = get_conn()
     cur = conn.cursor()
 
+    # COUNT REAL UNPAID ORDERS (per item filter)
     cur.execute(
         """
-        SELECT COUNT(*) 
+        SELECT COUNT(DISTINCT o.id)
         FROM orders o
-        WHERE o.user_id=%s 
+        JOIN order_items oi ON oi.order_id = o.id
+        WHERE o.user_id=%s
         AND o.paid=0
         AND NOT EXISTS (
             SELECT 1
             FROM user_movies um
             WHERE um.user_id=%s
-            AND um.order_id = o.id
+            AND um.item_id = oi.item_id
         )
         """,
         (uid, uid)
@@ -3711,7 +3713,7 @@ def build_unpaid_orders_view(uid, page):
         conn.close()
         return "🧾 <b>Babu unpaid order.</b>", kb
 
-    # ✅ TOTAL DIN YANA GANE GROUP_KEY + YA CIRE WANDA AKA RIGA AKA SIYA
+    # TOTAL AMOUNT (group aware + per item filter)
     cur.execute(
         """
         SELECT COALESCE(SUM(
@@ -3728,14 +3730,14 @@ def build_unpaid_orders_view(uid, page):
                 MIN(oi.price) AS base_price
             FROM orders o
             JOIN order_items oi ON oi.order_id = o.id
-            LEFT JOIN items i ON i.id = oi.item_id
-            WHERE o.user_id=%s 
+            JOIN items i ON i.id = oi.item_id
+            WHERE o.user_id=%s
             AND o.paid=0
             AND NOT EXISTS (
                 SELECT 1
                 FROM user_movies um
                 WHERE um.user_id=%s
-                AND um.order_id = o.id
+                AND um.item_id = oi.item_id
             )
             GROUP BY o.id
         ) sub
@@ -3752,18 +3754,17 @@ def build_unpaid_orders_view(uid, page):
             SUM(oi.price) AS amount,
             MAX(i.title) AS title,
             COUNT(DISTINCT i.group_key) AS gk_count,
-            MIN(oi.price) AS base_price,
-            MIN(i.group_key) AS group_key
+            MIN(oi.price) AS base_price
         FROM orders o
         JOIN order_items oi ON oi.order_id = o.id
-        LEFT JOIN items i ON i.id = oi.item_id
-        WHERE o.user_id=%s 
+        JOIN items i ON i.id = oi.item_id
+        WHERE o.user_id=%s
         AND o.paid=0
         AND NOT EXISTS (
             SELECT 1
             FROM user_movies um
             WHERE um.user_id=%s
-            AND um.order_id = o.id
+            AND um.item_id = oi.item_id
         )
         GROUP BY o.id
         ORDER BY o.id DESC
@@ -3776,15 +3777,13 @@ def build_unpaid_orders_view(uid, page):
     text = f"🧾 <b>Your unpaid orders ({total})</b>\n\n"
     kb = InlineKeyboardMarkup()
 
-    for oid, count, amount, title, gk_count, base_price, group_key in rows:
+    for oid, count, amount, title, gk_count, base_price in rows:
+
         if count > 1 and gk_count == 1:
             name = f"{title} (EP {count})"
             show_amount = base_price
         else:
-            if count == 1:
-                name = title or "Single item"
-            else:
-                name = f"Group order ({count} items)"
+            name = title if count == 1 else f"Group order ({count} items)"
             show_amount = amount
 
         short = name[:27] + "…" if len(name) > 27 else name
@@ -3799,14 +3798,6 @@ def build_unpaid_orders_view(uid, page):
 
     text += f"\n<b>Total balance:</b> ₦{int(total_amount)}"
 
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Back", callback_data=f"unpaid_prev:{page-1}"))
-    if offset + ORDERS_PER_PAGE < total:
-        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"unpaid_next:{page+1}"))
-    if nav:
-        kb.row(*nav)
-
     kb.row(
         InlineKeyboardButton("💳 Pay all", callback_data="payall:"),
         InlineKeyboardButton("📦 Paid orders", callback_data="paid_orders")
@@ -3820,7 +3811,6 @@ def build_unpaid_orders_view(uid, page):
     conn.close()
 
     return text, kb
-
 
 
 def build_paid_orders_view(uid, page):
