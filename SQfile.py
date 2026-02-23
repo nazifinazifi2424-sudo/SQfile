@@ -712,164 +712,168 @@ def telegram_webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-# ================= ALL FILMS (GROUP AWARE) ============
-# ======================================================
-PER_PAGE = 5
-SEARCH_PAGE_SIZE = 5
-
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import re
-
-
-# ================== NORMALIZER ==================
-def _norm(txt):
-    if not txt:
-        return ""
-    txt = str(txt).lower()
-    txt = re.sub(r"\s+", " ", txt)
-    return txt.strip()
-
-
-# ---------- PAGINATION ----------
-def paginate(items, per_page):
-    pages = []
-    for i in range(0, len(items), per_page):
-        pages.append(items[i:i + per_page])
-    return pages
-
-
-# ---------- FETCH ALL ITEMS ----------
-def _get_all_movies():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, title, price, file_name, created_at, group_key
-        FROM items
-        ORDER BY created_at DESC
-    """)
-
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-    return rows
-
-
-# ---------- BUILD GROUP-AWARE ROWS ----------
-
-def build_allfilms_rows():
-    groups = {}
-
-    for mid, title, price, fname, created, gk in _get_all_movies():
-        key = gk or f"single_{mid}"
-
-        if key not in groups:
-            groups[key] = {
-                "ids": [],
-                "title": title,
-                "price": price
-            }
-
-        groups[key]["ids"].append(mid)
-
-    rows = []
-    for g in groups.values():
-        rows.append((g["ids"], g["title"], g["price"]))
-
-    return rows
-
-
-# ---------- SEND / EDIT ALL FILMS PAGE ----------
-def send_allfilms_page(uid, page_index):
-    sess = allfilms_sessions.get(uid)
-
-    # 🛡️ SAFETY CHECK
-    if not sess or "pages" not in sess:
-        return
-
-    pages = sess["pages"]
-    if page_index < 0 or page_index >= len(pages):
-        return
-
-    sess["index"] = page_index
-    rows = pages[page_index]
-
-    # ===== TEXT =====
-    text = "<b>🎬 All Films</b>\n\n"
-    for ids, title, price in rows:
-        safe_title = str(title).replace("<", "").replace(">", "")
-        text += f"🎬 <b>{safe_title}</b>\n💵 ₦{price}\n\n"
-
-    # ===== BUTTONS =====
-    kb = InlineKeyboardMarkup(row_width=2)
-
-    for ids, title, price in rows:
-        ids_str = "_".join(str(i) for i in ids)
-        kb.add(
-            InlineKeyboardButton(
-                f"🛒 Add to Cart — {title}",
-                callback_data=f"addcartdm:{ids_str}"
-            ),
-            InlineKeyboardButton(
-                f"💳 Buy Now — {title}",
-                callback_data=f"buygroup:{ids_str}"
-            )
-        )
-
-    # ===== NAVIGATION =====
-    nav = []
-    if page_index > 0:
-        nav.append(InlineKeyboardButton("◀️ Back", callback_data="allfilms_prev"))
-    if page_index < len(pages) - 1:
-        nav.append(InlineKeyboardButton("Next ▶️", callback_data="allfilms_next"))
-    if nav:
-        kb.row(*nav)
-
-    # ===== EXTRA =====
-    kb.add(InlineKeyboardButton("🔍 SEARCH MOVIE", callback_data="search_movie"))
-    kb.add(
-        InlineKeyboardButton("⤴️ KOMA FARKO", callback_data="go_home"),
-        InlineKeyboardButton("📺 Our Channel", url=f"https://t.me/{CHANNEL.lstrip('@')}")
-    )
-
-    # ===== EDIT OR SEND =====
-    try:
-        if sess.get("last_msg"):
-            bot.edit_message_text(
-                text,
-                chat_id=uid,
-                message_id=sess["last_msg"],
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-        else:
-            msg = bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
-            sess["last_msg"] = msg.message_id
-    except:
-        pass
-
-    allfilms_sessions[uid] = sess
-
-
-# ---------- START ALL FILMS ----------
-def start_allfilms(uid):
-    rows = build_allfilms_rows()
-    if not rows:
-        bot.send_message(uid, "❌ Babu fim a DB")
-        return
-
-    pages = paginate(rows, PER_PAGE)
-
-    allfilms_sessions[uid] = {
-        "pages": pages,
-        "index": 0,
-        "last_msg": None
-    }
-
+# ================= ALL FILMS (GROUP AWARE) ============  
+# ======================================================  
+PER_PAGE = 5  
+SEARCH_PAGE_SIZE = 5  
+  
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton  
+import re  
+  
+  
+# ================== NORMALIZER ==================  
+def _norm(txt):  
+    if not txt:  
+        return ""  
+    txt = str(txt).lower()  
+    txt = re.sub(r"\s+", " ", txt)  
+    return txt.strip()  
+  
+  
+# ---------- PAGINATION ----------  
+def paginate(items, per_page):  
+    pages = []  
+    for i in range(0, len(items), per_page):  
+        pages.append(items[i:i + per_page])  
+    return pages  
+  
+  
+# ---------- FETCH ALL ITEMS ----------  
+def _get_all_movies():  
+    conn = get_conn()  
+    cur = conn.cursor()  
+  
+    cur.execute("""  
+        SELECT id, title, price, file_name, created_at, group_key  
+        FROM items  
+        ORDER BY created_at DESC  
+    """)  
+  
+    rows = cur.fetchall()  
+  
+    cur.close()  
+    conn.close()  
+    return rows  
+  
+  
+# ---------- BUILD GROUP-AWARE ROWS ----------  
+  
+def build_allfilms_rows():  
+    groups = {}  
+  
+    for mid, title, price, fname, created, gk in _get_all_movies():  
+        key = gk or f"single_{mid}"  
+  
+        if key not in groups:  
+            groups[key] = {  
+                "ids": [],  
+                "title": title,  
+                "price": price,  
+                "group_key": gk  
+            }  
+  
+        groups[key]["ids"].append(mid)  
+  
+    rows = []  
+    for g in groups.values():  
+        rows.append((g["ids"], g["title"], g["price"], g["group_key"]))  
+  
+    return rows  
+  
+  
+# ---------- SEND / EDIT ALL FILMS PAGE ----------  
+def send_allfilms_page(uid, page_index):  
+    sess = allfilms_sessions.get(uid)  
+  
+    # 🛡️ SAFETY CHECK  
+    if not sess or "pages" not in sess:  
+        return  
+  
+    pages = sess["pages"]  
+    if page_index < 0 or page_index >= len(pages):  
+        return  
+  
+    sess["index"] = page_index  
+    rows = pages[page_index]  
+  
+    # ===== TEXT =====  
+    text = "<b>🎬 All Films</b>\n\n"  
+    for ids, title, price, gk in rows:  
+        safe_title = str(title).replace("<", "").replace(">", "")  
+        text += f"🎬 <b>{safe_title}</b>\n💵 ₦{price}\n\n"  
+  
+    # ===== BUTTONS =====  
+    kb = InlineKeyboardMarkup(row_width=2)  
+  
+    for ids, title, price, gk in rows:  
+        # ✅ SMART CALLBACK DATA (ID or GROUPKEY)  
+        if gk and len(ids) > 1:  
+            ids_str = gk  
+        else:  
+            ids_str = "_".join(str(i) for i in ids)  
+  
+        kb.add(  
+            InlineKeyboardButton(  
+                f"🛒 Add to Cart — {title}",  
+                callback_data=f"addcartdm:{ids_str}"  
+            ),  
+            InlineKeyboardButton(  
+                f"💳 Buy Now — {title}",  
+                callback_data=f"buygroup:{ids_str}"  
+            )  
+        )  
+  
+    # ===== NAVIGATION =====  
+    nav = []  
+    if page_index > 0:  
+        nav.append(InlineKeyboardButton("◀️ Back", callback_data="allfilms_prev"))  
+    if page_index < len(pages) - 1:  
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data="allfilms_next"))  
+    if nav:  
+        kb.row(*nav)  
+  
+    # ===== EXTRA =====  
+    kb.add(InlineKeyboardButton("🔍 SEARCH MOVIE", callback_data="search_movie"))  
+    kb.add(  
+        InlineKeyboardButton("⤴️ KOMA FARKO", callback_data="go_home"),  
+        InlineKeyboardButton("📺 Our Channel", url=f"https://t.me/{CHANNEL.lstrip('@')}")  
+    )  
+  
+    # ===== EDIT OR SEND =====  
+    try:  
+        if sess.get("last_msg"):  
+            bot.edit_message_text(  
+                text,  
+                chat_id=uid,  
+                message_id=sess["last_msg"],  
+                reply_markup=kb,  
+                parse_mode="HTML"  
+            )  
+        else:  
+            msg = bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")  
+            sess["last_msg"] = msg.message_id  
+    except:  
+        pass  
+  
+    allfilms_sessions[uid] = sess  
+  
+  
+# ---------- START ALL FILMS ----------  
+def start_allfilms(uid):  
+    rows = build_allfilms_rows()  
+    if not rows:  
+        bot.send_message(uid, "❌ Babu fim a DB")  
+        return  
+  
+    pages = paginate(rows, PER_PAGE)  
+  
+    allfilms_sessions[uid] = {  
+        "pages": pages,  
+        "index": 0,  
+        "last_msg": None  
+    }  
+  
     send_allfilms_page(uid, 0)
-
-
 import time
 from telebot.apihelper import ApiTelegramException
 
