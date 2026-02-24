@@ -5863,10 +5863,10 @@ Danna Pay now domin biya 👇👇
         return  
 
 
+# ==================================================  
+    # BUY / BUYDM / BUYGROUP  ✅ (Support IDS + GROUP_KEY)  
     # ==================================================  
-    # BUY / BUYDM  ✅ (Support IDS + GROUP_KEY)  
-    # ==================================================  
-    if data.startswith("buy:") or data.startswith("buydm:"):  
+    if data.startswith("buy:") or data.startswith("buydm:") or data.startswith("buygroup:"):  
 
         raw = data.split(":", 1)[1].strip()  
 
@@ -5931,23 +5931,26 @@ Danna Pay now domin biya 👇👇
             ids_clean = [i["id"] for i in items]  
             placeholders2 = ",".join(["%s"] * len(ids_clean))  
 
+            # ================= FULL OWNERSHIP PROTECTION =================
             cur.execute(  
                 f"""  
-                SELECT 1 FROM user_movies  
+                SELECT COUNT(DISTINCT item_id) as total_owned  
+                FROM user_movies  
                 WHERE user_id=%s AND item_id IN ({placeholders2})  
-                LIMIT 1  
                 """,  
                 (uid, *ids_clean)  
             )  
 
-            if cur.fetchone():  
+            owned_count = cur.fetchone()["total_owned"]  
+
+            if owned_count == len(ids_clean):  
 
                 kb = InlineKeyboardMarkup()  
-                kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))  
+                kb.add(InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies"))  
 
                 bot.send_message(  
                     uid,  
-                    "✅ <b>Ka riga ka mallaki wannan fim.</b>",  
+                    "✅ <b>Ka riga ka mallaki wannan fim.</b>\n\nZaka iya sake karɓarsa a 📽PAID MOVIES.",  
                     parse_mode="HTML",  
                     reply_markup=kb  
                 )  
@@ -5965,6 +5968,7 @@ Danna Pay now domin biya 👇👇
                 bot.answer_callback_query(c.id, "❌ Farashi bai dace ba.")  
                 return  
 
+            # ================= DUPLICATE UNPAID ORDER PROTECTION =================
             cur.execute(  
                 f"""  
                 SELECT o.id  
@@ -6044,7 +6048,6 @@ Danna Pay now domin biya 👇👇
 
         bot.answer_callback_query(c.id)  
         return
-    
 
     # ================= MY MOVIES =================
     if data == "my_movies":
