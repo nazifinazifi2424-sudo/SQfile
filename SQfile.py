@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS items (
 )
 """)
 
+
 # -------- ORDERS --------
 cur.execute("""
 CREATE TABLE IF NOT EXISTS orders (
@@ -85,9 +86,12 @@ CREATE TABLE IF NOT EXISTS orders (
     amount INTEGER,
     paid INTEGER DEFAULT 0,
     pay_ref TEXT,
+    message_id BIGINT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
+
+
 
 # -------- ORDER ITEMS --------
 cur.execute("""
@@ -340,7 +344,7 @@ import hashlib
 
 admin_states = {}
 # --- Admins configuration ---
-ADMINS = [8537505191, 5009954635] 
+ADMINS = [6210912739, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
@@ -351,12 +355,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
-ADMIN_ID = 8537505191
+ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@Danchirinps"
+BOT_USERNAME = "Aslamtv2bot"
+CHANNEL = "@Aslammovieschannel"
 
 
 # ========= DATABASE CONFIG =========
@@ -377,7 +381,7 @@ PAYSTACK_BASE = "https://api.paystack.co"
 
 # === PAYMENTS / STORAGE ===
 PAYMENT_NOTIFY_GROUP = -1003553575069
-STORAGE_CHANNEL = -1003794258511
+STORAGE_CHANNEL = -1003478646839
 SEND_ADMIN_PAYMENT_NOTIF = False
 ADMIN_USERNAME = "Aslamtv1"
 
@@ -508,8 +512,6 @@ def send_feedback_prompt(user_id, order_id):
     except Exception as e:
         print("FEEDBACK SEND ERROR:", e)
 
-
-
 @app.route("/webhook", methods=["POST"])
 def flutterwave_webhook():
 
@@ -558,7 +560,7 @@ def flutterwave_webhook():
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT user_id, amount, paid FROM orders WHERE id=%s",
+            "SELECT user_id, amount, paid, message_id FROM orders WHERE id=%s",
             (order_id,)
         )
         row = cur.fetchone()
@@ -568,7 +570,7 @@ def flutterwave_webhook():
             conn.close()
             return "Order not found", 200
 
-        user_id, expected_amount, paid = row
+        user_id, expected_amount, paid, message_id = row
 
         if paid == 1:
             cur.close()
@@ -656,9 +658,7 @@ def flutterwave_webhook():
             )
         )
 
-        bot.send_message(
-            user_id,
-            f"""Hi {full_name} 👋
+        confirmation_text = f"""Hi {full_name} 👋
 
 🎉 <b>An tabbatar da biyanka Alhamdulillah✅.</b>
 
@@ -673,10 +673,32 @@ def flutterwave_webhook():
 
 🙏Mun gode da amincewa da mu 🤍  
 Danna <b>DOWNLOAD ITEMS</b> domin karɓa yanzu👇👇👇.
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+"""
+
+        # ===== EDIT OLD MESSAGE INSTEAD OF NEW SEND =====
+        if message_id:
+            try:
+                bot.edit_message_text(
+                    confirmation_text,
+                    chat_id=user_id,
+                    message_id=message_id,
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+            except Exception:
+                bot.send_message(
+                    user_id,
+                    confirmation_text,
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+        else:
+            bot.send_message(
+                user_id,
+                confirmation_text,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
 
         # ================= ADMIN GROUP =================
         if PAYMENT_NOTIFY_GROUP:
@@ -702,6 +724,8 @@ Item names:
 
     except Exception:
         return "ERROR", 500
+
+
 
 
 @app.route("/telegram", methods=["POST"])
@@ -1479,11 +1503,15 @@ def cancel_order_handler(c):
     if not order:
         cur.close()
         conn.close()
-        bot.send_message(
-            uid,
-            "❌ <b>Ba a sami order ba ko kuma an riga an biya shi.</b>",
-            parse_mode="HTML"
-        )
+        try:
+            bot.edit_message_text(
+                "❌ <b>Ba a sami order ba ko kuma an riga an biya shi.</b>",
+                chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                parse_mode="HTML"
+            )
+        except:
+            pass
         return
 
     # 🧹 Goge order_items
@@ -1502,11 +1530,21 @@ def cancel_order_handler(c):
     cur.close()
     conn.close()
 
-    bot.send_message(
-        uid,
-        "❌ <b>An soke wannan order ɗin.</b>",
-        parse_mode="HTML"
-    )
+    # ✅ EDIT MESSAGE MAIMAKON SABON SAKO
+    try:
+        bot.edit_message_text(
+            "❌ <b>An soke wannan order ɗin.</b>",
+            chat_id=c.message.chat.id,
+            message_id=c.message.message_id,
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
+
+
+# ================== END RUKUNI B ==================
+
 
 # --- Added callback handler for in-bot "View All Movies" buttons ---
 @bot.callback_query_handler(func=lambda c: c.data in ("view_all_movies","viewall"))
@@ -4100,7 +4138,6 @@ Danna Pay now domin biya 👇👇
         conn.close()
 
 
-
 # ======= GROUPITEM (IDS + GROUP_KEY SUPPORT | UPDATED FORMAT) =========
 from psycopg2.extras import RealDictCursor
 import uuid
@@ -4267,7 +4304,7 @@ def groupitem_deeplink_handler(msg):
             uid,
             order_id,
             total,
-            items[0]["title"]  # same format as before
+            items[0]["title"]
         )
     except Exception:
         cur.close()
@@ -4289,7 +4326,7 @@ def groupitem_deeplink_handler(msg):
     full_name = f"{first_name} {last_name}".strip()
 
     # ================= NEW FORMAT MESSAGE =================
-    bot.send_message(
+    sent_msg = bot.send_message(
         uid,
         f"""🧾 <b>Order Created</b>
 
@@ -4309,6 +4346,16 @@ Danna Pay now domin biya 👇👇
         parse_mode="HTML",
         reply_markup=kb
     )
+
+    # ================= SAVE MESSAGE ID =================
+    try:
+        cur.execute(
+            "UPDATE orders SET message_id=%s WHERE id=%s",
+            (sent_msg.message_id, order_id)
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
     cur.close()
     conn.close()
