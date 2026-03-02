@@ -29,6 +29,66 @@ def get_conn():
 conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
+
+# =============================
+# ENSURE VIP MEMBERS TABLE
+# =============================
+def ensure_vip_members_table():
+    try:
+        # 1️⃣ Create table if not exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vip_members (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL
+            )
+        """)
+
+        # 2️⃣ Ensure order_id column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='order_id'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN order_id TEXT")
+
+        # 3️⃣ Ensure join_date column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='join_date'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+        # 4️⃣ Ensure expire_at column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='expire_at'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN expire_at TIMESTAMP")
+
+        # 5️⃣ Ensure status column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='status'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN status VARCHAR(20) DEFAULT 'active'")
+
+        print("✅ vip_members table structure verified")
+
+    except Exception as e:
+        print("❌ VIP MEMBERS MIGRATION ERROR:", e)
+
+
+# 🔥 Run at startup
+ensure_vip_members_table()
+
+
 # =============================
 # ENSURE ORDERS TABLE STRUCTURE
 # =============================
