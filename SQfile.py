@@ -1098,7 +1098,7 @@ Tap below to activate now.
 
     cur.close()
     conn.close()
- =========================================================
+ #=========================================================
 @bot.message_handler(
     func=lambda m: (
         m.text
