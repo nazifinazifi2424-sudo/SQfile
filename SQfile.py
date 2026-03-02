@@ -29,6 +29,32 @@ def get_conn():
 conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
+# =============================
+# ENSURE ORDERS TABLE STRUCTURE
+# =============================
+def ensure_orders_columns():
+    try:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='orders'
+              AND column_name='type'
+        """)
+        exists = cur.fetchone()
+
+        if not exists:
+            cur.execute("ALTER TABLE orders ADD COLUMN type VARCHAR(20) DEFAULT 'film'")
+            print("✅ Column 'type' added successfully")
+        else:
+            print("✅ Column 'type' already exists")
+
+    except Exception as e:
+        print("❌ MIGRATION ERROR:", e)
+
+
+# 🔥 Run migration once at startup
+ensure_orders_columns()
+
 
 # ======================
 # GLOBAL STATES
