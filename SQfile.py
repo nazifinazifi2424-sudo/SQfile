@@ -876,65 +876,54 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
-@bot.message_handler(commands=['link'])
-def generate_vip_link(message):
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vip_group_info(call):
 
-    if message.from_user.id != ADMIN_ID:
-        return
+    text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
 
-    try:
-        invite = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID,
-            member_limit=1
-        )
+━━━━━━━━━━━━━━━━━━
 
-        sent = bot.send_message(
-            ADMIN_ID,
-            f"""🔥 VIP LINK
+🔹 <b>Kudin Rijista:</b> ₦1,500  
+🔹 <b>Subscription:</b> Kwana 30  
+🔹 Ba za a sake biyan kudi ba har sai bayan kwanaki 30
 
-{invite.invite_link}
+━━━━━━━━━━━━━━━━━━
 
-⚠️ Link zai mutu bayan mutum 1 ya shiga."""
-        )
+🔹 Bayan ka biya, za a tura maka <b>1-Time Secure Link</b>  
+🔹 A cikin VIP ana saka <b>sabbin fina-finan India duk sati</b>
 
-        # Ajiye link domin tracking
-        active_links[invite.invite_link] = {
-            "message_id": sent.message_id
-        }
+📅 <b>Ranaku:</b> Lahadi & Laraba
 
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"Error: {e}")
+━━━━━━━━━━━━━━━━━━
 
-@bot.message_handler(content_types=['new_chat_members'])
-def track_join(message):
+🎬 Kana da damar neman:
+• Sabon fim  
+• Tsohon fim  
+• Fim na musamman  
 
-    if message.chat.id != VIP_GROUP_ID:
-        return
+Ba tare da sake biyan wani ƙarin kuɗi ba.
 
-    if message.invite_link:
+━━━━━━━━━━━━━━━━━━
 
-        used_link = message.invite_link.invite_link
+        🔒 <b>VIP SUBSCRIPTION</b>
+"""
 
-        if used_link in active_links:
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("💳 SUBSCRIBE NOW", callback_data="subvip")
+    )
 
-            # Goge sakon link daga admin chat
-            try:
-                bot.delete_message(
-                    ADMIN_ID,
-                    active_links[used_link]["message_id"]
-                )
-            except:
-                pass
+    bot.send_message(
+        call.message.chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
 
-            # Cire link daga storage
-            del active_links[used_link]
+    bot.answer_callback_query(call.id)
 
-            # Notify admin
-            user = message.new_chat_members[0]
-            bot.send_message(
-                ADMIN_ID,
-                f"✅ {user.first_name} ya shiga VIP ta secure link."
-            )
+
+
 
 
 # =========================================================
@@ -1359,6 +1348,7 @@ def mask_name(fullname):
 def tr_user(uid, key, default=""):
     return default
 
+
 #farko
 def reply_menu(uid=None):
     kb = InlineKeyboardMarkup()
@@ -1402,6 +1392,11 @@ def reply_menu(uid=None):
         )
     )
 
+    # ===== ROW 4 (VIP GROUP) =====
+    kb.add(
+        InlineKeyboardButton("💎 VIP GROUP", callback_data="vipgroup")
+    )
+
     # ===== ADMIN ONLY BUTTONS =====
     if uid in ADMINS:
         kb.add(
@@ -1410,8 +1405,6 @@ def reply_menu(uid=None):
 
     return kb
 # end
-
-
 
 
 
