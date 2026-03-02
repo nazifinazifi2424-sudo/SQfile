@@ -949,10 +949,9 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
-#@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
-def vip_group_info(call):
 
-    bot.answer_callback_query(call.id)
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vip_group_info(call):
 
     text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
 
@@ -980,7 +979,7 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
 
 ━━━━━━━━━━━━━━━━━━
 
-        🔒 <b>VIP SUBSCRIPTION</b>
+        🔒 <b>VIP SUBSCRIPTION/n/n👇👇👇👇👇👇👇</b>
 """
 
     kb = InlineKeyboardMarkup()
@@ -994,10 +993,19 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
         parse_mode="HTML",
         reply_markup=kb
     )
-# ======= VIP ORDER CREATOR (CALLBACK subvip) =========
-@bot.callback_query_handler(func=lambda c: c.data == "subvip")
+
+    bot.answer_callback_query(call.id)
+
+
+
+# ======= VIP ORDER CREATOR (CALLBACK vipgroup) =========
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
 def vipgroup_handler(c):
 
+    # 🔥 Prevent silent button
     bot.answer_callback_query(c.id)
 
     uid = c.from_user.id
@@ -1022,7 +1030,7 @@ def vipgroup_handler(c):
             (uid,)
         )
         row = cur.fetchone()
-    except:
+    except Exception:
         cur.close()
         conn.close()
         return
@@ -1040,7 +1048,7 @@ def vipgroup_handler(c):
                 (order_id, uid, VIP_PRICE)
             )
             conn.commit()
-        except:
+        except Exception:
             conn.rollback()
             cur.close()
             conn.close()
@@ -1054,7 +1062,7 @@ def vipgroup_handler(c):
             VIP_PRICE,
             "VIP Subscription"
         )
-    except:
+    except Exception:
         cur.close()
         conn.close()
         return
@@ -1075,8 +1083,9 @@ def vipgroup_handler(c):
     kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-    # ================= EDIT MESSAGE INSTEAD OF NEW =================
-    bot.edit_message_text(
+    # ================= MESSAGE FORMAT =================
+    bot.send_message(
+        uid,
         f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
 
 ({first_name}) you're one step away from joining our exclusive VIP members.
@@ -1090,14 +1099,13 @@ def vipgroup_handler(c):
 
 Tap below to activate now.
 """,
-        chat_id=c.message.chat.id,
-        message_id=c.message.message_id,
         parse_mode="HTML",
         reply_markup=kb
     )
 
     cur.close()
     conn.close()
+
  #=========================================================
 @bot.message_handler(
     func=lambda m: (
