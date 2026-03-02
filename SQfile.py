@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS orders (
     amount INTEGER,
     paid INTEGER DEFAULT 0,
     pay_ref TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    type VARCHAR(20) DEFAULT 'film'
 )
 """)
 
@@ -348,6 +349,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
+VIP_PRICE = 100
+VIP_DURATION_VALUE = 3
+VIP_DURATION_UNIT = "minutes"
 ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
@@ -502,8 +506,6 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
-
-
 @app.route("/webhook", methods=["POST"])
 def paystack_webhook():
 
@@ -551,7 +553,7 @@ def paystack_webhook():
 
     cur.execute(
         """
-        SELECT user_id, amount, paid
+        SELECT user_id, amount, paid, type
         FROM orders
         WHERE id=%s
         """,
@@ -564,7 +566,7 @@ def paystack_webhook():
         conn.close()
         return "Order not found", 200
 
-    user_id, expected_amount, paid = row
+    user_id, expected_amount, paid, order_type = row
 
     if paid == 1:
         cur.close()
@@ -575,18 +577,6 @@ def paystack_webhook():
         cur.close()
         conn.close()
         return "Wrong payment", 200
-
-    # ================= ITEMS =================
-    cur.execute(
-        "SELECT file_id FROM order_items WHERE order_id=%s",
-        (order_id,)
-    )
-    items = cur.fetchall()
-
-    if not items:
-        cur.close()
-        conn.close()
-        return "Empty order", 200
 
     # ================= MARK AS PAID =================
     cur.execute(
@@ -614,57 +604,73 @@ def paystack_webhook():
         except:
             full_name = "User"
 
-    # ================= TITLES (GROUPED - NO DUPLICATE) =================
-    cur.execute(
-        """
-        SELECT i.title, i.group_key
-        FROM order_items oi
-        JOIN items i ON i.id = oi.item_id
-        WHERE oi.order_id=%s
-        """,
-        (order_id,)
-    )
+    try:
+        chat = bot.get_chat(user_id)
+        tg_username = f"@{chat.username}" if chat.username else "unknown"
+    except:
+        tg_username = "unknown"
 
-    rows = cur.fetchall()
+    # =====================================================
+    # ================== FILM ORDER =======================
+    # =====================================================
+    if order_type == "film":
 
-    groups = {}
-
-    for title, group_key in rows:
-        key = group_key or f"single_{title}"
-
-        if key not in groups:
-            groups[key] = {
-                "title": title,
-                "count": 0
-            }
-
-        groups[key]["count"] += 1
-
-    lines = []
-    for g in groups.values():
-        if g["count"] > 1:
-            lines.append(f"{g['title']} ({g['count']})")
-        else:
-            lines.append(f"{g['title']}")
-
-    titles_text = ", ".join(lines) if lines else "N/A"
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    # ================= USER MESSAGE =================
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton(
-            "⬇️ DOWNLOAD NOW",
-            callback_data=f"deliver:{order_id}"
+        cur.execute(
+            "SELECT file_id FROM order_items WHERE order_id=%s",
+            (order_id,)
         )
-    )
+        items = cur.fetchall()
 
-    bot.send_message(
-        user_id,
-        f"""🎉 <b>Payment Successful!</b>
+        if not items:
+            conn.commit()
+            cur.close()
+            conn.close()
+            return "Empty order", 200
+
+        cur.execute(
+            """
+            SELECT i.title, i.group_key
+            FROM order_items oi
+            JOIN items i ON i.id = oi.item_id
+            WHERE oi.order_id=%s
+            """,
+            (order_id,)
+        )
+
+        rows = cur.fetchall()
+
+        groups = {}
+
+        for title, group_key in rows:
+            key = group_key or f"single_{title}"
+            if key not in groups:
+                groups[key] = {"title": title, "count": 0}
+            groups[key]["count"] += 1
+
+        lines = []
+        for g in groups.values():
+            if g["count"] > 1:
+                lines.append(f"{g['title']} ({g['count']})")
+            else:
+                lines.append(f"{g['title']}")
+
+        titles_text = ", ".join(lines) if lines else "N/A"
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "⬇️ DOWNLOAD NOW",
+                callback_data=f"deliver:{order_id}"
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            f"""🎉 <b>Payment Successful!</b>
 
 👤 <b>Name:</b> {full_name}
 🎬 <b>Items:</b> {titles_text}
@@ -674,17 +680,16 @@ def paystack_webhook():
 
 💳 <b>Amount:</b> ₦{paid_amount}
 """,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+            parse_mode="HTML",
+            reply_markup=kb
+        )
 
-    # ================= ADMIN =================
-    if PAYMENT_NOTIFY_GROUP:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if PAYMENT_NOTIFY_GROUP:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        bot.send_message(
-            PAYMENT_NOTIFY_GROUP,
-            f"""✅ <b>NEW PAYMENT RECEIVED</b>
+            bot.send_message(
+                PAYMENT_NOTIFY_GROUP,
+                f"""✅ <b>NEW PAYMENT RECEIVED</b>
 
 👤 User: {full_name}
 🆔 User ID: <code>{user_id}</code>
@@ -694,10 +699,78 @@ def paystack_webhook():
 💰 Amount: ₦{paid_amount}
 ⏰ Time: {now}
 """,
-            parse_mode="HTML"
+                parse_mode="HTML"
+            )
+
+        return "OK", 200
+
+    # =====================================================
+    # ================== VIP ORDER ========================
+    # =====================================================
+    elif order_type == "vip":
+
+        from datetime import datetime, timedelta
+
+        start_date = datetime.now()
+        end_date = start_date + timedelta(days=33)
+
+        cur.execute(
+            """
+            INSERT INTO vip_subscriptions (user_id, start_date, end_date, active)
+            VALUES (%s,%s,%s,1)
+            """,
+            (user_id, start_date, end_date)
         )
 
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # ✅ Button now stores order_id
+        vip_kb = InlineKeyboardMarkup()
+        vip_kb.add(
+            InlineKeyboardButton(
+                "🔐 JOIN VIP GROUP",
+                callback_data=f"vipnow:{order_id}"
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            """💎 <b>VIP Subscription Activated!</b>
+
+Your payment was successful.
+
+You can now access the VIP Group.
+""",
+            parse_mode="HTML",
+            reply_markup=vip_kb
+        )
+
+        if PAYMENT_NOTIFY_GROUP:
+            bot.send_message(
+                PAYMENT_NOTIFY_GROUP,
+                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
+
+👤 <b>Name:</b> {full_name}
+🔗 <b>Username:</b> {tg_username}
+🆔 <b>User ID:</b> <code>{user_id}</code>
+
+💳 <b>Amount:</b> ₦{paid_amount}
+📅 <b>Start:</b> {start_date.strftime("%Y-%m-%d")}
+⏳ <b>Ends:</b> {end_date.strftime("%Y-%m-%d")}
+
+🔐 <b>Access:</b> VIP GROUP
+🧾 <b>Order ID:</b> <code>{order_id}</code>
+""",
+                parse_mode="HTML"
+            )
+
+        return "OK", 200
+
     return "OK", 200
+
+
 
 # 
 # ========= TELEGRAM WEBHOOK =========
@@ -1091,6 +1164,112 @@ def get_group_id(message):
 
 
 # /post  (ADMIN ONLY)
+
+# ======= VIP ORDER CREATOR (CALLBACK vipgroup) =========
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vipgroup_handler(c):
+
+    uid = c.from_user.id
+    first_name = c.from_user.first_name or "User"
+
+    conn = get_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ================= CHECK EXISTING UNPAID VIP =================
+    try:
+        cur.execute(
+            """
+            SELECT id FROM orders
+            WHERE user_id=%s
+              AND type='vip'
+              AND paid=0
+            LIMIT 1
+            """,
+            (uid,)
+        )
+        row = cur.fetchone()
+    except Exception:
+        cur.close()
+        conn.close()
+        return
+
+    if row:
+        order_id = row["id"]
+    else:
+        order_id = str(uuid.uuid4())
+        try:
+            cur.execute(
+                """
+                INSERT INTO orders (id, user_id, amount, paid, type)
+                VALUES (%s,%s,%s,0,'vip')
+                """,
+                (order_id, uid, VIP_PRICE)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            return
+
+    # ================= CREATE PAYMENT LINK =================
+    try:
+        pay_url = create_paystack_payment(
+            uid,
+            order_id,
+            VIP_PRICE,
+            "VIP Subscription"
+        )
+    except Exception:
+        cur.close()
+        conn.close()
+        return
+
+    if not pay_url:
+        cur.close()
+        conn.close()
+        return
+
+    # ================= FORMAT DURATION TEXT =================
+    if VIP_DURATION_UNIT == "minutes":
+        duration_text = f"{VIP_DURATION_VALUE} Minutes"
+    else:
+        duration_text = f"{VIP_DURATION_VALUE} Days"
+
+    # ================= BUTTONS =================
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+    # ================= MESSAGE FORMAT =================
+    bot.send_message(
+        uid,
+        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+
+({first_name}) you're one step away from joining our exclusive VIP members.
+
+💎 VIP Access
+💰 Only ₦{VIP_PRICE}
+⏳ {duration_text} Full Access
+
+⚡ Instant activation after payment
+🔐 100% Secure Payment
+
+Tap below to activate now.
+""",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    cur.close()
+    conn.close()
+
 # ======================================================
 @bot.message_handler(commands=["post"])
 def post_to_channel(m):
