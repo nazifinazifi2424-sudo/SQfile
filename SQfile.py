@@ -41,6 +41,7 @@ allfilms_sessions = {}
 cart_sessions = {}
 series_sessions = {}
 user_states = {}
+active_links = {}
 
 # =========================
 # DATABASE TABLES (SAFE)
@@ -338,20 +339,20 @@ import hmac
 import hashlib
 
 admin_states = {}
-
+active_links = {}
 # --- Admins configuration ---
-ADMINS = [6603268127]
+ADMINS = [8537505191]
 
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
-ADMIN_ID = 6603268127
+ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
-BOT_USERNAME = "Algaitabot"
-CHANNEL = "@Algaitamoviestore"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -364,6 +365,9 @@ PAYSTACK_REDIRECT_URL = os.getenv("PAYSTACK_REDIRECT_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 PAYSTACK_BASE = "https://api.paystack.co"
+
+
+VIP_GROUP_ID = -1003857880168
 
 # === PAYMENTS / STORAGE ===
 PAYMENT_NOTIFY_GROUP = -1003555015230
