@@ -1197,7 +1197,89 @@ Tap below to continue.
 
     cur.close()
     conn.close()
-# = #=========================================================
+# = 
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
+def handle_vip_join(c):
+
+    bot.answer_callback_query(c.id)
+
+    order_id = c.data.split(":")[1]
+    user_id = c.from_user.id
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ================= CHECK ORDER =================
+    cur.execute(
+        """
+        SELECT paid, user_id, type
+        FROM orders
+        WHERE id=%s
+        """,
+        (order_id,)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        bot.send_message(user_id, "Invalid order.")
+        cur.close()
+        conn.close()
+        return
+
+    paid, order_user_id, order_type = row
+
+    if paid != 1 or order_type != "vip" or order_user_id != user_id:
+        bot.send_message(user_id, "Payment not verified.")
+        cur.close()
+        conn.close()
+        return
+
+    # ================= CHECK VIP ACTIVE =================
+    cur.execute(
+        """
+        SELECT status FROM vip_members
+        WHERE user_id=%s
+        """,
+        (user_id,)
+    )
+    vip = cur.fetchone()
+
+    if not vip or vip[0] != "active":
+        bot.send_message(user_id, "VIP not active.")
+        cur.close()
+        conn.close()
+        return
+
+    cur.close()
+    conn.close()
+
+    # ================= CREATE SINGLE USE INVITE =================
+    try:
+        invite = bot.create_chat_invite_link(
+            VIP_GROUP_ID,
+            member_limit=1  # 🔥 one person only
+        )
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "Join now",
+                url=invite.invite_link
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            "Tap the button below to join the VIP group 👇",
+            reply_markup=kb
+        )
+
+    except Exception:
+        bot.send_message(user_id, "Unable to generate join link.")
+
+#=========================================================
 @bot.message_handler(
     func=lambda m: (
         m.text
