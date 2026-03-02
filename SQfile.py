@@ -978,7 +978,7 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
 
 ━━━━━━━━━━━━━━━━━━
 
-        🔒 <b>VIP SUBSCRIPTION</b>
+        🔒 <b>VIP SUBSCRIPTION/n/n👇👇👇👇👇👇👇</b>
 """
 
     kb = InlineKeyboardMarkup()
