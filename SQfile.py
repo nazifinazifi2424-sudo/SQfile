@@ -360,7 +360,7 @@ OTP_ADMIN_ID = 6603268127
 
 
 BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@danchirinps"
+CHANNEL = "@Danchirinps"
 
 
 # ========= DATABASE CONFIG =========
