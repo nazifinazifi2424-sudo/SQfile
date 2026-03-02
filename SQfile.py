@@ -87,7 +87,41 @@ def ensure_vip_members_table():
 
 # 🔥 Run at startup
 ensure_vip_members_table()
+# =============================
+# ENSURE VIP MEMBERS TABLE
+# =============================
+def ensure_vip_members_table():
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vip_members (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL
+            )
+        """)
 
+        # Helper function
+        def ensure_column(column_name, column_type):
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name='vip_members'
+                AND column_name=%s
+            """, (column_name,))
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE vip_members ADD COLUMN {column_name} {column_type}")
+
+        # Required columns
+        ensure_column("order_id", "TEXT")
+        ensure_column("join_date", "TIMESTAMP")
+        ensure_column("expire_at", "TIMESTAMP")
+        ensure_column("status", "VARCHAR(20) DEFAULT 'active'")
+        ensure_column("warn1_sent", "BOOLEAN DEFAULT FALSE")
+        ensure_column("warn2_sent", "BOOLEAN DEFAULT FALSE")
+        ensure_column("payment_date", "TIMESTAMP")
+
+        print("✅ vip_members table structure verified")
+
+    except Exception as e:
+        print("❌ VIP MEMBERS MIGRATION ERROR:", e)
 
 # =============================
 # ENSURE ORDERS TABLE STRUCTURE
@@ -794,7 +828,9 @@ def paystack_webhook():
 
         return "OK", 200
 
-    # =====================================================
+   
+    
+# =====================================================
     # ================== VIP ORDER ========================
     # =====================================================
     elif order_type == "vip":
@@ -810,14 +846,18 @@ def paystack_webhook():
 
         cur.execute(
             """
-            INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status)
-            VALUES (%s,%s,%s,%s,'active')
+            INSERT INTO vip_members 
+            (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+            VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
             ON CONFLICT (user_id)
             DO UPDATE SET
                 order_id = EXCLUDED.order_id,
                 join_date = EXCLUDED.join_date,
                 expire_at = EXCLUDED.expire_at,
-                status = 'active'
+                status = 'active',
+                warn1_sent = FALSE,
+                warn2_sent = FALSE,
+                payment_date = NOW()
             """,
             (user_id, order_id, start_date, end_date)
         )
@@ -864,7 +904,8 @@ Tap below to join the VIP group.
                 parse_mode="HTML"
             )
 
-        return "OK", 200
+        return "OK", 200     
+     
 
     return "OK", 200
 
@@ -1097,28 +1138,26 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
 import uuid
 from psycopg2.extras import RealDictCursor
 
-
 @bot.callback_query_handler(func=lambda c: c.data == "subvip")
 def vipgroup_handler(c):
 
-    # Answer callback
     bot.answer_callback_query(c.id)
 
     uid = c.from_user.id
     first_name = c.from_user.first_name or "User"
 
-    # ================= DB CONNECTION =================
     conn = get_conn()
     if not conn:
         return
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # ================= CHECK EXISTING UNPAID VIP =================
+    # ========= CHECK EXISTING UNPAID VIP =========
     try:
         cur.execute(
             """
-            SELECT id FROM orders
+            SELECT id, amount
+            FROM orders
             WHERE user_id=%s
               AND type='vip'
               AND paid=0
@@ -1132,10 +1171,19 @@ def vipgroup_handler(c):
         conn.close()
         return
 
-    # ================= CREATE OR REUSE ORDER =================
+    # ========= REUSE OR CREATE =========
     try:
         if row:
             order_id = row["id"]
+
+            # ✅ tabbatar amount daidai yake
+            if int(row["amount"]) != int(VIP_PRICE):
+                cur.execute(
+                    "UPDATE orders SET amount=%s WHERE id=%s",
+                    (VIP_PRICE, order_id)
+                )
+                conn.commit()
+
         else:
             order_id = str(uuid.uuid4())
             cur.execute(
@@ -1146,13 +1194,14 @@ def vipgroup_handler(c):
                 (order_id, uid, VIP_PRICE)
             )
             conn.commit()
+
     except Exception:
         conn.rollback()
         cur.close()
         conn.close()
         return
 
-    # ================= CREATE PAYMENT LINK =================
+    # ========= ALWAYS CREATE NEW PAYMENT LINK =========
     try:
         pay_url = create_paystack_payment(
             uid,
@@ -1170,18 +1219,16 @@ def vipgroup_handler(c):
         conn.close()
         return
 
-    # ================= FORMAT DURATION TEXT =================
+    # ========= FORMAT =========
     if VIP_DURATION_UNIT == "minutes":
         duration_text = f"{VIP_DURATION_VALUE} Minutes"
     else:
         duration_text = f"{VIP_DURATION_VALUE} Days"
 
-    # ================= BUTTONS =================
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-    # ================= SEND MESSAGE =================
     bot.send_message(
         uid,
         f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
@@ -1203,8 +1250,6 @@ Tap below to continue.
 
     cur.close()
     conn.close()
-# = 
-
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
@@ -1285,6 +1330,154 @@ def handle_vip_join(c):
     except Exception:
         bot.send_message(user_id, "Unable to generate join link.")
 
+def convert_to_seconds(value, unit):
+    if unit == "days":
+        return value * 24 * 3600
+    elif unit == "minutes":
+        return value * 60
+    return value
+
+import threading
+import time
+from datetime import datetime
+
+
+def vip_subscription_engine():
+
+    while True:
+
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT user_id, join_date, warn1_sent, warn2_sent
+                FROM vip_members
+                WHERE status='active'
+            """)
+            users = cur.fetchall()
+
+            now = datetime.now()
+
+            duration_seconds = convert_to_seconds(
+                VIP_DURATION_VALUE,
+                VIP_DURATION_UNIT
+            )
+
+            warn1_seconds = convert_to_seconds(
+                WARNING_1_VALUE,
+                WARNING_1_UNIT
+            )
+
+            warn2_seconds = convert_to_seconds(
+                WARNING_2_VALUE,
+                WARNING_2_UNIT
+            )
+
+            for user_id, join_date, warn1_sent, warn2_sent in users:
+
+                elapsed = (now - join_date).total_seconds()
+                remaining = duration_seconds - elapsed
+
+                # ================= WARNING 1 =================
+                if elapsed >= warn1_seconds and not warn1_sent:
+
+                    bot.send_message(
+                        user_id,
+                        """⏳ <b>Gargadi!</b>
+
+Lokacin VIP ɗinka na gab da ƙarewa.
+
+Ka sabunta yanzu domin kada a cire ka.
+""",
+                        parse_mode="HTML",
+                        reply_markup=vip_sub_button()
+                    )
+
+                    cur.execute("""
+                        UPDATE vip_members
+                        SET warn1_sent=TRUE
+                        WHERE user_id=%s
+                    """, (user_id,))
+
+                # ================= WARNING 2 =================
+                if elapsed >= warn2_seconds and not warn2_sent:
+
+                    bot.send_message(
+                        user_id,
+                        """⚠ <b>Gargadi na Ƙarshe!</b>
+
+Lokacin VIP ɗinka zai ƙare nan ba da jimawa ba.
+
+Ka sabunta yanzu domin ci gaba da kasancewa cikin VIP.
+""",
+                        parse_mode="HTML",
+                        reply_markup=vip_sub_button()
+                    )
+
+                    cur.execute("""
+                        UPDATE vip_members
+                        SET warn2_sent=TRUE
+                        WHERE user_id=%s
+                    """, (user_id,))
+
+                # ================= EXPIRE =================
+                if remaining <= 0:
+
+                    try:
+                        bot.ban_chat_member(VIP_GROUP_ID, user_id)
+                        bot.unban_chat_member(VIP_GROUP_ID, user_id)
+                    except:
+                        pass
+
+                    cur.execute("""
+                        UPDATE vip_members
+                        SET status='expired'
+                        WHERE user_id=%s
+                    """, (user_id,))
+
+                    bot.send_message(
+                        user_id,
+                        """💔 <b>Lokacin VIP ɗinka ya ƙare.</b>
+
+An cire ka daga VIP group.
+
+Domin dawowa ciki,
+ka sabunta biyan kuɗinka yanzu.
+""",
+                        parse_mode="HTML",
+                        reply_markup=vip_sub_button()
+                    )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+        except Exception as e:
+            print("VIP ENGINE ERROR:", e)
+
+        time.sleep(30)
+
+
+threading.Thread(target=vip_subscription_engine, daemon=True).start()
+
+def activate_vip(user_id):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE vip_members
+        SET join_date=%s,
+            status='active',
+            warn1_sent=FALSE,
+            warn2_sent=FALSE
+        WHERE user_id=%s
+    """, (datetime.now(), user_id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
 #=========================================================
 @bot.message_handler(
     func=lambda m: (
