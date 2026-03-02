@@ -359,8 +359,8 @@ ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Aslamtv2bot"
-CHANNEL = "@Aslammovieschannel"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@chirinps"
 
 
 # ========= DATABASE CONFIG =========
@@ -1322,6 +1322,28 @@ def howto_start_handler(m):
             caption=caption,
             reply_markup=kb
         )
+
+
+@bot.message_handler(content_types=['new_chat_members'])
+def get_group_id(message):
+
+    try:
+        chat_id = message.chat.id
+        chat_title = message.chat.title or "Unknown"
+
+        bot.send_message(
+            ADMIN_ID,
+            f"""✅ GROUP DETECTED
+
+📛 Name: {chat_title}
+🆔 ID:
+<code>{chat_id}</code>
+""",
+            parse_mode="HTML"
+        )
+
+    except:
+        pass
 
 # ======================================================
 # LANGUAGE SWITCH (EDIT ONLY)
