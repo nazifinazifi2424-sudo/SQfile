@@ -997,8 +997,113 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
 
 
 
+# ======= VIP ORDER CREATOR (CALLBACK vipgroup) =========
+import uuid
+from psycopg2.extras import RealDictCursor
 
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vipgroup_handler(c):
 
+    # 🔥 Prevent silent button
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    first_name = c.from_user.first_name or "User"
+
+    conn = get_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ================= CHECK EXISTING UNPAID VIP =================
+    try:
+        cur.execute(
+            """
+            SELECT id FROM orders
+            WHERE user_id=%s
+              AND type='vip'
+              AND paid=0
+            LIMIT 1
+            """,
+            (uid,)
+        )
+        row = cur.fetchone()
+    except Exception:
+        cur.close()
+        conn.close()
+        return
+
+    if row:
+        order_id = row["id"]
+    else:
+        order_id = str(uuid.uuid4())
+        try:
+            cur.execute(
+                """
+                INSERT INTO orders (id, user_id, amount, paid, type)
+                VALUES (%s,%s,%s,0,'vip')
+                """,
+                (order_id, uid, VIP_PRICE)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            return
+
+    # ================= CREATE PAYMENT LINK =================
+    try:
+        pay_url = create_paystack_payment(
+            uid,
+            order_id,
+            VIP_PRICE,
+            "VIP Subscription"
+        )
+    except Exception:
+        cur.close()
+        conn.close()
+        return
+
+    if not pay_url:
+        cur.close()
+        conn.close()
+        return
+
+    # ================= FORMAT DURATION TEXT =================
+    if VIP_DURATION_UNIT == "minutes":
+        duration_text = f"{VIP_DURATION_VALUE} Minutes"
+    else:
+        duration_text = f"{VIP_DURATION_VALUE} Days"
+
+    # ================= BUTTONS =================
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+    # ================= MESSAGE FORMAT =================
+    bot.send_message(
+        uid,
+        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+
+({first_name}) you're one step away from joining our exclusive VIP members.
+
+💎 VIP Access
+💰 Only ₦{VIP_PRICE}
+⏳ {duration_text} Full Access
+
+⚡ Instant activation after payment
+🔐 100% Secure Payment
+
+Tap below to activate now.
+""",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    cur.close()
+    conn.close()
 # =========================================================
 @bot.message_handler(
     func=lambda m: (
@@ -3918,114 +4023,7 @@ def handle_callback(c):
         return
 
     
-    from psycopg2.extras import RealDictCursor
-    import uuid
-
     
-
-
-    # ==================================================
-    # VIP GROUP
-    # ==================================================
-    if data == "vipgroup":
-
-        bot.answer_callback_query(c.id)
-
-        conn = None
-        cur = None
-
-        try:
-            conn = get_conn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-
-            # CHECK EXISTING UNPAID VIP
-            cur.execute(
-                """
-                SELECT id FROM orders
-                WHERE user_id=%s
-                  AND type='vip'
-                  AND paid=0
-                LIMIT 1
-                """,
-                (uid,)
-            )
-
-            row = cur.fetchone()
-
-            if row:
-                order_id = row["id"]
-            else:
-                order_id = str(uuid.uuid4())
-
-                cur.execute(
-                    """
-                    INSERT INTO orders (id,user_id,amount,paid,type)
-                    VALUES (%s,%s,%s,0,'vip')
-                    """,
-                    (order_id, uid, VIP_PRICE)
-                )
-
-                conn.commit()
-
-        except:
-            if conn:
-                conn.rollback()
-            return
-
-        finally:
-            try:
-                if cur:
-                    cur.close()
-                if conn:
-                    conn.close()
-            except:
-                pass
-
-        # CREATE PAYSTACK LINK
-        try:
-            pay_url = create_paystack_payment(
-                uid,
-                order_id,
-                VIP_PRICE,
-                "VIP Subscription"
-            )
-        except:
-            return
-
-        if not pay_url:
-            return
-
-        # FORMAT DURATION
-        if VIP_DURATION_UNIT == "minutes":
-            duration_text = f"{VIP_DURATION_VALUE} Minutes"
-        else:
-            duration_text = f"{VIP_DURATION_VALUE} Days"
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
-
-        bot.send_message(
-            uid,
-            f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
-
-({user_name}) you're one step away from joining our exclusive VIP members.
-
-💎 VIP Access
-💰 Only ₦{VIP_PRICE}
-⏳ {duration_text} Full Access
-
-⚡ Instant activation after payment
-🔐 100% Secure Payment
-
-Tap below to activate now.
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        return
-
 
 # =====================
     # VIEW CART
