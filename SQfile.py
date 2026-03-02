@@ -1165,7 +1165,7 @@ def get_group_id(message):
 
 # /post  (ADMIN ONLY)
 
-# ======= VIP ORDER CREATOR (CALLBACK vipgroup) =========
+# ======= VIP ORDER CREATOR (CALLBACK vipgroup | DEBUG VERSION) =========
 import uuid
 from psycopg2.extras import RealDictCursor
 
@@ -1175,8 +1175,18 @@ def vipgroup_handler(c):
     uid = c.from_user.id
     first_name = c.from_user.first_name or "User"
 
+    # ===== DEBUG: Callback Triggered =====
+    try:
+        bot.send_message(ADMIN_ID, f"DEBUG 1: vipgroup clicked by {uid}")
+    except:
+        pass
+
     conn = get_conn()
     if not conn:
+        try:
+            bot.send_message(ADMIN_ID, "DEBUG ERROR: DB connection failed")
+        except:
+            pass
         return
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1194,13 +1204,16 @@ def vipgroup_handler(c):
             (uid,)
         )
         row = cur.fetchone()
-    except Exception:
+        bot.send_message(ADMIN_ID, "DEBUG 2: Checked unpaid VIP")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (CHECK VIP): {e}")
         cur.close()
         conn.close()
         return
 
     if row:
         order_id = row["id"]
+        bot.send_message(ADMIN_ID, f"DEBUG 3: Reusing order {order_id}")
     else:
         order_id = str(uuid.uuid4())
         try:
@@ -1212,7 +1225,9 @@ def vipgroup_handler(c):
                 (order_id, uid, VIP_PRICE)
             )
             conn.commit()
-        except Exception:
+            bot.send_message(ADMIN_ID, f"DEBUG 4: Created new order {order_id}")
+        except Exception as e:
+            bot.send_message(ADMIN_ID, f"DEBUG ERROR (INSERT): {e}")
             conn.rollback()
             cur.close()
             conn.close()
@@ -1226,12 +1241,15 @@ def vipgroup_handler(c):
             VIP_PRICE,
             "VIP Subscription"
         )
-    except Exception:
+        bot.send_message(ADMIN_ID, "DEBUG 5: Paystack link created")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (PAYSTACK): {e}")
         cur.close()
         conn.close()
         return
 
     if not pay_url:
+        bot.send_message(ADMIN_ID, "DEBUG ERROR: pay_url returned None")
         cur.close()
         conn.close()
         return
@@ -1247,10 +1265,11 @@ def vipgroup_handler(c):
     kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-    # ================= MESSAGE FORMAT =================
-    bot.send_message(
-        uid,
-        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+    # ================= SEND MESSAGE =================
+    try:
+        bot.send_message(
+            uid,
+            f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
 
 ({first_name}) you're one step away from joining our exclusive VIP members.
 
@@ -1263,12 +1282,19 @@ def vipgroup_handler(c):
 
 Tap below to activate now.
 """,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        bot.send_message(ADMIN_ID, "DEBUG 6: User message sent successfully")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (SEND MESSAGE): {e}")
 
     cur.close()
     conn.close()
+
+
+
+
 
 # ======================================================
 @bot.message_handler(commands=["post"])
