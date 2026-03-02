@@ -344,7 +344,7 @@ import hashlib
 
 admin_states = {}
 # --- Admins configuration ---
-ADMINS = [6210912739, 5009954635] 
+ADMINS = [8537505191, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
@@ -355,12 +355,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
-ADMIN_ID = 6210912739
+ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
 
 BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@chirinps"
+CHANNEL = "@danchirinps"
 
 
 # ========= DATABASE CONFIG =========
