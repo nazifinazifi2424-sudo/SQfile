@@ -997,25 +997,41 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
     bot.answer_callback_query(call.id)
 
 
-
-# ======= VIP ORDER CREATOR (CALLBACK vipgroup) =========
+# ======= VIP ORDER CREATOR (CALLBACK subvip | FULL DEBUG) =========
 import uuid
 from psycopg2.extras import RealDictCursor
 
-@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+
+@bot.callback_query_handler(func=lambda c: c.data == "subvip")
 def vipgroup_handler(c):
 
-    # 🔥 Prevent silent button
-    bot.answer_callback_query(c.id)
+    # ================= CALLBACK RECEIVED =================
+    try:
+        bot.send_message(ADMIN_ID, f"DEBUG 1: Callback received -> {c.data}")
+    except:
+        pass
+
+    # ================= ANSWER CALLBACK =================
+    try:
+        bot.answer_callback_query(c.id)
+        bot.send_message(ADMIN_ID, "DEBUG 2: answer_callback_query success")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (ANSWER CALLBACK): {e}")
 
     uid = c.from_user.id
     first_name = c.from_user.first_name or "User"
 
-    conn = get_conn()
-    if not conn:
+    # ================= DB CONNECTION =================
+    try:
+        conn = get_conn()
+        if not conn:
+            bot.send_message(ADMIN_ID, "DEBUG ERROR: DB returned None")
+            return
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        bot.send_message(ADMIN_ID, "DEBUG 3: DB connection successful")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (DB CONNECT): {e}")
         return
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ================= CHECK EXISTING UNPAID VIP =================
     try:
@@ -1030,16 +1046,20 @@ def vipgroup_handler(c):
             (uid,)
         )
         row = cur.fetchone()
-    except Exception:
+        bot.send_message(ADMIN_ID, "DEBUG 4: Unpaid VIP check done")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (CHECK VIP): {e}")
         cur.close()
         conn.close()
         return
 
-    if row:
-        order_id = row["id"]
-    else:
-        order_id = str(uuid.uuid4())
-        try:
+    # ================= CREATE OR REUSE ORDER =================
+    try:
+        if row:
+            order_id = row["id"]
+            bot.send_message(ADMIN_ID, f"DEBUG 5: Reusing order {order_id}")
+        else:
+            order_id = str(uuid.uuid4())
             cur.execute(
                 """
                 INSERT INTO orders (id, user_id, amount, paid, type)
@@ -1048,11 +1068,13 @@ def vipgroup_handler(c):
                 (order_id, uid, VIP_PRICE)
             )
             conn.commit()
-        except Exception:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            return
+            bot.send_message(ADMIN_ID, f"DEBUG 6: New VIP order created {order_id}")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (INSERT VIP): {e}")
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return
 
     # ================= CREATE PAYMENT LINK =================
     try:
@@ -1062,31 +1084,47 @@ def vipgroup_handler(c):
             VIP_PRICE,
             "VIP Subscription"
         )
-    except Exception:
+        bot.send_message(ADMIN_ID, "DEBUG 7: Paystack link created")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (PAYSTACK): {e}")
         cur.close()
         conn.close()
         return
 
     if not pay_url:
+        bot.send_message(ADMIN_ID, "DEBUG ERROR: pay_url is None")
         cur.close()
         conn.close()
         return
 
     # ================= FORMAT DURATION TEXT =================
-    if VIP_DURATION_UNIT == "minutes":
-        duration_text = f"{VIP_DURATION_VALUE} Minutes"
-    else:
-        duration_text = f"{VIP_DURATION_VALUE} Days"
+    try:
+        if VIP_DURATION_UNIT == "minutes":
+            duration_text = f"{VIP_DURATION_VALUE} Minutes"
+        else:
+            duration_text = f"{VIP_DURATION_VALUE} Days"
+        bot.send_message(ADMIN_ID, "DEBUG 8: Duration formatted")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (DURATION FORMAT): {e}")
+        duration_text = "Unknown"
 
     # ================= BUTTONS =================
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+        bot.send_message(ADMIN_ID, "DEBUG 9: Buttons created")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (BUTTONS): {e}")
+        cur.close()
+        conn.close()
+        return
 
-    # ================= MESSAGE FORMAT =================
-    bot.send_message(
-        uid,
-        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+    # ================= SEND MESSAGE =================
+    try:
+        bot.send_message(
+            uid,
+            f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
 
 ({first_name}) you're one step away from joining our exclusive VIP members.
 
@@ -1099,14 +1137,21 @@ def vipgroup_handler(c):
 
 Tap below to activate now.
 """,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        bot.send_message(ADMIN_ID, "DEBUG 10: User message sent successfully")
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR (SEND MESSAGE): {e}")
 
     cur.close()
     conn.close()
 
- #=========================================================
+    try:
+        bot.send_message(ADMIN_ID, "DEBUG 11: VIP flow completed successfully")
+    except:
+        pass
+# = #=========================================================
 @bot.message_handler(
     func=lambda m: (
         m.text
