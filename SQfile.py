@@ -590,8 +590,6 @@ def send_feedback_prompt(user_id, order_id):
     except Exception as e:
         print("FEEDBACK SEND ERROR:", e)
 
-
-
 @app.route("/webhook", methods=["POST"])
 def paystack_webhook():
 
@@ -798,21 +796,30 @@ def paystack_webhook():
         from datetime import datetime, timedelta
 
         start_date = datetime.now()
-        end_date = start_date + timedelta(days=33)
+
+        if VIP_DURATION_UNIT == "minutes":
+            end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
+        else:
+            end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
         cur.execute(
             """
-            INSERT INTO vip_subscriptions (user_id, start_date, end_date, active)
-            VALUES (%s,%s,%s,1)
+            INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status)
+            VALUES (%s,%s,%s,%s,'active')
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                order_id = EXCLUDED.order_id,
+                join_date = EXCLUDED.join_date,
+                expire_at = EXCLUDED.expire_at,
+                status = 'active'
             """,
-            (user_id, start_date, end_date)
+            (user_id, order_id, start_date, end_date)
         )
 
         conn.commit()
         cur.close()
         conn.close()
 
-        # ✅ Button now stores order_id
         vip_kb = InlineKeyboardMarkup()
         vip_kb.add(
             InlineKeyboardButton(
@@ -823,11 +830,11 @@ def paystack_webhook():
 
         bot.send_message(
             user_id,
-            """💎 <b>VIP Subscription Activated!</b>
+            """💎 <b>VIP Activated!</b>
 
-Your payment was successful.
+Payment successful.
 
-You can now access the VIP Group.
+Tap below to join the VIP group.
 """,
             parse_mode="HTML",
             reply_markup=vip_kb
@@ -836,18 +843,17 @@ You can now access the VIP Group.
         if PAYMENT_NOTIFY_GROUP:
             bot.send_message(
                 PAYMENT_NOTIFY_GROUP,
-                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
+                f"""💎 <b>VIP ACTIVATED</b>
 
-👤 <b>Name:</b> {full_name}
-🔗 <b>Username:</b> {tg_username}
-🆔 <b>User ID:</b> <code>{user_id}</code>
+👤 Name: {full_name}
+🔗 Username: {tg_username}
+🆔 User ID: <code>{user_id}</code>
 
-💳 <b>Amount:</b> ₦{paid_amount}
-📅 <b>Start:</b> {start_date.strftime("%Y-%m-%d")}
-⏳ <b>Ends:</b> {end_date.strftime("%Y-%m-%d")}
+💳 Amount: ₦{paid_amount}
+📅 Start: {start_date.strftime("%Y-%m-%d %H:%M")}
+⏳ Ends: {end_date.strftime("%Y-%m-%d %H:%M")}
 
-🔐 <b>Access:</b> VIP GROUP
-🧾 <b>Order ID:</b> <code>{order_id}</code>
+🧾 Order ID: <code>{order_id}</code>
 """,
                 parse_mode="HTML"
             )
@@ -855,7 +861,6 @@ You can now access the VIP Group.
         return "OK", 200
 
     return "OK", 200
-
 
 
 # 
