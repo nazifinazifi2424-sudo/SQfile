@@ -876,6 +876,67 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
+@bot.message_handler(commands=['link'])
+def generate_vip_link(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        invite = bot.create_chat_invite_link(
+            chat_id=VIP_GROUP_ID,
+            member_limit=1
+        )
+
+        sent = bot.send_message(
+            ADMIN_ID,
+            f"""🔥 VIP LINK
+
+{invite.invite_link}
+
+⚠️ Link zai mutu bayan mutum 1 ya shiga."""
+        )
+
+        # Ajiye link domin tracking
+        active_links[invite.invite_link] = {
+            "message_id": sent.message_id
+        }
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"Error: {e}")
+
+@bot.message_handler(content_types=['new_chat_members'])
+def track_join(message):
+
+    if message.chat.id != VIP_GROUP_ID:
+        return
+
+    if message.invite_link:
+
+        used_link = message.invite_link.invite_link
+
+        if used_link in active_links:
+
+            # Goge sakon link daga admin chat
+            try:
+                bot.delete_message(
+                    ADMIN_ID,
+                    active_links[used_link]["message_id"]
+                )
+            except:
+                pass
+
+            # Cire link daga storage
+            del active_links[used_link]
+
+            # Notify admin
+            user = message.new_chat_members[0]
+            bot.send_message(
+                ADMIN_ID,
+                f"✅ {user.first_name} ya shiga VIP ta secure link."
+            )
+
+
 # =========================================================
 @bot.message_handler(
     func=lambda m: (
