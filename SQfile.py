@@ -1165,12 +1165,16 @@ def get_group_id(message):
 
 # /post  (ADMIN ONLY)
 
-# ======= VIP ORDER CREATOR (CALLBACK vipgroup) =========
+
+# ======= VIP ORDER CREATOR (CALLBACK vipgroup | CLEAN) =========
 import uuid
 from psycopg2.extras import RealDictCursor
 
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
 def vipgroup_handler(c):
+
+    # 🔥 VERY IMPORTANT (prevents silent button)
+    bot.answer_callback_query(c.id)
 
     uid = c.from_user.id
     first_name = c.from_user.first_name or "User"
@@ -1194,11 +1198,12 @@ def vipgroup_handler(c):
             (uid,)
         )
         row = cur.fetchone()
-    except Exception:
+    except:
         cur.close()
         conn.close()
         return
 
+    # ================= CREATE OR REUSE ORDER =================
     if row:
         order_id = row["id"]
     else:
@@ -1212,7 +1217,7 @@ def vipgroup_handler(c):
                 (order_id, uid, VIP_PRICE)
             )
             conn.commit()
-        except Exception:
+        except:
             conn.rollback()
             cur.close()
             conn.close()
@@ -1226,7 +1231,7 @@ def vipgroup_handler(c):
             VIP_PRICE,
             "VIP Subscription"
         )
-    except Exception:
+    except:
         cur.close()
         conn.close()
         return
@@ -1247,7 +1252,7 @@ def vipgroup_handler(c):
     kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-    # ================= MESSAGE FORMAT =================
+    # ================= MESSAGE =================
     bot.send_message(
         uid,
         f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
