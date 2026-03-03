@@ -1436,11 +1436,9 @@ def generate_temp_link(message):
     user_id = message.from_user.id
 
     try:
-        # ⏳ Create 1 minute invite link (single use)
+        # 🔗 Create permanent link (no limit, no expire)
         invite = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID,
-            expire_date=int(time.time()) + 60,
-            member_limit=1
+            chat_id=VIP_GROUP_ID
         )
 
         link = invite.invite_link
@@ -1459,7 +1457,7 @@ def generate_temp_link(message):
             reply_markup=kb
         )
 
-        # ⏳ Countdown system
+        # ⏳ Countdown
         for remaining in range(59, -1, -1):
             time.sleep(1)
 
@@ -1473,7 +1471,16 @@ def generate_temp_link(message):
             except:
                 break
 
-        # 🛑 After timeout
+        # 🛑 After 60 sec → revoke manually
+        try:
+            bot.revoke_chat_invite_link(
+                VIP_GROUP_ID,
+                link
+            )
+        except:
+            pass
+
+        # Remove button + show timeout
         try:
             bot.edit_message_text(
                 "❌ TIME OUT\n\nThis link has expired.",
