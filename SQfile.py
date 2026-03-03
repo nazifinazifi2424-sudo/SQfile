@@ -656,7 +656,7 @@ BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 60
-VIP_LINK = "https://t.me/+vK9U5iyAWpQ2ZTM0"  # saka permanent group link naka
+VIP_LINK = "https://t.me/+o7qBXIs-FX5lYWZk"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
