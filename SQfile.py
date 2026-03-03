@@ -30,6 +30,55 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
 
+
+# ==========================================
+# AUTO DB FIX: ENSURE invite_link COLUMN
+# ==========================================
+def ensure_vip_invite_column():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # Check if column exists
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='invite_link'
+        """)
+        exists = cur.fetchone()
+
+        if not exists:
+            cur.execute("""
+                ALTER TABLE vip_members
+                ADD COLUMN invite_link TEXT DEFAULT NULL
+            """)
+            conn.commit()
+
+            try:
+                bot.send_message(ADMIN_ID, "✅ invite_link column created successfully.")
+            except:
+                pass
+        else:
+            try:
+                bot.send_message(ADMIN_ID, "ℹ invite_link column already exists.")
+            except:
+                pass
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        try:
+            bot.send_message(ADMIN_ID, f"❌ DB AUTO FIX ERROR:\n{e}")
+        except:
+            pass
+
+
+# Run immediately on startup
+ensure_vip_invite_column()
+
+
 # ============================================
 # VIP TABLE AUTO STRUCTURE FIX (RUN ON START)
 # ============================================
