@@ -1374,6 +1374,7 @@ Tap below to continue.
     cur.close()
     conn.close()
 
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
 
@@ -1433,7 +1434,7 @@ def handle_vip_join(c):
     try:
         invite = bot.create_chat_invite_link(
             VIP_GROUP_ID,
-            member_limit=1  # 🔥 one person only
+            member_limit=1
         )
 
         kb = InlineKeyboardMarkup()
@@ -1444,21 +1445,18 @@ def handle_vip_join(c):
             )
         )
 
-        bot.send_message(
-            user_id,
-            "Tap the button below to join the VIP group 👇",
+        bot.edit_message_text(
+            "🔐 <b>VIP ACCESS READY</b>\n\nTap the button below to join the VIP group 👇",
+            chat_id=c.message.chat.id,
+            message_id=c.message.message_id,
+            parse_mode="HTML",
             reply_markup=kb
         )
 
     except Exception:
         bot.send_message(user_id, "Unable to generate join link.")
 
-def convert_to_seconds(value, unit):
-    if unit == "days":
-        return value * 24 * 3600
-    elif unit == "minutes":
-        return value * 60
-    return value
+
 
 import threading
 import time
