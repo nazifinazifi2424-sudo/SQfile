@@ -1508,12 +1508,14 @@ def handle_vip_join(c):
                             conn = get_conn()
                             cur = conn.cursor()
 
-                            start_date = datetime.now()
+                            # ✅ JOIN DATE = lokacin da ya shiga
+                            join_date = datetime.now()
 
+                            # ✅ EXPIRE = lissafi daga saman file
                             if VIP_DURATION_UNIT == "minutes":
-                                end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
+                                expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)
                             else:
-                                end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
+                                expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)
 
                             cur.execute(
                                 """
@@ -1525,7 +1527,7 @@ def handle_vip_join(c):
                                     warn2_sent=FALSE
                                 WHERE user_id=%s
                                 """,
-                                (start_date, end_date, user_id)
+                                (join_date, expire_at, user_id)
                             )
 
                             conn.commit()
@@ -1578,12 +1580,11 @@ def handle_vip_join(c):
             admin_kb = InlineKeyboardMarkup()
             admin_kb.add(
                 InlineKeyboardButton(
-                    "🆘 ADMIN HELP",
+                    "👤ADMIN HELP",
                     url=f"https://t.me/{ADMIN_USERNAME}"
                 )
             )
 
-            # 1️⃣ EDIT MESSAGE FIRST
             try:
                 bot.edit_message_text(
                     "❌ TIME OUT\n\n"
@@ -1595,7 +1596,6 @@ def handle_vip_join(c):
             except:
                 pass
 
-            # 2️⃣ THEN SEND PRIVATE MESSAGE AFTER
             try:
                 time.sleep(2)
                 bot.send_message(
@@ -1610,6 +1610,7 @@ def handle_vip_join(c):
 
     except:
         pass
+
 
 
 import threading
