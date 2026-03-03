@@ -316,6 +316,22 @@ CREATE TABLE IF NOT EXISTS orders (
 )
 """)
 
+
+# -------- VIP MEMBERS --------
+cur.execute("""
+CREATE TABLE IF NOT EXISTS vip_members (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT UNIQUE NOT NULL,
+    order_id TEXT,
+    join_date TIMESTAMP,
+    expire_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'active',
+    warn1_sent BOOLEAN DEFAULT FALSE,
+    warn2_sent BOOLEAN DEFAULT FALSE,
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
 # -------- ORDER ITEMS --------
 cur.execute("""
 CREATE TABLE IF NOT EXISTS order_items (
