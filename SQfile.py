@@ -1672,6 +1672,178 @@ def vip_expiry_checker():
 threading.Thread(target=vip_expiry_checker, daemon=True).start()
 
 
+# ==========================================
+# VIP WARNING SYSTEM (HAUSA VERSION)
+# ==========================================
+
+import threading
+import time
+from datetime import datetime, timedelta
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+
+def vip_warning_system():
+
+    while True:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+
+            now = datetime.now()
+
+            # ===============================
+            # GET ALL ACTIVE USERS
+            # ===============================
+            cur.execute("""
+                SELECT user_id, expire_at, warn1_sent, warn2_sent
+                FROM vip_members
+                WHERE status='active'
+                AND expire_at IS NOT NULL
+            """)
+
+            users = cur.fetchall()
+
+            for user_id, expire_at, warn1_sent, warn2_sent in users:
+
+                if not expire_at:
+                    continue
+
+                remaining = expire_at - now
+                remaining_seconds = remaining.total_seconds()
+
+                if remaining_seconds <= 0:
+                    continue
+
+                # =================================
+                # CONVERT WARNING 1 THRESHOLD
+                # =================================
+                if WARNING_1_UNIT == "minutes":
+                    threshold1 = timedelta(minutes=WARNING_1_VALUE)
+                    time_left_value = int(remaining_seconds // 60)
+                    unit_text = "minti"
+                else:
+                    threshold1 = timedelta(days=WARNING_1_VALUE)
+                    time_left_value = remaining.days
+                    unit_text = "kwana"
+
+                # =================================
+                # WARNING 1
+                # =================================
+                if not warn1_sent and remaining <= threshold1:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "🔁 REPAY NOW",
+                                callback_data="vipsub"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⏳ Tunatarwa\n\n"
+                            f"Subscription ɗinka zai kare nan da {time_left_value} {unit_text}.\n\n"
+                            f"Muna matuƙar godiya da kasancewarka tare da mu ❤️\n"
+                            f"Da fatan za ka sabunta kafin lokacin ya ƙare domin cigaba da more VIP group.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn1_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+                # =================================
+                # CONVERT WARNING 2 THRESHOLD
+                # =================================
+                if WARNING_2_UNIT == "minutes":
+                    threshold2 = timedelta(minutes=WARNING_2_VALUE)
+                    time_left_value2 = int(remaining_seconds // 60)
+                    unit_text2 = "minti"
+                else:
+                    threshold2 = timedelta(days=WARNING_2_VALUE)
+                    time_left_value2 = remaining.days
+                    unit_text2 = "kwana"
+
+                # =================================
+                # WARNING 2 (FINAL)
+                # =================================
+                if not warn2_sent and remaining <= threshold2:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "🔁 REPAY NOW",
+                                callback_data="vipsub"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⚠ Gargadi na Ƙarshe\n\n"
+                            f"Subscription ɗinka zai kare nan da {time_left_value2} {unit_text2}.\n\n"
+                            f"Idan ba ka sabunta ba kafin lokacin ya cika, za a cire ka daga VIP group.\n"
+                            f"Da fatan za ka sabunta yanzu domin kada a cire ka.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn2_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+            cur.close()
+            conn.close()
+
+        except:
+            pass
+
+        time.sleep(30)  # yana duba duk 30 seconds
+
+
+threading.Thread(target=vip_warning_system, daemon=True).start()
+
+
+
+# ==========================================
+# WARNING 3 (AFTER USER REMOVAL MESSAGE)
+# SAKA WANNAN A CIKIN EXPIRY CHECKER
+# BAYAN AN CANZA status='expired'
+# ==========================================
+
+def send_expired_message(user_id):
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "🔁 REPAY NOW",
+                callback_data="vipsub"
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            "❌ An Cire Ka Daga VIP\n\n"
+            "An cire ka daga VIP group saboda subscription ɗinka ya ƙare.\n\n"
+            "Idan kana son komawa domin cigaba da more manyan fina-finai sababbi da tsofaffi,\n"
+            "za ka iya sabunta biyanka yanzu.",
+            reply_markup=kb
+        )
+    except:
+        pass
+
 
 #=========================================================
 @bot.message_handler(
