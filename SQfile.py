@@ -1432,15 +1432,9 @@ def handle_vip_join(c):
 
     try:
         bot.answer_callback_query(c.id)
-        print("VIPNOW CALLBACK RECEIVED")
-
-        bot.send_message(ADMIN_ID, "✅ vipnow callback triggered")
 
         order_id = c.data.split(":")[1]
         user_id = c.from_user.id
-
-        bot.send_message(ADMIN_ID, f"Order ID: {order_id}")
-        bot.send_message(ADMIN_ID, f"User ID: {user_id}")
 
         conn = get_conn()
         cur = conn.cursor()
@@ -1453,12 +1447,8 @@ def handle_vip_join(c):
         """, (order_id,))
         row = cur.fetchone()
 
-        print("ORDER ROW:", row)
-        bot.send_message(ADMIN_ID, f"DB Order Row: {row}")
-
         if not row:
             bot.send_message(user_id, "Invalid order.")
-            bot.send_message(ADMIN_ID, "❌ Order not found in DB")
             cur.close(); conn.close()
             return
 
@@ -1466,11 +1456,8 @@ def handle_vip_join(c):
 
         if paid != 1 or order_type != "vip" or order_user_id != user_id:
             bot.send_message(user_id, "Payment not verified.")
-            bot.send_message(ADMIN_ID, "❌ Payment verification failed")
             cur.close(); conn.close()
             return
-
-        bot.send_message(ADMIN_ID, "✅ Order verified")
 
         # ================= CHECK VIP STATUS =================
         cur.execute("""
@@ -1480,43 +1467,47 @@ def handle_vip_join(c):
         """, (user_id,))
         vip = cur.fetchone()
 
-        print("VIP ROW:", vip)
-        bot.send_message(ADMIN_ID, f"VIP Row: {vip}")
-
         if not vip or vip[0] != "active":
             bot.send_message(user_id, "VIP not active.")
-            bot.send_message(ADMIN_ID, "❌ VIP not active in DB")
             cur.close(); conn.close()
             return
 
         status, join_date, old_link = vip
 
+        # 🔐 If already joined
         if join_date is not None:
             bot.send_message(user_id, "You are already inside VIP group.")
-            bot.send_message(ADMIN_ID, "⚠ User already joined before")
             cur.close(); conn.close()
             return
 
-        # 🔥 Revoke old unused link
+        # 🔐 If link already generated before, DO NOT CREATE NEW ONE
         if old_link:
-            try:
-                bot.revoke_chat_invite_link(VIP_GROUP_ID, old_link)
-                bot.send_message(ADMIN_ID, "♻ Old invite revoked")
-            except Exception as e:
-                bot.send_message(ADMIN_ID, f"⚠ Failed to revoke old link: {e}")
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton(
+                    "Join VIP Now",
+                    url=old_link
+                )
+            )
+
+            bot.edit_message_text(
+                "🔐 <b>VIP ACCESS READY</b>\n\nTap below to request access 👇",
+                chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+
+            cur.close()
+            conn.close()
+            return
 
         # ================= CREATE PRIVATE USER LINK =================
         try:
-            bot.send_message(ADMIN_ID, f"Creating invite link in group {VIP_GROUP_ID}")
-
             invite = bot.create_chat_invite_link(
                 chat_id=VIP_GROUP_ID,
-                member_limit=1,
                 creates_join_request=True
             )
-
-            print("INVITE LINK:", invite.invite_link)
-            bot.send_message(ADMIN_ID, f"✅ Invite created:\n{invite.invite_link}")
 
             cur.execute("""
                 UPDATE vip_members
@@ -1525,10 +1516,8 @@ def handle_vip_join(c):
             """, (invite.invite_link, user_id))
 
             conn.commit()
-
-            bot.send_message(ADMIN_ID, "✅ Invite link saved to DB")
-
-            cur.close(); conn.close()
+            cur.close()
+            conn.close()
 
             kb = InlineKeyboardMarkup()
             kb.add(
@@ -1546,17 +1535,13 @@ def handle_vip_join(c):
                 reply_markup=kb
             )
 
-            bot.send_message(ADMIN_ID, "✅ Message edited successfully")
-
-        except Exception as e:
-            print("INVITE ERROR:", e)
+        except Exception:
             bot.send_message(user_id, "Unable to generate join link.")
-            bot.send_message(ADMIN_ID, f"❌ INVITE ERROR: {e}")
-            cur.close(); conn.close()
+            cur.close()
+            conn.close()
 
-    except Exception as main_error:
-        print("MAIN ERROR:", main_error)
-        bot.send_message(ADMIN_ID, f"🔥 MAIN ERROR: {main_error}")
+    except Exception:
+        pass
 
 
 
