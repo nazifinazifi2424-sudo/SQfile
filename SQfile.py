@@ -630,191 +630,289 @@ def send_feedback_prompt(user_id, order_id):
     except Exception as e:
         print("FEEDBACK SEND ERROR:", e)
 
+
 @app.route("/webhook", methods=["POST"])
 def paystack_webhook():
 
     def debug(msg):
         print("DEBUG:", msg)
         try:
-            bot.send_message(ADMIN_ID, f"🐞 DEBUG:\n{msg}")
+            bot.send_message(ADMIN_ID, f"🔥 DEBUG:\n{msg}")
         except Exception as e:
             print("DEBUG SEND ERROR:", e)
 
-    debug("========== WEBHOOK CALLED ==========")
+    try:
+        debug("========== WEBHOOK CALLED ==========")
 
-    # ================= SIGNATURE =================
-    debug("Checking signature header...")
-    signature = request.headers.get("x-paystack-signature")
-    debug(f"Signature from header: {signature}")
+        # ================= SIGNATURE =================
+        signature = request.headers.get("x-paystack-signature")
+        if not signature:
+            return "Missing signature", 401
 
-    if not signature:
-        debug("RETURN: Missing signature")
-        return "Missing signature", 401
+        computed = hmac.new(
+            PAYSTACK_SECRET.encode(),
+            request.data,
+            hashlib.sha512
+        ).hexdigest()
 
-    debug("Generating computed signature...")
-    computed = hmac.new(
-        PAYSTACK_SECRET.encode(),
-        request.data,
-        hashlib.sha512
-    ).hexdigest()
+        if signature != computed:
+            return "Invalid signature", 401
 
-    debug(f"Computed signature: {computed}")
+        # ================= PAYLOAD =================
+        payload = request.json or {}
+        if payload.get("event") != "charge.success":
+            return "Ignored", 200
 
-    if signature != computed:
-        debug("RETURN: Invalid signature")
-        return "Invalid signature", 401
+        data = payload.get("data", {})
+        raw_reference = data.get("reference")
+        currency = data.get("currency")
+        paid_amount = int(data.get("amount", 0) / 100)
 
-    debug("Signature verified successfully")
+        metadata = data.get("metadata", {}) or {}
+        order_id = metadata.get("order_id")
 
-    # ================= PAYLOAD =================
-    debug("Reading payload JSON...")
-    payload = request.json or {}
-    debug(f"Payload: {payload}")
+        if not order_id and raw_reference:
+            order_id = raw_reference.split("_")[0]
 
-    event = payload.get("event")
-    debug(f"Event type: {event}")
+        if not order_id:
+            return "Order ID missing", 200
 
-    if event != "charge.success":
-        debug("RETURN: Event ignored")
-        return "Ignored", 200
+        # ================= DB CONNECT =================
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            debug("DB CONNECTED")
+        except Exception as e:
+            debug(f"DB CONNECTION ERROR:\n{e}")
+            return "DB connection failed", 200
 
-    data = payload.get("data", {})
-    debug(f"Data block: {data}")
+        # ================= FETCH ORDER =================
+        try:
+            cur.execute("""
+                SELECT user_id, amount, paid, type
+                FROM orders
+                WHERE id=%s
+            """, (order_id,))
+            row = cur.fetchone()
+            debug(f"ORDER ROW: {row}")
+        except Exception as e:
+            debug(f"FETCH ORDER ERROR:\n{e}")
+            return "Fetch error", 200
 
-    raw_reference = data.get("reference")
-    currency = data.get("currency")
-    paid_amount = int(data.get("amount", 0) / 100)
+        if not row:
+            cur.close()
+            conn.close()
+            return "Order not found", 200
 
-    debug(f"Raw reference: {raw_reference}")
-    debug(f"Currency: {currency}")
-    debug(f"Paid amount: {paid_amount}")
+        user_id, expected_amount, paid, order_type = row
 
-    # ================= FIX REFERENCE =================
-    debug("Fixing order ID...")
-    metadata = data.get("metadata", {}) or {}
-    order_id = metadata.get("order_id")
+        if paid == 1:
+            cur.close()
+            conn.close()
+            return "Already processed", 200
 
-    debug(f"Order ID from metadata: {order_id}")
+        if paid_amount != expected_amount or currency != "NGN":
+            cur.close()
+            conn.close()
+            return "Wrong payment", 200
 
-    if not order_id and raw_reference:
-        order_id = raw_reference.split("_")[0]
-        debug(f"Order ID extracted from reference: {order_id}")
+        # ================= UPDATE PAID =================
+        try:
+            cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
+            debug("PAID FLAG UPDATED")
+        except Exception as e:
+            debug(f"UPDATE ERROR:\n{e}")
+            conn.rollback()
+            cur.close()
+            conn.close()
+            return "Update error", 200
 
-    if not order_id:
-        debug("RETURN: Order ID missing")
-        return "Order ID missing", 200
+        # =====================================================
+        # ================== FILM ORDER =======================
+        # =====================================================
+        if order_type == "film":
 
-    debug(f"Final order ID: {order_id}")
+            debug("ENTERED FILM BLOCK")
 
-    # ================= DB =================
-    debug("Connecting to DB...")
-    conn = get_conn()
-    cur = conn.cursor()
-    debug("DB connected")
+            try:
+                cur.execute("""
+                    SELECT i.title, i.group_key
+                    FROM order_items oi
+                    JOIN items i ON i.id = oi.item_id
+                    WHERE oi.order_id=%s
+                """, (order_id,))
+                rows = cur.fetchall()
+                debug(f"FILM ROWS: {rows}")
+            except Exception as e:
+                debug(f"FILM FETCH ERROR:\n{e}")
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return "Film error", 200
 
-    debug("Fetching order from DB...")
-    cur.execute("""
-        SELECT user_id, amount, paid, type
-        FROM orders
-        WHERE id=%s
-    """, (order_id,))
-    row = cur.fetchone()
+            groups = {}
+            for title, group_key in rows:
+                key = group_key or f"single_{title}"
+                if key not in groups:
+                    groups[key] = {"title": title, "count": 0}
+                groups[key]["count"] += 1
 
-    debug(f"DB fetch result: {row}")
+            lines = []
+            for g in groups.values():
+                if g["count"] > 1:
+                    lines.append(f"{g['title']} ({g['count']})")
+                else:
+                    lines.append(f"{g['title']}")
 
-    if not row:
-        debug("RETURN: Order not found")
-        cur.close()
-        conn.close()
-        return "Order not found", 200
+            titles_text = ", ".join(lines) if lines else "N/A"
 
-    user_id, expected_amount, paid, order_type = row
+            conn.commit()
+            cur.close()
+            conn.close()
 
-    debug(f"user_id: {user_id}")
-    debug(f"expected_amount: {expected_amount}")
-    debug(f"paid flag: {paid}")
-    debug(f"order_type raw: '{order_type}'")
+            try:
+                kb = InlineKeyboardMarkup()
+                kb.add(
+                    InlineKeyboardButton(
+                        "⬇️ DOWNLOAD NOW",
+                        callback_data=f"deliver:{order_id}"
+                    )
+                )
 
-    if paid == 1:
-        debug("RETURN: Already processed")
-        cur.close()
-        conn.close()
-        return "Already processed", 200
+                bot.send_message(
+                    user_id,
+                    f"""🎉 <b>Payment Successful!</b>
 
-    if paid_amount != expected_amount or currency != "NGN":
-        debug("RETURN: Wrong payment")
-        cur.close()
-        conn.close()
-        return "Wrong payment", 200
+👤 <b>Name:</b> User
+🎬 <b>Items:</b> {titles_text}
 
-    # ================= MARK AS PAID =================
-    debug("Updating paid flag in DB...")
-    cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
-    debug("Paid flag updated")
+🗃 <b>Order ID:</b>
+<code>{order_id}</code>
 
-    # ================= FILM / VIP CHECK =================
-    debug("Checking order_type branch...")
+💳 <b>Amount:</b> ₦{paid_amount}
+""",
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+                debug("FILM TELEGRAM SENT")
+            except Exception as e:
+                debug(f"FILM TELEGRAM ERROR:\n{e}")
 
-    if order_type == "film":
+            return "OK", 200
 
-        debug("ENTERED FILM BLOCK")
+        # =====================================================
+        # ================== VIP ORDER ========================
+        # =====================================================
+        elif order_type == "vip":
 
-        # ===== FILM LOGIC =====
-        # (duk film code naka yana nan ba canji)
-        conn.commit()
-        cur.close()
-        conn.close()
+            debug("ENTERED VIP BLOCK")
 
-        debug("FILM BLOCK FINISHED")
-        return "OK", 200
+            from datetime import datetime, timedelta
+            start_date = datetime.now()
 
-    elif order_type == "vip":
+            if VIP_DURATION_UNIT == "minutes":
+                end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
+            else:
+                end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
-        debug("ENTERED VIP BLOCK")
+            # ===== TABLE CHECK =====
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'vip_members'
+                )
+            """)
+            debug(f"VIP TABLE EXISTS: {cur.fetchone()[0]}")
 
-        from datetime import datetime, timedelta
-        start_date = datetime.now()
+            # ===== COLUMN CHECK =====
+            cur.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name='vip_members'
+            """)
+            cols = [r[0] for r in cur.fetchall()]
+            debug(f"VIP COLUMNS: {cols}")
 
-        if VIP_DURATION_UNIT == "minutes":
-            end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
+            # ===== UNIQUE CHECK =====
+            cur.execute("""
+                SELECT constraint_name
+                FROM information_schema.table_constraints
+                WHERE table_name='vip_members'
+                AND constraint_type='UNIQUE'
+            """)
+            debug(f"VIP UNIQUE CONSTRAINTS: {cur.fetchall()}")
+
+            # ===== INSERT TEST =====
+            try:
+                cur.execute("""
+                    INSERT INTO vip_members 
+                    (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                    VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        order_id = EXCLUDED.order_id,
+                        join_date = EXCLUDED.join_date,
+                        expire_at = EXCLUDED.expire_at,
+                        status = 'active',
+                        warn1_sent = FALSE,
+                        warn2_sent = FALSE,
+                        payment_date = NOW()
+                """, (user_id, order_id, start_date, end_date))
+
+                debug("VIP INSERT SUCCESS")
+
+            except Exception as e:
+                debug(f"VIP INSERT FAILED:\n{e}")
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return "VIP insert failed", 200
+
+            try:
+                conn.commit()
+                debug("VIP COMMIT SUCCESS")
+            except Exception as e:
+                debug(f"VIP COMMIT FAILED:\n{e}")
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return "Commit failed", 200
+
+            cur.close()
+            conn.close()
+
+            # ===== TELEGRAM =====
+            try:
+                vip_kb = InlineKeyboardMarkup()
+                vip_kb.add(
+                    InlineKeyboardButton(
+                        "🔐 JOIN VIP GROUP",
+                        callback_data=f"vipnow:{order_id}"
+                    )
+                )
+
+                bot.send_message(
+                    user_id,
+                    "💎 VIP Activated!\n\nTap below to join.",
+                    reply_markup=vip_kb
+                )
+
+                debug("VIP TELEGRAM SENT")
+
+            except Exception as e:
+                debug(f"VIP TELEGRAM FAILED:\n{e}")
+
+            return "OK", 200
+
         else:
-            end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
+            conn.commit()
+            cur.close()
+            conn.close()
+            return "OK", 200
 
-        debug(f"VIP start_date: {start_date}")
-        debug(f"VIP end_date: {end_date}")
-
-        cur.execute("""
-            INSERT INTO vip_members 
-            (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-            VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                order_id = EXCLUDED.order_id,
-                join_date = EXCLUDED.join_date,
-                expire_at = EXCLUDED.expire_at,
-                status = 'active',
-                warn1_sent = FALSE,
-                warn2_sent = FALSE,
-                payment_date = NOW()
-        """, (user_id, order_id, start_date, end_date))
-
-        debug("VIP inserted/updated in DB")
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        debug("VIP BLOCK FINISHED")
-        return "OK", 200
-
-    else:
-        debug("RETURN: Order type did not match film or vip")
-        conn.commit()
-        cur.close()
-        conn.close()
-        return "OK", 200
-
-
+    except Exception as e:
+        debug(f"FATAL ERROR:\n{e}")
+        return "Fatal error", 200
 
 
 
