@@ -1427,6 +1427,27 @@ Tap below to continue.
     conn.close()
 
 
+
+
+@bot.message_handler(commands=["link"])
+def generate_permanent_link(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        invite = bot.create_chat_invite_link(
+            chat_id=VIP_GROUP_ID
+        )
+
+        bot.send_message(
+            ADMIN_ID,
+            f"🔗 Permanent VIP Link:\n\n{invite.invite_link}"
+        )
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, "Failed to generate link.")
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
 
