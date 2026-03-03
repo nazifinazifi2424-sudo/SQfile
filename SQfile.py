@@ -961,22 +961,23 @@ def paystack_webhook():
         else:
             end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
+        # 🔥 FIXED: Do NOT start subscription yet
         cur.execute(
             """
             INSERT INTO vip_members 
             (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-            VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
+            VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
             ON CONFLICT (user_id)
             DO UPDATE SET
                 order_id = EXCLUDED.order_id,
-                join_date = EXCLUDED.join_date,
-                expire_at = EXCLUDED.expire_at,
+                join_date = NULL,
+                expire_at = NULL,
                 status = 'active',
                 warn1_sent = FALSE,
                 warn2_sent = FALSE,
                 payment_date = NOW()
             """,
-            (user_id, order_id, start_date, end_date)
+            (user_id, order_id)
         )
 
         conn.commit()
@@ -1030,6 +1031,7 @@ def paystack_webhook():
         return "OK", 200
 
     return "OK", 200
+
 
 
 
