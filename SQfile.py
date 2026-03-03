@@ -655,6 +655,7 @@ OTP_ADMIN_ID = 6603268127
 BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
+COUNTDOWN_SECONDS = 60
 VIP_LINK = "https://t.me/+vK9U5iyAWpQ2ZTM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -1428,135 +1429,10 @@ Tap below to continue.
     conn.close()
 
 
-
-
-import time
 import threading
+import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-@bot.message_handler(commands=["link"])
-def send_permanent_link(message):
-
-    user_id = message.from_user.id
-    username = message.from_user.username
-    full_name = message.from_user.first_name
-
-    try:
-
-        # 🔎 SEND DEBUG TO ADMIN
-        bot.send_message(
-            ADMIN_ID,
-            f"""
-🟢 LINK BUTTON USED
-
-User ID: {user_id}
-Name: {full_name}
-Username: @{username if username else "None"}
-
-Link Type: PERMANENT GROUP LINK
-Telegram Expire Setting: NONE
-Member Limit: NONE
-Revoke: DISABLED
-
-Status: LINK SENT
-"""
-        )
-
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "🔐 Join Now",
-                url=VIP_LINK
-            )
-        )
-
-        sent = bot.send_message(
-            user_id,
-            "⏳ Link available for 60 seconds...",
-            reply_markup=kb
-        )
-
-        # ⏳ COUNTDOWN (MESSAGE ONLY)
-        def countdown():
-
-            for remaining in range(59, -1, -1):
-                time.sleep(1)
-                try:
-                    bot.edit_message_text(
-                        f"⏳ Link available for {remaining} seconds...",
-                        chat_id=user_id,
-                        message_id=sent.message_id,
-                        reply_markup=kb
-                    )
-                except:
-                    return
-
-            # ⛔ After 60 sec delete message only
-            try:
-                bot.delete_message(user_id, sent.message_id)
-
-                bot.send_message(
-                    ADMIN_ID,
-                    f"""
-⏰ MESSAGE TIMEOUT
-
-User ID: {user_id}
-Action: Message Deleted After 60 Seconds
-Link Status: STILL ACTIVE
-Telegram Link: NOT REVOKED
-"""
-                )
-
-            except Exception as e:
-                bot.send_message(
-                    ADMIN_ID,
-                    f"""
-⚠ TIMEOUT DELETE ERROR
-
-User ID: {user_id}
-Error: {str(e)}
-"""
-                )
-
-        threading.Thread(target=countdown).start()
-
-    except Exception as e:
-
-        bot.send_message(user_id, "Failed to send link.")
-
-        bot.send_message(
-            ADMIN_ID,
-            f"""
-🚨 LINK ERROR
-
-User ID: {user_id}
-Error: {str(e)}
-"""
-        )
-
-@bot.chat_member_handler()
-def track_user_join(update):
-
-    if update.chat.id == VIP_GROUP_ID:
-
-        new_status = update.new_chat_member.status
-        old_status = update.old_chat_member.status
-        joined_user_id = update.new_chat_member.user.id
-
-        if new_status in ["member", "administrator"]:
-
-            bot.send_message(
-                ADMIN_ID,
-                f"""
-✅ USER JOINED GROUP
-
-User ID: {joined_user_id}
-Old Status: {old_status}
-New Status: {new_status}
-
-Source: Permanent Group Link
-"""
-            )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
@@ -1592,7 +1468,7 @@ def handle_vip_join(c):
 
         # ================= CHECK VIP STATUS =================
         cur.execute("""
-            SELECT status, join_date, invite_link
+            SELECT status, join_date
             FROM vip_members
             WHERE user_id=%s
         """, (user_id,))
@@ -1603,78 +1479,118 @@ def handle_vip_join(c):
             cur.close(); conn.close()
             return
 
-        status, join_date, old_link = vip
+        status, join_date = vip
 
-        # 🔐 If already joined
         if join_date is not None:
             bot.send_message(user_id, "You are already inside VIP group.")
             cur.close(); conn.close()
             return
 
-        # 🔐 If link already generated before, DO NOT CREATE NEW ONE
-        if old_link:
-            kb = InlineKeyboardMarkup()
-            kb.add(
-                InlineKeyboardButton(
-                    "Join VIP Now",
-                    url=old_link
+        # ================= SEND PERMANENT LINK =================
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "🔐 Join VIP Now",
+                url=VIP_LINK
+            )
+        )
+
+        bot.edit_message_text(
+            f"🔐 <b>VIP ACCESS READY</b>\n\n"
+            f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"
+            f"Tap below to join 👇",
+            chat_id=c.message.chat.id,
+            message_id=c.message.message_id,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+        sent_chat_id = c.message.chat.id
+        sent_message_id = c.message.message_id
+
+        # ================= COUNTDOWN SYSTEM =================
+        def countdown():
+
+            for remaining in range(COUNTDOWN_SECONDS, 0, -1):
+                time.sleep(1)
+
+                # check if user already joined
+                cur2 = get_conn().cursor()
+                cur2.execute("""
+                    SELECT join_date FROM vip_members
+                    WHERE user_id=%s
+                """, (user_id,))
+                check = cur2.fetchone()
+                cur2.connection.close()
+
+                if check and check[0] is not None:
+                    try:
+                        bot.edit_message_text(
+                            "✅ <b>Group Joined Successfully</b>\n\n"
+                            "Thank you our valued customer ❤️\n"
+                            "Muna farin cikin kasancewarka a group din mu.",
+                            chat_id=sent_chat_id,
+                            message_id=sent_message_id,
+                            parse_mode="HTML"
+                        )
+                    except:
+                        pass
+                    return
+
+                try:
+                    bot.edit_message_text(
+                        f"🔐 <b>VIP ACCESS READY</b>\n\n"
+                        f"⏳ Link expires in {remaining} seconds...\n\n"
+                        f"Tap below to join 👇",
+                        chat_id=sent_chat_id,
+                        message_id=sent_message_id,
+                        parse_mode="HTML",
+                        reply_markup=kb
+                    )
+                except:
+                    return
+
+            # ⛔ TIME OUT
+            try:
+                bot.edit_message_text(
+                    "❌ <b>TIME OUT</b>\n\n"
+                    "This link has expired.",
+                    chat_id=sent_chat_id,
+                    message_id=sent_message_id,
+                    parse_mode="HTML"
                 )
-            )
+            except:
+                pass
 
-            bot.edit_message_text(
-                "🔐 <b>VIP ACCESS READY</b>\n\nTap below to request access 👇",
-                chat_id=c.message.chat.id,
-                message_id=c.message.message_id,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
+        threading.Thread(target=countdown).start()
 
-            cur.close()
-            conn.close()
-            return
-
-        # ================= CREATE PRIVATE USER LINK =================
-        try:
-            invite = bot.create_chat_invite_link(
-                chat_id=VIP_GROUP_ID,
-                creates_join_request=True
-            )
-
-            cur.execute("""
-                UPDATE vip_members
-                SET invite_link=%s
-                WHERE user_id=%s
-            """, (invite.invite_link, user_id))
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-            kb = InlineKeyboardMarkup()
-            kb.add(
-                InlineKeyboardButton(
-                    "Join VIP Now",
-                    url=invite.invite_link
-                )
-            )
-
-            bot.edit_message_text(
-                "🔐 <b>VIP ACCESS READY</b>\n\nTap below to request access 👇",
-                chat_id=c.message.chat.id,
-                message_id=c.message.message_id,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-
-        except Exception:
-            bot.send_message(user_id, "Unable to generate join link.")
-            cur.close()
-            conn.close()
+        cur.close()
+        conn.close()
 
     except Exception:
         pass
 
 
+
+@bot.chat_member_handler()
+def track_user_join(update):
+
+    if update.chat.id == VIP_GROUP_ID:
+
+        if update.new_chat_member.status in ["member", "administrator"]:
+
+            conn = get_conn()
+            cur = conn.cursor()
+
+            cur.execute("""
+                UPDATE vip_members
+                SET join_date = NOW()
+                WHERE user_id=%s
+            """, (update.new_chat_member.user.id,))
+
+            conn.commit()
+            cur.close()
+            conn.close()
 
 @bot.chat_join_request_handler()
 def handle_join_request(request):
