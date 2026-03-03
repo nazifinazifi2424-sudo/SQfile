@@ -655,6 +655,7 @@ OTP_ADMIN_ID = 6603268127
 BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
+VIP_LINK = "https://t.me/+vK9U5iyAWpQ2ZTM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -1426,38 +1427,38 @@ Tap below to continue.
     cur.close()
     conn.close()
 
+
+
+
 import time
 import threading
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @bot.message_handler(commands=["link"])
-def generate_temp_link(message):
+def send_permanent_link(message):
 
     user_id = message.from_user.id
+    username = message.from_user.username
+    full_name = message.from_user.first_name
 
     try:
-        # 🔍 Create invite link WITHOUT expire
-        invite = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID
-        )
 
-        link = invite.invite_link
-        expire_date = invite.expire_date
-        member_limit = invite.member_limit
-        creates_join_request = invite.creates_join_request
-
-        # 📢 SEND FULL DEBUG TO ADMIN
+        # 🔎 SEND DEBUG TO ADMIN
         bot.send_message(
             ADMIN_ID,
             f"""
-🔎 LINK CREATED
+🟢 LINK BUTTON USED
 
 User ID: {user_id}
-Link: {link}
+Name: {full_name}
+Username: @{username if username else "None"}
 
-Expire Date From Telegram: {expire_date}
-Member Limit: {member_limit}
-Join Request Mode: {creates_join_request}
+Link Type: PERMANENT GROUP LINK
+Telegram Expire Setting: NONE
+Member Limit: NONE
+Revoke: DISABLED
+
+Status: LINK SENT
 """
         )
 
@@ -1465,23 +1466,24 @@ Join Request Mode: {creates_join_request}
         kb.add(
             InlineKeyboardButton(
                 "🔐 Join Now",
-                url=link
+                url=VIP_LINK
             )
         )
 
         sent = bot.send_message(
             user_id,
-            "⏳ Link expires in 60 seconds...",
+            "⏳ Link available for 60 seconds...",
             reply_markup=kb
         )
 
+        # ⏳ COUNTDOWN (MESSAGE ONLY)
         def countdown():
 
             for remaining in range(59, -1, -1):
                 time.sleep(1)
                 try:
                     bot.edit_message_text(
-                        f"⏳ Link expires in {remaining} seconds...",
+                        f"⏳ Link available for {remaining} seconds...",
                         chat_id=user_id,
                         message_id=sent.message_id,
                         reply_markup=kb
@@ -1489,57 +1491,48 @@ Join Request Mode: {creates_join_request}
                 except:
                     return
 
-            # 🔴 After 60 sec revoke manually
+            # ⛔ After 60 sec delete message only
             try:
-                bot.revoke_chat_invite_link(
-                    VIP_GROUP_ID,
-                    link
-                )
+                bot.delete_message(user_id, sent.message_id)
 
                 bot.send_message(
                     ADMIN_ID,
                     f"""
-⛔ LINK REVOKED
+⏰ MESSAGE TIMEOUT
 
 User ID: {user_id}
-Link: {link}
-Reason: 60 seconds finished
+Action: Message Deleted After 60 Seconds
+Link Status: STILL ACTIVE
+Telegram Link: NOT REVOKED
 """
                 )
 
             except Exception as e:
                 bot.send_message(
                     ADMIN_ID,
-                    f"❌ REVOKE ERROR:\n{str(e)}"
-                )
+                    f"""
+⚠ TIMEOUT DELETE ERROR
 
-            try:
-                bot.edit_message_text(
-                    "❌ TIME OUT\n\nThis link has expired.",
-                    chat_id=user_id,
-                    message_id=sent.message_id
+User ID: {user_id}
+Error: {str(e)}
+"""
                 )
-            except:
-                pass
 
         threading.Thread(target=countdown).start()
 
     except Exception as e:
 
-        bot.send_message(user_id, "Failed to generate link.")
+        bot.send_message(user_id, "Failed to send link.")
 
         bot.send_message(
             ADMIN_ID,
             f"""
-🚨 LINK GENERATION ERROR
+🚨 LINK ERROR
 
 User ID: {user_id}
 Error: {str(e)}
 """
         )
-
-
-# 🔥 TRACK IF USER ACTUALLY JOINED
 
 @bot.chat_member_handler()
 def track_user_join(update):
@@ -1548,6 +1541,7 @@ def track_user_join(update):
 
         new_status = update.new_chat_member.status
         old_status = update.old_chat_member.status
+        joined_user_id = update.new_chat_member.user.id
 
         if new_status in ["member", "administrator"]:
 
@@ -1556,9 +1550,11 @@ def track_user_join(update):
                 f"""
 ✅ USER JOINED GROUP
 
-User ID: {update.from_user.id}
+User ID: {joined_user_id}
 Old Status: {old_status}
 New Status: {new_status}
+
+Source: Permanent Group Link
 """
             )
 
