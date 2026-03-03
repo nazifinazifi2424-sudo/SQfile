@@ -3791,7 +3791,7 @@ def groupitem_deeplink_handler(msg):
     kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-    bot.send_message(
+    sent = bot.send_message(
         uid,
         f"""🧺 <b>Your order created 🎉</b>
 
@@ -3809,9 +3809,12 @@ def groupitem_deeplink_handler(msg):
         reply_markup=kb
     )
 
+    # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
+    ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
+
     cur.close()
     conn.close()
-        
+
 
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
 
