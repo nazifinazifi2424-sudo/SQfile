@@ -1380,99 +1380,134 @@ Tap below to continue.
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
 
-    bot.answer_callback_query(c.id)
-
-    order_id = c.data.split(":")[1]
-    user_id = c.from_user.id
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # ================= VERIFY ORDER =================
-    cur.execute("""
-        SELECT paid, user_id, type
-        FROM orders
-        WHERE id=%s
-    """, (order_id,))
-    row = cur.fetchone()
-
-    if not row:
-        bot.send_message(user_id, "Invalid order.")
-        cur.close(); conn.close()
-        return
-
-    paid, order_user_id, order_type = row
-
-    if paid != 1 or order_type != "vip" or order_user_id != user_id:
-        bot.send_message(user_id, "Payment not verified.")
-        cur.close(); conn.close()
-        return
-
-    # ================= CHECK VIP STATUS =================
-    cur.execute("""
-        SELECT status, join_date, invite_link
-        FROM vip_members
-        WHERE user_id=%s
-    """, (user_id,))
-    vip = cur.fetchone()
-
-    if not vip or vip[0] != "active":
-        bot.send_message(user_id, "VIP not active.")
-        cur.close(); conn.close()
-        return
-
-    status, join_date, old_link = vip
-
-    # 🔥 Already joined before
-    if join_date is not None:
-        bot.send_message(user_id, "You are already inside VIP group.")
-        cur.close(); conn.close()
-        return
-
-    # 🔥 Revoke old unused link
-    if old_link:
-        try:
-            bot.revoke_chat_invite_link(VIP_GROUP_ID, old_link)
-        except:
-            pass
-
-    # ================= CREATE PRIVATE USER LINK =================
     try:
-        invite = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID,
-            member_limit=1,                 # 🔐 only 1 use
-            creates_join_request=True       # must approve
-        )
+        bot.answer_callback_query(c.id)
+        print("VIPNOW CALLBACK RECEIVED")
 
+        bot.send_message(ADMIN_ID, "✅ vipnow callback triggered")
+
+        order_id = c.data.split(":")[1]
+        user_id = c.from_user.id
+
+        bot.send_message(ADMIN_ID, f"Order ID: {order_id}")
+        bot.send_message(ADMIN_ID, f"User ID: {user_id}")
+
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # ================= VERIFY ORDER =================
         cur.execute("""
-            UPDATE vip_members
-            SET invite_link=%s
+            SELECT paid, user_id, type
+            FROM orders
+            WHERE id=%s
+        """, (order_id,))
+        row = cur.fetchone()
+
+        print("ORDER ROW:", row)
+        bot.send_message(ADMIN_ID, f"DB Order Row: {row}")
+
+        if not row:
+            bot.send_message(user_id, "Invalid order.")
+            bot.send_message(ADMIN_ID, "❌ Order not found in DB")
+            cur.close(); conn.close()
+            return
+
+        paid, order_user_id, order_type = row
+
+        if paid != 1 or order_type != "vip" or order_user_id != user_id:
+            bot.send_message(user_id, "Payment not verified.")
+            bot.send_message(ADMIN_ID, "❌ Payment verification failed")
+            cur.close(); conn.close()
+            return
+
+        bot.send_message(ADMIN_ID, "✅ Order verified")
+
+        # ================= CHECK VIP STATUS =================
+        cur.execute("""
+            SELECT status, join_date, invite_link
+            FROM vip_members
             WHERE user_id=%s
-        """, (invite.invite_link, user_id))
+        """, (user_id,))
+        vip = cur.fetchone()
 
-        conn.commit()
-        cur.close(); conn.close()
+        print("VIP ROW:", vip)
+        bot.send_message(ADMIN_ID, f"VIP Row: {vip}")
 
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "Join VIP Now",
-                url=invite.invite_link
+        if not vip or vip[0] != "active":
+            bot.send_message(user_id, "VIP not active.")
+            bot.send_message(ADMIN_ID, "❌ VIP not active in DB")
+            cur.close(); conn.close()
+            return
+
+        status, join_date, old_link = vip
+
+        if join_date is not None:
+            bot.send_message(user_id, "You are already inside VIP group.")
+            bot.send_message(ADMIN_ID, "⚠ User already joined before")
+            cur.close(); conn.close()
+            return
+
+        # 🔥 Revoke old unused link
+        if old_link:
+            try:
+                bot.revoke_chat_invite_link(VIP_GROUP_ID, old_link)
+                bot.send_message(ADMIN_ID, "♻ Old invite revoked")
+            except Exception as e:
+                bot.send_message(ADMIN_ID, f"⚠ Failed to revoke old link: {e}")
+
+        # ================= CREATE PRIVATE USER LINK =================
+        try:
+            bot.send_message(ADMIN_ID, f"Creating invite link in group {VIP_GROUP_ID}")
+
+            invite = bot.create_chat_invite_link(
+                chat_id=VIP_GROUP_ID,
+                member_limit=1,
+                creates_join_request=True
             )
-        )
 
-        bot.edit_message_text(
-            "🔐 <b>VIP ACCESS READY</b>\n\nTap below to request access 👇",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+            print("INVITE LINK:", invite.invite_link)
+            bot.send_message(ADMIN_ID, f"✅ Invite created:\n{invite.invite_link}")
 
-    except Exception as e:
-        print("INVITE ERROR:", e)
-        bot.send_message(user_id, "Unable to generate join link.")
-        cur.close(); conn.close()
+            cur.execute("""
+                UPDATE vip_members
+                SET invite_link=%s
+                WHERE user_id=%s
+            """, (invite.invite_link, user_id))
+
+            conn.commit()
+
+            bot.send_message(ADMIN_ID, "✅ Invite link saved to DB")
+
+            cur.close(); conn.close()
+
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton(
+                    "Join VIP Now",
+                    url=invite.invite_link
+                )
+            )
+
+            bot.edit_message_text(
+                "🔐 <b>VIP ACCESS READY</b>\n\nTap below to request access 👇",
+                chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+
+            bot.send_message(ADMIN_ID, "✅ Message edited successfully")
+
+        except Exception as e:
+            print("INVITE ERROR:", e)
+            bot.send_message(user_id, "Unable to generate join link.")
+            bot.send_message(ADMIN_ID, f"❌ INVITE ERROR: {e}")
+            cur.close(); conn.close()
+
+    except Exception as main_error:
+        print("MAIN ERROR:", main_error)
+        bot.send_message(ADMIN_ID, f"🔥 MAIN ERROR: {main_error}")
+
 
 
 @bot.chat_join_request_handler()
