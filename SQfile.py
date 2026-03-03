@@ -872,6 +872,11 @@ def paystack_webhook():
         )
         rows = cur.fetchall()
 
+        if not rows:
+            cur.close()
+            conn.close()
+            return "Empty order", 200
+
         groups = {}
 
         for title, group_key in rows:
