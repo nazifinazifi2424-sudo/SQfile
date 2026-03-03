@@ -1426,38 +1426,38 @@ Tap below to continue.
     cur.close()
     conn.close()
 
-
 import time
+import threading
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-ADMIN_ID = 123456789  # saka naka
-
 @bot.message_handler(commands=["link"])
-def send_main_link(message):
+def generate_temp_link(message):
 
     user_id = message.from_user.id
 
     try:
-        # 🔍 Get chat info for debug
-        chat = bot.get_chat(VIP_GROUP_ID)
-        admins = bot.get_chat_administrators(VIP_GROUP_ID)
+        # 🔍 Create invite link WITHOUT expire
+        invite = bot.create_chat_invite_link(
+            chat_id=VIP_GROUP_ID
+        )
 
-        bot_is_admin = any(admin.user.id == bot.get_me().id for admin in admins)
+        link = invite.invite_link
+        expire_date = invite.expire_date
+        member_limit = invite.member_limit
+        creates_join_request = invite.creates_join_request
 
-        # 🔗 Get permanent main link
-        link = bot.export_chat_invite_link(VIP_GROUP_ID)
-
-        # 📢 Send debug to admin
+        # 📢 SEND FULL DEBUG TO ADMIN
         bot.send_message(
             ADMIN_ID,
             f"""
-DEBUG REPORT:
+🔎 LINK CREATED
 
-User: {user_id}
-Group ID: {VIP_GROUP_ID}
-Bot is admin: {bot_is_admin}
-Group type: {chat.type}
-Exported Link: {link}
+User ID: {user_id}
+Link: {link}
+
+Expire Date From Telegram: {expire_date}
+Member Limit: {member_limit}
+Join Request Mode: {creates_join_request}
 """
         )
 
@@ -1471,38 +1471,96 @@ Exported Link: {link}
 
         sent = bot.send_message(
             user_id,
-            "⏳ Link available for 60 seconds...",
+            "⏳ Link expires in 60 seconds...",
             reply_markup=kb
         )
 
-        # Countdown
-        for remaining in range(59, -1, -1):
-            time.sleep(1)
+        def countdown():
+
+            for remaining in range(59, -1, -1):
+                time.sleep(1)
+                try:
+                    bot.edit_message_text(
+                        f"⏳ Link expires in {remaining} seconds...",
+                        chat_id=user_id,
+                        message_id=sent.message_id,
+                        reply_markup=kb
+                    )
+                except:
+                    return
+
+            # 🔴 After 60 sec revoke manually
+            try:
+                bot.revoke_chat_invite_link(
+                    VIP_GROUP_ID,
+                    link
+                )
+
+                bot.send_message(
+                    ADMIN_ID,
+                    f"""
+⛔ LINK REVOKED
+
+User ID: {user_id}
+Link: {link}
+Reason: 60 seconds finished
+"""
+                )
+
+            except Exception as e:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"❌ REVOKE ERROR:\n{str(e)}"
+                )
+
             try:
                 bot.edit_message_text(
-                    f"⏳ Link available for {remaining} seconds...",
+                    "❌ TIME OUT\n\nThis link has expired.",
                     chat_id=user_id,
-                    message_id=sent.message_id,
-                    reply_markup=kb
+                    message_id=sent.message_id
                 )
             except:
-                break
+                pass
 
-        # Remove button only
-        try:
-            bot.edit_message_text(
-                "❌ TIME OUT\n\nSession closed.",
-                chat_id=user_id,
-                message_id=sent.message_id
-            )
-        except:
-            pass
+        threading.Thread(target=countdown).start()
 
     except Exception as e:
-        bot.send_message(user_id, "Failed to get link.")
-        bot.send_message(ADMIN_ID, f"ERROR:\n{str(e)}")
+
+        bot.send_message(user_id, "Failed to generate link.")
+
+        bot.send_message(
+            ADMIN_ID,
+            f"""
+🚨 LINK GENERATION ERROR
+
+User ID: {user_id}
+Error: {str(e)}
+"""
+        )
 
 
+# 🔥 TRACK IF USER ACTUALLY JOINED
+
+@bot.chat_member_handler()
+def track_user_join(update):
+
+    if update.chat.id == VIP_GROUP_ID:
+
+        new_status = update.new_chat_member.status
+        old_status = update.old_chat_member.status
+
+        if new_status in ["member", "administrator"]:
+
+            bot.send_message(
+                ADMIN_ID,
+                f"""
+✅ USER JOINED GROUP
+
+User ID: {update.from_user.id}
+Old Status: {old_status}
+New Status: {new_status}
+"""
+            )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
