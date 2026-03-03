@@ -629,7 +629,8 @@ import urllib.parse
 import os
 import hmac
 import hashlib
-
+# Store order message temporarily in memory
+ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
@@ -882,6 +883,18 @@ def paystack_webhook():
         (order_id,)
     )
 
+    # ================= DELETE ORIGINAL ORDER MESSAGE =================
+    if order_id in ORDER_MESSAGES:
+
+        chat_id, message_id = ORDER_MESSAGES[order_id]
+
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+
+        del ORDER_MESSAGES[order_id]
+
     # ================= USER INFO =================
     cur.execute(
         """
@@ -1013,10 +1026,9 @@ def paystack_webhook():
         else:
             end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
-        # 🔥 FIXED: Do NOT start subscription yet
         cur.execute(
             """
-            INSERT INTO vip_members 
+            INSERT INTO vip_members   
             (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
             VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
             ON CONFLICT (user_id)
@@ -1083,9 +1095,6 @@ def paystack_webhook():
         return "OK", 200
 
     return "OK", 200
-
-
-
 
 # 
 # ========= TELEGRAM WEBHOOK =========
@@ -1311,6 +1320,7 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
 
     bot.answer_callback_query(call.id)
 
+
 # ======= VIP ORDER CREATOR (CALLBACK subvip) =========
 import uuid
 from psycopg2.extras import RealDictCursor
@@ -1330,66 +1340,47 @@ def vipgroup_handler(c):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ========= CHECK EXISTING UNPAID VIP =========
-    try:
-        cur.execute(
-            """
-            SELECT id, amount
-            FROM orders
-            WHERE user_id=%s
-              AND type='vip'
-              AND paid=0
-            LIMIT 1
-            """,
-            (uid,)
-        )
-        row = cur.fetchone()
-    except Exception:
-        cur.close()
-        conn.close()
-        return
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM orders
+        WHERE user_id=%s
+          AND type='vip'
+          AND paid=0
+        LIMIT 1
+        """,
+        (uid,)
+    )
+    row = cur.fetchone()
 
     # ========= REUSE OR CREATE =========
-    try:
-        if row:
-            order_id = row["id"]
+    if row:
+        order_id = row["id"]
 
-            # ✅ tabbatar amount daidai yake
-            if int(row["amount"]) != int(VIP_PRICE):
-                cur.execute(
-                    "UPDATE orders SET amount=%s WHERE id=%s",
-                    (VIP_PRICE, order_id)
-                )
-                conn.commit()
-
-        else:
-            order_id = str(uuid.uuid4())
+        if int(row["amount"]) != int(VIP_PRICE):
             cur.execute(
-                """
-                INSERT INTO orders (id, user_id, amount, paid, type)
-                VALUES (%s,%s,%s,0,'vip')
-                """,
-                (order_id, uid, VIP_PRICE)
+                "UPDATE orders SET amount=%s WHERE id=%s",
+                (VIP_PRICE, order_id)
             )
             conn.commit()
-
-    except Exception:
-        conn.rollback()
-        cur.close()
-        conn.close()
-        return
-
-    # ========= ALWAYS CREATE NEW PAYMENT LINK =========
-    try:
-        pay_url = create_paystack_payment(
-            uid,
-            order_id,
-            VIP_PRICE,
-            "VIP Subscription"
+    else:
+        order_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO orders (id, user_id, amount, paid, type)
+            VALUES (%s,%s,%s,0,'vip')
+            """,
+            (order_id, uid, VIP_PRICE)
         )
-    except Exception:
-        cur.close()
-        conn.close()
-        return
+        conn.commit()
+
+    # ========= CREATE PAYMENT LINK =========
+    pay_url = create_paystack_payment(
+        uid,
+        order_id,
+        VIP_PRICE,
+        "VIP Subscription"
+    )
 
     if not pay_url:
         cur.close()
@@ -1406,8 +1397,8 @@ def vipgroup_handler(c):
     kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-    bot.send_message(
-        uid,
+    # ✅ EDIT MESSAGE INSTEAD OF SEND
+    bot.edit_message_text(
         f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
 
 {first_name}, you are almost in our VIP group.
@@ -1421,8 +1412,16 @@ def vipgroup_handler(c):
 
 Tap below to continue.
 """,
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
         parse_mode="HTML",
         reply_markup=kb
+    )
+
+    # ✅ STORE MESSAGE IN MEMORY
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
     )
 
     cur.close()
@@ -1431,11 +1430,10 @@ Tap below to continue.
 
 
 
+
 import threading
 import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-ADMIN_USERNAME = "CEOalgaitabot"
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
