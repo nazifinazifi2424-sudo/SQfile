@@ -30,6 +30,111 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
 
+# ============================================
+# VIP TABLE AUTO STRUCTURE FIX (RUN ON START)
+# ============================================
+
+def ensure_vip_table_structure():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        print("🔍 Checking VIP table structure...")
+
+        # ================= CHECK TABLE =================
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'vip_members'
+            )
+        """)
+        table_exists = cur.fetchone()[0]
+
+        if not table_exists:
+            print("⚠️ vip_members table not found. Creating it...")
+
+            cur.execute("""
+                CREATE TABLE vip_members (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT UNIQUE NOT NULL,
+                    order_id TEXT,
+                    join_date TIMESTAMP,
+                    expire_at TIMESTAMP,
+                    status TEXT DEFAULT 'active',
+                    warn1_sent BOOLEAN DEFAULT FALSE,
+                    warn2_sent BOOLEAN DEFAULT FALSE,
+                    payment_date TIMESTAMP DEFAULT NOW()
+                )
+            """)
+
+            conn.commit()
+            print("✅ vip_members table created.")
+
+        else:
+            print("✅ vip_members table exists. Checking columns...")
+
+            # ================= CHECK COLUMNS =================
+            cur.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name='vip_members'
+            """)
+            existing_cols = [r[0] for r in cur.fetchall()]
+
+            def add_column(query, col_name):
+                if col_name not in existing_cols:
+                    print(f"⚠️ Adding missing column: {col_name}")
+                    cur.execute(query)
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN order_id TEXT",
+                "order_id"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN join_date TIMESTAMP",
+                "join_date"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN expire_at TIMESTAMP",
+                "expire_at"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN status TEXT DEFAULT 'active'",
+                "status"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN warn1_sent BOOLEAN DEFAULT FALSE",
+                "warn1_sent"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN warn2_sent BOOLEAN DEFAULT FALSE",
+                "warn2_sent"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN payment_date TIMESTAMP DEFAULT NOW()",
+                "payment_date"
+            )
+
+            conn.commit()
+            print("✅ VIP table structure verified.")
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print("❌ VIP STRUCTURE CHECK FAILED:", e)
+
+
+# Run automatically when app starts
+ensure_vip_table_structure()
+
+
 # =============================
 # ENSURE VIP MEMBERS TABLE
 # =============================
