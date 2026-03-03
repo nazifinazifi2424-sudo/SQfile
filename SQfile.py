@@ -377,7 +377,8 @@ CREATE TABLE IF NOT EXISTS vip_members (
     status VARCHAR(20) DEFAULT 'active',
     warn1_sent BOOLEAN DEFAULT FALSE,
     warn2_sent BOOLEAN DEFAULT FALSE,
-    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    invite_link TEXT DEFAULT NULL
 )
 """)
 
