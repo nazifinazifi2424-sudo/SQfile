@@ -1612,140 +1612,63 @@ def handle_vip_join(c):
         pass
 
 
-
-
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
-def vip_subscription_engine():
+def vip_expiry_checker():
 
     while True:
-
         try:
             conn = get_conn()
             cur = conn.cursor()
 
-            cur.execute("""
-                SELECT user_id, join_date, expire_at,
-                       warn1_sent, warn2_sent
+            cur.execute(
+                """
+                SELECT user_id
                 FROM vip_members
                 WHERE status='active'
-            """)
-            users = cur.fetchall()
-
-            now = datetime.now()
-
-            warn1_seconds = convert_to_seconds(
-                WARNING_1_VALUE,
-                WARNING_1_UNIT
+                AND expire_at IS NOT NULL
+                AND expire_at <= NOW()
+                """
             )
 
-            warn2_seconds = convert_to_seconds(
-                WARNING_2_VALUE,
-                WARNING_2_UNIT
-            )
+            expired_users = cur.fetchall()
 
-            for user_id, join_date, expire_at, warn1_sent, warn2_sent in users:
+            for row in expired_users:
+                user_id = row[0]
 
-                if not join_date or not expire_at:
-                    continue
+                # ===== REMOVE FROM GROUP (NOT PERMANENT BAN) =====
+                try:
+                    bot.ban_chat_member(VIP_GROUP_ID, user_id)
+                    bot.unban_chat_member(VIP_GROUP_ID, user_id)
+                except:
+                    pass
 
-                elapsed = (now - join_date).total_seconds()
-                remaining = (expire_at - now).total_seconds()
-
-                if elapsed >= warn1_seconds and not warn1_sent:
-
-                    bot.send_message(
-                        user_id,
-                        "⏳ VIP is about to expire.",
-                        reply_markup=vip_sub_button()
-                    )
-
-                    cur.execute("""
-                        UPDATE vip_members
-                        SET warn1_sent=TRUE
-                        WHERE user_id=%s
-                    """, (user_id,))
-
-                if elapsed >= warn2_seconds and not warn2_sent:
-
-                    bot.send_message(
-                        user_id,
-                        "⚠ Final warning: VIP almost expired.",
-                        reply_markup=vip_sub_button()
-                    )
-
-                    cur.execute("""
-                        UPDATE vip_members
-                        SET warn2_sent=TRUE
-                        WHERE user_id=%s
-                    """, (user_id,))
-
-                if remaining <= 0:
-
-                    try:
-                        bot.ban_chat_member(VIP_GROUP_ID, user_id)
-                        bot.unban_chat_member(VIP_GROUP_ID, user_id)
-                    except:
-                        pass
-
-                    cur.execute("""
+                # ===== UPDATE STATUS =====
+                try:
+                    cur.execute(
+                        """
                         UPDATE vip_members
                         SET status='expired'
                         WHERE user_id=%s
-                    """, (user_id,))
-
-                    bot.send_message(
-                        user_id,
-                        "💔 VIP expired. Renew to rejoin.",
-                        reply_markup=vip_sub_button()
+                        """,
+                        (user_id,)
                     )
+                    conn.commit()
+                except:
+                    pass
 
-            conn.commit()
             cur.close()
             conn.close()
 
-        except Exception as e:
-            print("VIP ENGINE ERROR:", e)
+        except:
+            pass
 
-        time.sleep(30)
-
-threading.Thread(
-    target=vip_subscription_engine,
-    daemon=True
-).start()
-
-def activate_vip(user_id, order_id=None):
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO vip_members (user_id, order_id, status,
-                                 join_date, expire_at,
-                                 warn1_sent, warn2_sent,
-                                 invite_link)
-        VALUES (%s, %s, 'active',
-                NULL, NULL,
-                FALSE, FALSE,
-                NULL)
-        ON CONFLICT (user_id)
-        DO UPDATE SET
-            order_id=EXCLUDED.order_id,
-            status='active',
-            join_date=NULL,
-            expire_at=NULL,
-            warn1_sent=FALSE,
-            warn2_sent=FALSE,
-            invite_link=NULL
-    """, (user_id, order_id))
-
-    conn.commit()
-    cur.close()
-    conn.close()
+        time.sleep(60)  # check every 60 seconds
 
 
+threading.Thread(target=vip_expiry_checker, daemon=True).start()
 
 
 
