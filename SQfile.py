@@ -744,7 +744,7 @@ def paystack_webhook():
         try:
             bot.send_message(ADMIN_ID, f"🔥 DEBUG:\n{msg}")
         except Exception as e:
-            print("DEBUG SEND ERROR:", e)
+            print("ADMIN DEBUG SEND ERROR:", e)
 
     try:
         debug("========== WEBHOOK CALLED ==========")
@@ -763,7 +763,6 @@ def paystack_webhook():
         if signature != computed:
             return "Invalid signature", 401
 
-        # ================= PAYLOAD =================
         payload = request.json or {}
         if payload.get("event") != "charge.success":
             return "Ignored", 200
@@ -783,26 +782,18 @@ def paystack_webhook():
             return "Order ID missing", 200
 
         # ================= DB CONNECT =================
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            debug("DB CONNECTED")
-        except Exception as e:
-            debug(f"DB CONNECTION ERROR:\n{e}")
-            return "DB connection failed", 200
+        conn = get_conn()
+        cur = conn.cursor()
+        debug("DB CONNECTED")
 
         # ================= FETCH ORDER =================
-        try:
-            cur.execute("""
-                SELECT user_id, amount, paid, type
-                FROM orders
-                WHERE id=%s
-            """, (order_id,))
-            row = cur.fetchone()
-            debug(f"ORDER ROW: {row}")
-        except Exception as e:
-            debug(f"FETCH ORDER ERROR:\n{e}")
-            return "Fetch error", 200
+        cur.execute("""
+            SELECT user_id, amount, paid, type
+            FROM orders
+            WHERE id=%s
+        """, (order_id,))
+        row = cur.fetchone()
+        debug(f"ORDER ROW: {row}")
 
         if not row:
             cur.close()
@@ -821,39 +812,24 @@ def paystack_webhook():
             conn.close()
             return "Wrong payment", 200
 
-        # ================= UPDATE PAID =================
-        try:
-            cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
-            debug("PAID FLAG UPDATED")
-        except Exception as e:
-            debug(f"UPDATE ERROR:\n{e}")
-            conn.rollback()
-            cur.close()
-            conn.close()
-            return "Update error", 200
+        cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
+        debug("PAID FLAG UPDATED")
 
         # =====================================================
-        # ================== FILM ORDER =======================
+        # ================= FILM ORDER ========================
         # =====================================================
         if order_type == "film":
 
             debug("ENTERED FILM BLOCK")
 
-            try:
-                cur.execute("""
-                    SELECT i.title, i.group_key
-                    FROM order_items oi
-                    JOIN items i ON i.id = oi.item_id
-                    WHERE oi.order_id=%s
-                """, (order_id,))
-                rows = cur.fetchall()
-                debug(f"FILM ROWS: {rows}")
-            except Exception as e:
-                debug(f"FILM FETCH ERROR:\n{e}")
-                conn.rollback()
-                cur.close()
-                conn.close()
-                return "Film error", 200
+            cur.execute("""
+                SELECT i.title, i.group_key
+                FROM order_items oi
+                JOIN items i ON i.id = oi.item_id
+                WHERE oi.order_id=%s
+            """, (order_id,))
+            rows = cur.fetchall()
+            debug(f"FILM ROWS: {rows}")
 
             groups = {}
             for title, group_key in rows:
@@ -876,19 +852,23 @@ def paystack_webhook():
             conn.close()
 
             try:
+                debug("SENDING FILM TELEGRAM")
+
+                callback_data = f"deliver:{order_id}"
+                debug(f"FILM CALLBACK LENGTH: {len(callback_data)}")
+
                 kb = InlineKeyboardMarkup()
                 kb.add(
                     InlineKeyboardButton(
                         "⬇️ DOWNLOAD NOW",
-                        callback_data=f"deliver:{order_id}"
+                        callback_data=callback_data
                     )
                 )
 
-                bot.send_message(
-                    user_id,
+                sent_msg = bot.send_message(
+                    int(user_id),
                     f"""🎉 <b>Payment Successful!</b>
 
-👤 <b>Name:</b> User
 🎬 <b>Items:</b> {titles_text}
 
 🗃 <b>Order ID:</b>
@@ -899,14 +879,16 @@ def paystack_webhook():
                     parse_mode="HTML",
                     reply_markup=kb
                 )
-                debug("FILM TELEGRAM SENT")
+
+                debug(f"FILM MESSAGE ID: {sent_msg.message_id}")
+
             except Exception as e:
                 debug(f"FILM TELEGRAM ERROR:\n{e}")
 
             return "OK", 200
 
         # =====================================================
-        # ================== VIP ORDER ========================
+        # ================= VIP ORDER =========================
         # =====================================================
         elif order_type == "vip":
 
@@ -914,98 +896,58 @@ def paystack_webhook():
 
             from datetime import datetime, timedelta
             start_date = datetime.now()
+            end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
-            if VIP_DURATION_UNIT == "minutes":
-                end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
-            else:
-                end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
-
-            # ===== TABLE CHECK =====
             cur.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'vip_members'
-                )
-            """)
-            debug(f"VIP TABLE EXISTS: {cur.fetchone()[0]}")
+                INSERT INTO vip_members 
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    order_id = EXCLUDED.order_id,
+                    join_date = EXCLUDED.join_date,
+                    expire_at = EXCLUDED.expire_at,
+                    status = 'active',
+                    warn1_sent = FALSE,
+                    warn2_sent = FALSE,
+                    payment_date = NOW()
+            """, (user_id, order_id, start_date, end_date))
 
-            # ===== COLUMN CHECK =====
-            cur.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='vip_members'
-            """)
-            cols = [r[0] for r in cur.fetchall()]
-            debug(f"VIP COLUMNS: {cols}")
+            debug("VIP INSERT SUCCESS")
 
-            # ===== UNIQUE CHECK =====
-            cur.execute("""
-                SELECT constraint_name
-                FROM information_schema.table_constraints
-                WHERE table_name='vip_members'
-                AND constraint_type='UNIQUE'
-            """)
-            debug(f"VIP UNIQUE CONSTRAINTS: {cur.fetchall()}")
-
-            # ===== INSERT TEST =====
-            try:
-                cur.execute("""
-                    INSERT INTO vip_members 
-                    (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                    VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        order_id = EXCLUDED.order_id,
-                        join_date = EXCLUDED.join_date,
-                        expire_at = EXCLUDED.expire_at,
-                        status = 'active',
-                        warn1_sent = FALSE,
-                        warn2_sent = FALSE,
-                        payment_date = NOW()
-                """, (user_id, order_id, start_date, end_date))
-
-                debug("VIP INSERT SUCCESS")
-
-            except Exception as e:
-                debug(f"VIP INSERT FAILED:\n{e}")
-                conn.rollback()
-                cur.close()
-                conn.close()
-                return "VIP insert failed", 200
-
-            try:
-                conn.commit()
-                debug("VIP COMMIT SUCCESS")
-            except Exception as e:
-                debug(f"VIP COMMIT FAILED:\n{e}")
-                conn.rollback()
-                cur.close()
-                conn.close()
-                return "Commit failed", 200
-
+            conn.commit()
             cur.close()
             conn.close()
 
-            # ===== TELEGRAM =====
             try:
+                debug("SENDING VIP TELEGRAM")
+
+                callback_data = f"vipnow:{order_id}"
+                debug(f"VIP CALLBACK LENGTH: {len(callback_data)}")
+
                 vip_kb = InlineKeyboardMarkup()
                 vip_kb.add(
                     InlineKeyboardButton(
                         "🔐 JOIN VIP GROUP",
-                        callback_data=f"vipnow:{order_id}"
+                        callback_data=callback_data
                     )
                 )
 
-                bot.send_message(
-                    user_id,
-                    "💎 VIP Activated!\n\nTap below to join.",
+                sent_msg = bot.send_message(
+                    int(user_id),
+                    """💎 <b>VIP Activated Successfully!</b>
+
+Your VIP subscription is now active.
+
+Tap the button below to join the VIP group.""",
+                    parse_mode="HTML",
                     reply_markup=vip_kb
                 )
 
-                debug("VIP TELEGRAM SENT")
+                debug(f"VIP MESSAGE ID: {sent_msg.message_id}")
 
             except Exception as e:
-                debug(f"VIP TELEGRAM FAILED:\n{e}")
+                debug(f"VIP TELEGRAM ERROR:\n{e}")
 
             return "OK", 200
 
@@ -1018,8 +960,6 @@ def paystack_webhook():
     except Exception as e:
         debug(f"FATAL ERROR:\n{e}")
         return "Fatal error", 200
-
-
 
 
 
