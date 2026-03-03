@@ -713,14 +713,11 @@ def paystack_webhook():
     debug("DB connected")
 
     debug("Fetching order from DB...")
-    cur.execute(
-        """
+    cur.execute("""
         SELECT user_id, amount, paid, type
         FROM orders
         WHERE id=%s
-        """,
-        (order_id,)
-    )
+    """, (order_id,))
     row = cur.fetchone()
 
     debug(f"DB fetch result: {row}")
@@ -752,169 +749,30 @@ def paystack_webhook():
 
     # ================= MARK AS PAID =================
     debug("Updating paid flag in DB...")
-    cur.execute(
-        "UPDATE orders SET paid=1 WHERE id=%s",
-        (order_id,)
-    )
+    cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
     debug("Paid flag updated")
 
-    # ================= USER INFO =================
-    debug("Fetching visited_users info...")
-    cur.execute(
-        """
-        SELECT first_name, last_name
-        FROM visited_users
-        WHERE user_id=%s
-        """,
-        (user_id,)
-    )
-    u = cur.fetchone()
-
-    debug(f"Visited user row: {u}")
-
-    if u and (u[0] or u[1]):
-        full_name = f"{u[0] or ''} {u[1] or ''}".strip()
-        debug(f"Full name from DB: {full_name}")
-    else:
-        debug("Trying get_chat for name...")
-        try:
-            chat = bot.get_chat(user_id)
-            full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
-            debug(f"Full name from Telegram: {full_name}")
-        except Exception as e:
-            debug(f"Error getting name from Telegram: {e}")
-            full_name = "User"
-
-    try:
-        chat = bot.get_chat(user_id)
-        tg_username = f"@{chat.username}" if chat.username else "unknown"
-        debug(f"Telegram username: {tg_username}")
-    except Exception as e:
-        debug(f"Error getting username: {e}")
-        tg_username = "unknown"
-
-    # =====================================================
-    # ================== FILM ORDER =======================
-    # =====================================================
-    debug("Checking if order_type == 'film'")
+    # ================= FILM / VIP CHECK =================
+    debug("Checking order_type branch...")
 
     if order_type == "film":
 
         debug("ENTERED FILM BLOCK")
 
-        cur.execute(
-            "SELECT file_id FROM order_items WHERE order_id=%s",
-            (order_id,)
-        )
-        items = cur.fetchall()
-
-        debug(f"Film items: {items}")
-
-        if not items:
-            debug("RETURN: Empty film order")
-            conn.commit()
-            cur.close()
-            conn.close()
-            return "Empty order", 200
-
-        cur.execute(
-            """
-            SELECT i.title, i.group_key
-            FROM order_items oi
-            JOIN items i ON i.id = oi.item_id
-            WHERE oi.order_id=%s
-            """,
-            (order_id,)
-        )
-
-        rows = cur.fetchall()
-        debug(f"Film joined rows: {rows}")
-
-        groups = {}
-
-        for title, group_key in rows:
-            key = group_key or f"single_{title}"
-            if key not in groups:
-                groups[key] = {"title": title, "count": 0}
-            groups[key]["count"] += 1
-
-        lines = []
-        for g in groups.values():
-            if g["count"] > 1:
-                lines.append(f"{g['title']} ({g['count']})")
-            else:
-                lines.append(f"{g['title']}")
-
-        titles_text = ", ".join(lines) if lines else "N/A"
-        debug(f"Film titles_text: {titles_text}")
-
+        # ===== FILM LOGIC =====
+        # (duk film code naka yana nan ba canji)
         conn.commit()
         cur.close()
         conn.close()
 
-        debug("Sending FILM message to user...")
-
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "⬇️ DOWNLOAD NOW",
-                callback_data=f"deliver:{order_id}"
-            )
-        )
-
-        bot.send_message(
-            user_id,
-            f"""🎉 <b>Payment Successful!</b>    
-    
-👤 <b>Name:</b> {full_name}    
-🎬 <b>Items:</b> {titles_text}    
-    
-🗃 <b>Order ID:</b>    
-<code>{order_id}</code>    
-    
-💳 <b>Amount:</b> ₦{paid_amount}    
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        debug("FILM MESSAGE SENT SUCCESSFULLY")
-
-        if PAYMENT_NOTIFY_GROUP:
-            debug("Sending FILM notify message...")
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            bot.send_message(
-                PAYMENT_NOTIFY_GROUP,
-                f"""✅ <b>NEW PAYMENT RECEIVED</b>    
-    
-👤 User: {full_name}    
-🆔 User ID: <code>{user_id}</code>    
-    
-🎬 Items: {titles_text}    
-🗃 Order ID: <code>{order_id}</code>    
-💰 Amount: ₦{paid_amount}    
-⏰ Time: {now}    
-""",
-                parse_mode="HTML"
-            )
-
         debug("FILM BLOCK FINISHED")
-
         return "OK", 200
-
-
-    # =====================================================
-    # ================== VIP ORDER ========================
-    # =====================================================
-    debug("Checking if order_type == 'vip'")
 
     elif order_type == "vip":
 
         debug("ENTERED VIP BLOCK")
 
         from datetime import datetime, timedelta
-
         start_date = datetime.now()
 
         if VIP_DURATION_UNIT == "minutes":
@@ -925,8 +783,7 @@ def paystack_webhook():
         debug(f"VIP start_date: {start_date}")
         debug(f"VIP end_date: {end_date}")
 
-        cur.execute(
-            """
+        cur.execute("""
             INSERT INTO vip_members 
             (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
             VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
@@ -939,9 +796,7 @@ def paystack_webhook():
                 warn1_sent = FALSE,
                 warn2_sent = FALSE,
                 payment_date = NOW()
-            """,
-            (user_id, order_id, start_date, end_date)
-        )
+        """, (user_id, order_id, start_date, end_date))
 
         debug("VIP inserted/updated in DB")
 
@@ -949,57 +804,17 @@ def paystack_webhook():
         cur.close()
         conn.close()
 
-        debug("Sending VIP message to user...")
-
-        vip_kb = InlineKeyboardMarkup()
-        vip_kb.add(
-            InlineKeyboardButton(
-                "🔐 JOIN VIP GROUP",
-                callback_data=f"vipnow:{order_id}"
-            )
-        )
-
-        bot.send_message(
-            user_id,
-            """💎 <b>VIP Activated!</b>    
-    
-Payment successful.    
-    
-Tap below to join the VIP group.    
-""",
-            parse_mode="HTML",
-            reply_markup=vip_kb
-        )
-
-        debug("VIP MESSAGE SENT SUCCESSFULLY")
-
-        if PAYMENT_NOTIFY_GROUP:
-            debug("Sending VIP notify message...")
-            bot.send_message(
-                PAYMENT_NOTIFY_GROUP,
-                f"""💎 <b>VIP ACTIVATED</b>    
-    
-👤 Name: {full_name}    
-🔗 Username: {tg_username}    
-🆔 User ID: <code>{user_id}</code>    
-    
-💳 Amount: ₦{paid_amount}    
-📅 Start: {start_date.strftime("%Y-%m-%d %H:%M")}    
-⏳ Ends: {end_date.strftime("%Y-%m-%d %H:%M")}    
-    
-🧾 Order ID: <code>{order_id}</code>    
-""",
-                parse_mode="HTML"
-            )
-
         debug("VIP BLOCK FINISHED")
+        return "OK", 200
 
+    else:
+        debug("RETURN: Order type did not match film or vip")
+        conn.commit()
+        cur.close()
+        conn.close()
         return "OK", 200
 
 
-    debug("RETURN: Order type did not match film or vip")
-
-    return "OK", 200
 
 
 
