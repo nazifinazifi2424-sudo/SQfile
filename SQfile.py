@@ -1418,9 +1418,6 @@ Tap below to continue.
     conn.close()
 
 
-
-
-
 import threading
 import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -1469,6 +1466,41 @@ def handle_vip_join(c):
                     member = bot.get_chat_member(VIP_GROUP_ID, user_id)
 
                     if member.status in ["member", "administrator", "creator"]:
+
+                        # ================= DB UPDATE ACTIVE =================
+                        try:
+                            from datetime import datetime, timedelta
+
+                            conn = get_conn()
+                            cur = conn.cursor()
+
+                            start_date = datetime.now()
+
+                            if VIP_DURATION_UNIT == "minutes":
+                                end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
+                            else:
+                                end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
+
+                            cur.execute(
+                                """
+                                UPDATE vip_members
+                                SET status='active',
+                                    join_date=%s,
+                                    expire_at=%s,
+                                    warn1_sent=FALSE,
+                                    warn2_sent=FALSE
+                                WHERE user_id=%s
+                                """,
+                                (start_date, end_date, user_id)
+                            )
+
+                            conn.commit()
+                            cur.close()
+                            conn.close()
+
+                        except:
+                            pass
+                        # =====================================================
 
                         # EDIT MESSAGE TO USER JOINED
                         try:
@@ -1546,279 +1578,6 @@ def handle_vip_join(c):
         pass
 
 
-# ==========================================================
-# TRACK USER JOIN
-# ==========================================================
-@bot.chat_member_handler()
-def track_user_join(update):
-
-    if update.chat.id == VIP_GROUP_ID:
-
-        if update.new_chat_member.status in ["member", "administrator"]:
-
-            conn = get_conn()
-            cur = conn.cursor()
-
-            now = datetime.now()
-
-            duration_seconds = convert_to_seconds(
-                VIP_DURATION_VALUE,
-                VIP_DURATION_UNIT
-            )
-
-            expire_time = now + timedelta(seconds=duration_seconds)
-
-            cur.execute("""
-                UPDATE vip_members
-                SET join_date=%s,
-                    expire_at=%s,
-                    warn1_sent=FALSE,
-                    warn2_sent=FALSE
-                WHERE user_id=%s
-            """, (now, expire_time, update.new_chat_member.user.id))
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-
-
-# ==========================================================
-# ACTIVATE VIP
-# ==========================================================
-def activate_vip(user_id, order_id=None):
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO vip_members (user_id, order_id, status,
-                                 join_date, expire_at,
-                                 warn1_sent, warn2_sent,
-                                 invite_link)
-        VALUES (%s, %s, 'active',
-                NULL, NULL,
-                FALSE, FALSE,
-                NULL)
-        ON CONFLICT (user_id)
-        DO UPDATE SET
-            order_id=EXCLUDED.order_id,
-            status='active',
-            join_date=NULL,
-            expire_at=NULL,
-            warn1_sent=FALSE,
-            warn2_sent=FALSE,
-            invite_link=NULL
-    """, (user_id, order_id))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-
-
-
-# ==========================================================
-# VIP SUBSCRIPTION ENGINE (FIXED CLEAN VERSION)
-# ==========================================================
-def vip_subscription_engine():
-
-    while True:
-
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            cur.execute("""
-                SELECT user_id, join_date, expire_at,
-                       warn1_sent, warn2_sent
-                FROM vip_members
-                WHERE status='active'
-            """)
-            users = cur.fetchall()
-
-            now = datetime.now()
-
-            warn1_seconds = convert_to_seconds(
-                WARNING_1_VALUE,
-                WARNING_1_UNIT
-            )
-
-            warn2_seconds = convert_to_seconds(
-                WARNING_2_VALUE,
-                WARNING_2_UNIT
-            )
-
-            for user_id, join_date, expire_at, warn1_sent, warn2_sent in users:
-
-                if not join_date or not expire_at:
-                    continue
-
-                remaining = (expire_at - now).total_seconds()
-
-                # ================= EXPIRE =================
-                if remaining <= 0:
-
-                    try:
-                        bot.ban_chat_member(VIP_GROUP_ID, user_id)
-                        bot.unban_chat_member(VIP_GROUP_ID, user_id)
-                    except:
-                        pass
-
-                    cur.execute("""
-                        UPDATE vip_members
-                        SET status='expired'
-                        WHERE user_id=%s
-                    """, (user_id,))
-
-                    bot.send_message(
-                        user_id,
-                        "❌ <b>VIP YA ƘARE</b>\n\n"
-                        "Lokacin shigarka ya ƙare.\n"
-                        "Domin ci gaba da kasancewa a VIP group,\n"
-                        "ka sake biya yanzu.",
-                        parse_mode="HTML",
-                        reply_markup=vip_sub_button()
-                    )
-
-                # ================= GARGADI NA ƘARSHE =================
-                elif remaining <= warn2_seconds and not warn2_sent:
-
-                    bot.send_message(
-                        user_id,
-                        "⚠ <b>GARGADI NA ƘARSHE</b>\n\n"
-                        "VIP naka zai ƙare cikin ɗan lokaci kaɗan.\n"
-                        "Ka sabunta yanzu domin kada a cire ka.",
-                        parse_mode="HTML",
-                        reply_markup=vip_sub_button()
-                    )
-
-                    cur.execute("""
-                        UPDATE vip_members
-                        SET warn2_sent=TRUE
-                        WHERE user_id=%s
-                    """, (user_id,))
-
-                # ================= GARGADI NA FARKO =================
-                elif remaining <= warn1_seconds and not warn1_sent:
-
-                    bot.send_message(
-                        user_id,
-                        "⏳ <b>GARGADI</b>\n\n"
-                        "Lokacin VIP naka zai ƙare nan ba da jimawa ba.\n"
-                        "Don Allah ka sabunta kafin a cire ka daga group.",
-                        parse_mode="HTML",
-                        reply_markup=vip_sub_button()
-                    )
-
-                    cur.execute("""
-                        UPDATE vip_members
-                        SET warn1_sent=TRUE
-                        WHERE user_id=%s
-                    """, (user_id,))
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-        except Exception as e:
-            print("VIP ENGINE ERROR:", e)
-
-        time.sleep(30)
-
-
-threading.Thread(
-    target=vip_subscription_engine,
-    daemon=True
-).start()
-@bot.chat_member_handler()
-def track_user_join(update):
-
-    if update.chat.id == VIP_GROUP_ID:
-
-        if update.new_chat_member.status in ["member", "administrator"]:
-
-            conn = get_conn()
-            cur = conn.cursor()
-
-            cur.execute("""
-                UPDATE vip_members
-                SET join_date = NOW()
-                WHERE user_id=%s
-            """, (update.new_chat_member.user.id,))
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-@bot.chat_join_request_handler()
-def handle_join_request(request):
-
-    user_id = request.from_user.id
-    chat_id = request.chat.id
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT status, invite_link
-        FROM vip_members
-        WHERE user_id=%s
-    """, (user_id,))
-    vip = cur.fetchone()
-
-    from datetime import datetime, timedelta
-
-    if vip and vip[0] == "active":
-
-        # 🔐 Verify link belongs to user
-        if not request.invite_link or vip[1] != request.invite_link.invite_link:
-            bot.decline_chat_join_request(chat_id, user_id)
-            cur.close(); conn.close()
-            return
-
-        # ✅ APPROVE USER
-        bot.approve_chat_join_request(chat_id, user_id)
-
-        now = datetime.now()
-
-        duration_seconds = convert_to_seconds(
-            VIP_DURATION_VALUE,
-            VIP_DURATION_UNIT
-        )
-
-        expire_time = now + timedelta(seconds=duration_seconds)
-
-        # 🔥 RESET subscription from real join time
-        cur.execute("""
-            UPDATE vip_members
-            SET join_date=%s,
-                expire_at=%s,
-                invite_link=NULL,
-                warn1_sent=FALSE,
-                warn2_sent=FALSE
-            WHERE user_id=%s
-        """, (now, expire_time, user_id))
-
-        # 🔥 Revoke link immediately after use
-        try:
-            bot.revoke_chat_invite_link(
-                chat_id,
-                request.invite_link.invite_link
-            )
-        except:
-            pass
-
-        bot.send_message(user_id, "✅ Welcome to VIP Group!")
-
-    else:
-        bot.decline_chat_join_request(chat_id, user_id)
-        bot.send_message(user_id, "❌ VIP expired or not found.")
-
-    conn.commit()
-    cur.close()
-    conn.close()
 
 
 import threading
