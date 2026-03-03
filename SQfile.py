@@ -1611,8 +1611,6 @@ def handle_vip_join(c):
     except:
         pass
 
-
-
 import threading
 import time
 from datetime import datetime
@@ -1657,6 +1655,10 @@ def vip_expiry_checker():
                         (user_id,)
                     )
                     conn.commit()
+
+                    # ===== WARNING 3 CALL =====
+                    send_expired_message(user_id)
+
                 except:
                     pass
 
@@ -1670,7 +1672,6 @@ def vip_expiry_checker():
 
 
 threading.Thread(target=vip_expiry_checker, daemon=True).start()
-
 
 # ==========================================
 # VIP WARNING SYSTEM (HAUSA VERSION)
