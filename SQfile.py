@@ -1430,14 +1430,36 @@ Tap below to continue.
 import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+ADMIN_ID = 123456789  # saka naka
+
 @bot.message_handler(commands=["link"])
 def send_main_link(message):
 
     user_id = message.from_user.id
 
     try:
-        # 🔗 Get permanent group link (MAIN LINK)
+        # 🔍 Get chat info for debug
+        chat = bot.get_chat(VIP_GROUP_ID)
+        admins = bot.get_chat_administrators(VIP_GROUP_ID)
+
+        bot_is_admin = any(admin.user.id == bot.get_me().id for admin in admins)
+
+        # 🔗 Get permanent main link
         link = bot.export_chat_invite_link(VIP_GROUP_ID)
+
+        # 📢 Send debug to admin
+        bot.send_message(
+            ADMIN_ID,
+            f"""
+DEBUG REPORT:
+
+User: {user_id}
+Group ID: {VIP_GROUP_ID}
+Bot is admin: {bot_is_admin}
+Group type: {chat.type}
+Exported Link: {link}
+"""
+        )
 
         kb = InlineKeyboardMarkup()
         kb.add(
@@ -1453,7 +1475,7 @@ def send_main_link(message):
             reply_markup=kb
         )
 
-        # Countdown only (NO revoke, NO change to link)
+        # Countdown
         for remaining in range(59, -1, -1):
             time.sleep(1)
             try:
@@ -1466,7 +1488,7 @@ def send_main_link(message):
             except:
                 break
 
-        # Remove button ONLY (link stays alive forever)
+        # Remove button only
         try:
             bot.edit_message_text(
                 "❌ TIME OUT\n\nSession closed.",
@@ -1476,8 +1498,10 @@ def send_main_link(message):
         except:
             pass
 
-    except Exception:
+    except Exception as e:
         bot.send_message(user_id, "Failed to get link.")
+        bot.send_message(ADMIN_ID, f"ERROR:\n{str(e)}")
+
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
