@@ -1429,68 +1429,28 @@ Tap below to continue.
     conn.close()
 
 
+
+
 import threading
 import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from datetime import datetime, timedelta
+
+ADMIN_USERNAME = "CEOalgaitabot"
 
 
-# ==========================================================
-# VIP JOIN BUTTON HANDLER
-# ==========================================================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
 
     try:
         bot.answer_callback_query(c.id)
 
-        order_id = c.data.split(":")[1]
         user_id = c.from_user.id
+        first_name = c.from_user.first_name or "User"
 
-        conn = get_conn()
-        cur = conn.cursor()
+        sent_chat_id = c.message.chat.id
+        sent_message_id = c.message.message_id
 
-        # ================= VERIFY ORDER =================
-        cur.execute("""
-            SELECT paid, user_id, type
-            FROM orders
-            WHERE id=%s
-        """, (order_id,))
-        row = cur.fetchone()
-
-        if not row:
-            bot.send_message(user_id, "Invalid order.")
-            cur.close(); conn.close()
-            return
-
-        paid, order_user_id, order_type = row
-
-        if paid != 1 or order_type != "vip" or order_user_id != user_id:
-            bot.send_message(user_id, "Payment not verified.")
-            cur.close(); conn.close()
-            return
-
-        # ================= CHECK VIP STATUS =================
-        cur.execute("""
-            SELECT status, join_date
-            FROM vip_members
-            WHERE user_id=%s
-        """, (user_id,))
-        vip = cur.fetchone()
-
-        if not vip or vip[0] != "active":
-            bot.send_message(user_id, "VIP not active.")
-            cur.close(); conn.close()
-            return
-
-        status, join_date = vip
-
-        if join_date is not None:
-            bot.send_message(user_id, "You are already inside VIP group.")
-            cur.close(); conn.close()
-            return
-
-        # ================= SEND PERMANENT LINK =================
+        # ===== JOIN BUTTON =====
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
@@ -1503,49 +1463,50 @@ def handle_vip_join(c):
             f"🔐 <b>VIP ACCESS READY</b>\n\n"
             f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"
             f"Tap below to join 👇",
-            chat_id=c.message.chat.id,
-            message_id=c.message.message_id,
+            chat_id=sent_chat_id,
+            message_id=sent_message_id,
             parse_mode="HTML",
             reply_markup=kb
         )
 
-        sent_chat_id = c.message.chat.id
-        sent_message_id = c.message.message_id
-
-        # ================= COUNTDOWN =================
+        # ===== COUNTDOWN =====
         def countdown():
 
-            for remaining in range(COUNTDOWN_SECONDS, 0, -1):
+            for remaining in range(COUNTDOWN_SECONDS - 1, -1, -1):
+
                 time.sleep(1)
 
-                conn2 = get_conn()
-                cur2 = conn2.cursor()
+                # ===== CHECK DIRECT FROM GROUP =====
+                try:
+                    member = bot.get_chat_member(VIP_GROUP_ID, user_id)
 
-                cur2.execute("""
-                    SELECT join_date FROM vip_members
-                    WHERE user_id=%s
-                """, (user_id,))
-                check = cur2.fetchone()
+                    if member.status in ["member", "administrator", "creator"]:
 
-                cur2.close()
-                conn2.close()
+                        # EDIT MESSAGE TO USER JOINED
+                        try:
+                            bot.edit_message_text(
+                                f"{first_name} Joined ✅",
+                                chat_id=sent_chat_id,
+                                message_id=sent_message_id
+                            )
+                        except:
+                            pass
 
-                # ================= USER JOINED =================
-                if check and check[0] is not None:
-                    try:
-                        bot.edit_message_text(
-                            "✅ <b>Group Joined Successfully</b>\n\n"
-                            "Thank you our valued customer ❤️\n"
-                            "Muna farin cikin kasancewarka a group din mu.",
-                            chat_id=sent_chat_id,
-                            message_id=sent_message_id,
-                            parse_mode="HTML"
-                        )
-                    except:
-                        pass
-                    return
+                        # SEND THANK YOU PRIVATE MESSAGE
+                        try:
+                            bot.send_message(
+                                user_id,
+                                "🙏 Thank you our valued customer.\n"
+                                "Fatana zakaji dadin wannan group."
+                            )
+                        except:
+                            pass
 
-                # ================= UPDATE COUNTDOWN =================
+                        return
+                except:
+                    pass
+
+                # ===== UPDATE COUNTDOWN =====
                 try:
                     bot.edit_message_text(
                         f"🔐 <b>VIP ACCESS READY</b>\n\n"
@@ -1557,28 +1518,44 @@ def handle_vip_join(c):
                         reply_markup=kb
                     )
                 except:
-                    return
+                    pass
 
-            # ================= TIME OUT =================
+            # ===== TIME OUT =====
+            admin_kb = InlineKeyboardMarkup()
+            admin_kb.add(
+                InlineKeyboardButton(
+                    "🆘 ADMIN HELP",
+                    url=f"https://t.me/{ADMIN_USERNAME}"
+                )
+            )
+
+            # 1️⃣ EDIT MESSAGE FIRST
             try:
                 bot.edit_message_text(
-                    "❌ <b>TIME OUT</b>\n\n"
+                    "❌ TIME OUT\n\n"
                     "This link has expired.",
                     chat_id=sent_chat_id,
                     message_id=sent_message_id,
-                    parse_mode="HTML"
+                    reply_markup=admin_kb
+                )
+            except:
+                pass
+
+            # 2️⃣ THEN SEND PRIVATE MESSAGE AFTER
+            try:
+                time.sleep(2)
+                bot.send_message(
+                    user_id,
+                    "An turama maka link amma link din har yayi expire\n"
+                    "baka shiga ba don haka tintini admin."
                 )
             except:
                 pass
 
         threading.Thread(target=countdown).start()
 
-        cur.close()
-        conn.close()
-
-    except Exception as e:
-        print("VIP JOIN ERROR:", e)
-
+    except:
+        pass
 
 
 # ==========================================================
