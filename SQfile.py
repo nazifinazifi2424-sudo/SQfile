@@ -1431,17 +1431,13 @@ import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @bot.message_handler(commands=["link"])
-def generate_temp_link(message):
+def send_main_link(message):
 
     user_id = message.from_user.id
 
     try:
-        # 🔗 Create permanent link (no limit, no expire)
-        invite = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID
-        )
-
-        link = invite.invite_link
+        # 🔗 Get permanent group link (MAIN LINK)
+        link = bot.export_chat_invite_link(VIP_GROUP_ID)
 
         kb = InlineKeyboardMarkup()
         kb.add(
@@ -1453,17 +1449,16 @@ def generate_temp_link(message):
 
         sent = bot.send_message(
             user_id,
-            "⏳ Link expires in 60 seconds...",
+            "⏳ Link available for 60 seconds...",
             reply_markup=kb
         )
 
-        # ⏳ Countdown
+        # Countdown only (NO revoke, NO change to link)
         for remaining in range(59, -1, -1):
             time.sleep(1)
-
             try:
                 bot.edit_message_text(
-                    f"⏳ Link expires in {remaining} seconds...",
+                    f"⏳ Link available for {remaining} seconds...",
                     chat_id=user_id,
                     message_id=sent.message_id,
                     reply_markup=kb
@@ -1471,19 +1466,10 @@ def generate_temp_link(message):
             except:
                 break
 
-        # 🛑 After 60 sec → revoke manually
-        try:
-            bot.revoke_chat_invite_link(
-                VIP_GROUP_ID,
-                link
-            )
-        except:
-            pass
-
-        # Remove button + show timeout
+        # Remove button ONLY (link stays alive forever)
         try:
             bot.edit_message_text(
-                "❌ TIME OUT\n\nThis link has expired.",
+                "❌ TIME OUT\n\nSession closed.",
                 chat_id=user_id,
                 message_id=sent.message_id
             )
@@ -1491,7 +1477,8 @@ def generate_temp_link(message):
             pass
 
     except Exception:
-        bot.send_message(user_id, "Failed to generate link.")
+        bot.send_message(user_id, "Failed to get link.")
+
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
