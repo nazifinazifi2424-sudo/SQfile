@@ -1026,39 +1026,90 @@ def paystack_webhook():
         else:
             end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
-        cur.execute(
-            """
-            INSERT INTO vip_members   
-            (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-            VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                order_id = EXCLUDED.order_id,
-                join_date = NULL,
-                expire_at = NULL,
-                status = 'active',
-                warn1_sent = FALSE,
-                warn2_sent = FALSE,
-                payment_date = NOW()
-            """,
-            (user_id, order_id)
-        )
+        # ===== CHECK IF USER ALREADY IN GROUP =====
+        already_in_group = False
+        try:
+            member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+            if member.status in ["member", "administrator", "creator"]:
+                already_in_group = True
+        except:
+            already_in_group = False
 
-        conn.commit()
-        cur.close()
-        conn.close()
+        if already_in_group:
 
-        vip_kb = InlineKeyboardMarkup()
-        vip_kb.add(
-            InlineKeyboardButton(
-                "🔐 JOIN VIP GROUP",
-                callback_data=f"vipnow:{order_id}"
+            cur.execute(
+                """
+                INSERT INTO vip_members   
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    order_id = EXCLUDED.order_id,
+                    join_date = EXCLUDED.join_date,
+                    expire_at = EXCLUDED.expire_at,
+                    status = 'active',
+                    warn1_sent = FALSE,
+                    warn2_sent = FALSE,
+                    payment_date = NOW()
+                """,
+                (user_id, order_id, start_date, end_date)
             )
-        )
 
-        bot.send_message(
-            user_id,
-            f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            bot.send_message(
+                user_id,
+                f"""💎 <b>AN SABUNTA VIP NAKA</b>
+
+Muna tayaka murnar sabunta biyan VIP ɗinka.
+
+Domin more samun duk fim ɗin da ranka yake so,
+ci gaba da ziyartar VIP Group kawai.
+
+📅 <b>Ka biya a yau:</b> {start_date.strftime("%Y-%m-%d")}
+⏳ <b>Sake biya aranar ko kafin:<b> {end_date.strftime("%Y-%m-%d")}
+
+Na gode da kasancewa tare da mu 🙏""",
+                parse_mode="HTML"
+            )
+
+        else:
+
+            cur.execute(
+                """
+                INSERT INTO vip_members   
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    order_id = EXCLUDED.order_id,
+                    join_date = NULL,
+                    expire_at = NULL,
+                    status = 'active',
+                    warn1_sent = FALSE,
+                    warn2_sent = FALSE,
+                    payment_date = NOW()
+                """,
+                (user_id, order_id)
+            )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            vip_kb = InlineKeyboardMarkup()
+            vip_kb.add(
+                InlineKeyboardButton(
+                    "🔐 JOIN VIP GROUP",
+                    callback_data=f"vipnow:{order_id}"
+                )
+            )
+
+            bot.send_message(
+                user_id,
+                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
 
 👤 <b>Name:</b> {full_name}
 🆔 <b>User ID:</b> <code>{user_id}</code>
@@ -1070,31 +1121,14 @@ def paystack_webhook():
 
 🔐 Click the button below to join the VIP Group.
 """,
-            parse_mode="HTML",
-            reply_markup=vip_kb
-        )
-
-        if PAYMENT_NOTIFY_GROUP:
-            bot.send_message(
-                PAYMENT_NOTIFY_GROUP,
-                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
-
-👤 <b>Name:</b> {full_name}
-🔗 <b>Username:</b> {tg_username}
-🆔 <b>User ID:</b> <code>{user_id}</code>
-
-💳 <b>Amount:</b> ₦{paid_amount}
-📅 <b>Start:</b> {start_date.strftime("%Y-%m-%d")}
-⏳ <b>Ends:</b> {end_date.strftime("%Y-%m-%d")}
-
-🧾 <b>Order ID:</b> <code>{order_id}</code>
-""",
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=vip_kb
             )
 
         return "OK", 200
 
     return "OK", 200
+
 
 # 
 # ========= TELEGRAM WEBHOOK =========
