@@ -1273,37 +1273,27 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
-
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
 def vip_group_info(call):
 
     text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
-
 ━━━━━━━━━━━━━━━━━━
-
 🔹 <b>Kudin Rijista:</b> ₦1,500  
 🔹 <b>Subscription:</b> Kwana 30  
 🔹 Ba za a sake biyan kudi ba har sai bayan kwanaki 30
-
 ━━━━━━━━━━━━━━━━━━
-
 🔹 Bayan ka biya, za a tura maka <b>1-Time Secure Link</b>  
 🔹 A cikin VIP ana saka <b>sabbin fina-finan India duk sati</b>
-
 📅 <b>Ranaku:</b> Lahadi & Laraba
-
 ━━━━━━━━━━━━━━━━━━
-
 🎬 Kana da damar neman:
 • Sabon fim  
 • Tsohon fim  
 • Fim na musamman  
-
 Ba tare da sake biyan wani ƙarin kuɗi ba.
-
 ━━━━━━━━━━━━━━━━━━
-
-        🔒 <b>VIP SUBSCRIPTION/n/n👇👇👇👇👇👇👇</b>
+🔒 <b>VIP SUBSCRIPTION</b>
+👇👇👇👇👇👇👇
 """
 
     kb = InlineKeyboardMarkup()
