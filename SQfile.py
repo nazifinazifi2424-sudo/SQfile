@@ -1375,6 +1375,10 @@ Tap below to continue.
     conn.close()
 
 
+# =====================================================
+# ================= VIP JOIN BUTTON ===================
+# =====================================================
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
 
@@ -1386,7 +1390,7 @@ def handle_vip_join(c):
     conn = get_conn()
     cur = conn.cursor()
 
-    # ================= CHECK ORDER =================
+    # ================= VERIFY ORDER =================
     cur.execute(
         """
         SELECT paid, user_id, type
@@ -1414,14 +1418,17 @@ def handle_vip_join(c):
     # ================= CHECK VIP ACTIVE =================
     cur.execute(
         """
-        SELECT status FROM vip_members
+        SELECT status, expire_at
+        FROM vip_members
         WHERE user_id=%s
         """,
         (user_id,)
     )
     vip = cur.fetchone()
 
-    if not vip or vip[0] != "active":
+    from datetime import datetime
+
+    if not vip or vip[0] != "active" or vip[1] <= datetime.now():
         bot.send_message(user_id, "VIP not active.")
         cur.close()
         conn.close()
@@ -1430,11 +1437,11 @@ def handle_vip_join(c):
     cur.close()
     conn.close()
 
-    # ================= CREATE SINGLE USE INVITE =================
+    # ================= CREATE JOIN REQUEST LINK =================
     try:
         invite = bot.create_chat_invite_link(
             VIP_GROUP_ID,
-            member_limit=1
+            creates_join_request=True
         )
 
         kb = InlineKeyboardMarkup()
@@ -1446,7 +1453,7 @@ def handle_vip_join(c):
         )
 
         bot.edit_message_text(
-            "🔐 <b>VIP ACCESS READY</b>\n\nTap the button below to join the VIP group 👇",
+            "🔐 <b>VIP ACCESS READY</b>\n\nTap the button below to request access 👇",
             chat_id=c.message.chat.id,
             message_id=c.message.message_id,
             parse_mode="HTML",
@@ -1455,6 +1462,63 @@ def handle_vip_join(c):
 
     except Exception:
         bot.send_message(user_id, "Unable to generate join link.")
+
+
+# =====================================================
+# ================= JOIN REQUEST HANDLER ==============
+# =====================================================
+
+@bot.chat_join_request_handler()
+def handle_join_request(request):
+
+    user_id = request.from_user.id
+    chat_id = request.chat.id
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT status, expire_at
+        FROM vip_members
+        WHERE user_id=%s
+        """,
+        (user_id,)
+    )
+    vip = cur.fetchone()
+
+    from datetime import datetime
+
+    if vip:
+        status, expire_at = vip
+
+        if status == "active" and expire_at > datetime.now():
+
+            # ✅ APPROVE USER
+            bot.approve_chat_join_request(chat_id, user_id)
+
+            # 🔥 REVOKE USED LINK
+            try:
+                bot.revoke_chat_invite_link(
+                    chat_id,
+                    request.invite_link.invite_link
+                )
+            except:
+                pass
+
+            bot.send_message(user_id, "✅ Welcome to VIP Group!")
+
+        else:
+            bot.decline_chat_join_request(chat_id, user_id)
+            bot.send_message(user_id, "❌ VIP expired.")
+
+    else:
+        bot.decline_chat_join_request(chat_id, user_id)
+        bot.send_message(user_id, "❌ VIP not found.")
+
+    cur.close()
+    conn.close()
+
 
 
 
