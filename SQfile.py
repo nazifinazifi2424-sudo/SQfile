@@ -1845,7 +1845,116 @@ def send_expired_message(user_id):
     except:
         pass
 
+# ==========================================
+# ADMIN MANUAL VIP ADD SYSTEM (/vip)
+# ==========================================
 
+from datetime import datetime, timedelta
+
+vip_waiting_admin = set()
+
+
+# ===============================
+# /vip COMMAND (ADMIN ONLY)
+# ===============================
+@bot.message_handler(commands=['vip'])
+def vip_command(message):
+
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    vip_waiting_admin.add(message.from_user.id)
+
+    bot.send_message(
+        message.chat.id,
+        "Turo min user ID ɗin wanda kake son saka a VIP."
+    )
+
+
+# ===============================
+# RECEIVE USER ID
+# ===============================
+@bot.message_handler(func=lambda m: m.from_user.id in vip_waiting_admin)
+def receive_vip_user_id(message):
+
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    try:
+        user_id = int(message.text.strip())
+    except:
+        bot.send_message(message.chat.id, "ID bai inganta ba. Tura lambar user ID kawai.")
+        return
+
+    vip_waiting_admin.remove(message.from_user.id)
+
+    # ===============================
+    # CHECK IF USER IS IN GROUP
+    # ===============================
+    try:
+        member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+
+        if member.status not in ["member", "administrator", "creator"]:
+            bot.send_message(
+                message.chat.id,
+                "Wannan user baya cikin group ɗin."
+            )
+            return
+
+    except:
+        bot.send_message(
+            message.chat.id,
+            "Wannan user baya cikin group ɗin."
+        )
+        return
+
+    # ===============================
+    # CREATE JOIN + EXPIRE DATE
+    # ===============================
+    join_date = datetime.now()
+
+    if VIP_DURATION_UNIT == "minutes":
+        expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)
+    else:
+        expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)
+
+    # ===============================
+    # INSERT OR UPDATE USER
+    # ===============================
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO vip_members (user_id, join_date, expire_at, status, warn1_sent, warn2_sent)
+            VALUES (%s, %s, %s, 'active', FALSE, FALSE)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                join_date = EXCLUDED.join_date,
+                expire_at = EXCLUDED.expire_at,
+                status = 'active',
+                warn1_sent = FALSE,
+                warn2_sent = FALSE
+        """, (user_id, join_date, expire_at))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    except:
+        bot.send_message(message.chat.id, "An samu matsala wajen saka user a DB.")
+        return
+
+    # ===============================
+    # SUCCESS MESSAGE TO ADMIN
+    # ===============================
+    expire_text = expire_at.strftime("%d %B %Y %H:%M:%S")
+
+    bot.send_message(
+        message.chat.id,
+        f"An saka user {user_id} a VIP.\n\n"
+        f"Za a cire shi ranar:\n{expire_text}"
+    )
 #=========================================================
 @bot.message_handler(
     func=lambda m: (
@@ -2011,119 +2120,6 @@ def get_group_id(message):
 
 
 # /post  (ADMIN ONLY)
-
-
-# ======= VIP ORDER CREATOR (CALLBACK vipgroup | CLEAN) =========
-import uuid
-from psycopg2.extras import RealDictCursor
-
-@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
-def vipgroup_handler(c):
-
-    # 🔥 VERY IMPORTANT (prevents silent button)
-    bot.answer_callback_query(c.id)
-
-    uid = c.from_user.id
-    first_name = c.from_user.first_name or "User"
-
-    conn = get_conn()
-    if not conn:
-        return
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    # ================= CHECK EXISTING UNPAID VIP =================
-    try:
-        cur.execute(
-            """
-            SELECT id FROM orders
-            WHERE user_id=%s
-              AND type='vip'
-              AND paid=0
-            LIMIT 1
-            """,
-            (uid,)
-        )
-        row = cur.fetchone()
-    except:
-        cur.close()
-        conn.close()
-        return
-
-    # ================= CREATE OR REUSE ORDER =================
-    if row:
-        order_id = row["id"]
-    else:
-        order_id = str(uuid.uuid4())
-        try:
-            cur.execute(
-                """
-                INSERT INTO orders (id, user_id, amount, paid, type)
-                VALUES (%s,%s,%s,0,'vip')
-                """,
-                (order_id, uid, VIP_PRICE)
-            )
-            conn.commit()
-        except:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            return
-
-    # ================= CREATE PAYMENT LINK =================
-    try:
-        pay_url = create_paystack_payment(
-            uid,
-            order_id,
-            VIP_PRICE,
-            "VIP Subscription"
-        )
-    except:
-        cur.close()
-        conn.close()
-        return
-
-    if not pay_url:
-        cur.close()
-        conn.close()
-        return
-
-    # ================= FORMAT DURATION TEXT =================
-    if VIP_DURATION_UNIT == "minutes":
-        duration_text = f"{VIP_DURATION_VALUE} Minutes"
-    else:
-        duration_text = f"{VIP_DURATION_VALUE} Days"
-
-    # ================= BUTTONS =================
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
-
-    # ================= MESSAGE =================
-    bot.send_message(
-        uid,
-        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
-
-({first_name}) you're one step away from joining our exclusive VIP members.
-
-💎 VIP Access
-💰 Only ₦{VIP_PRICE}
-⏳ {duration_text} Full Access
-
-⚡ Instant activation after payment
-🔐 100% Secure Payment
-
-Tap below to activate now.
-""",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-    cur.close()
-    conn.close()
-
-
-
 
 
 
