@@ -1427,26 +1427,64 @@ Tap below to continue.
     conn.close()
 
 
-
+import time
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 @bot.message_handler(commands=["link"])
-def generate_permanent_link(message):
+def generate_temp_link(message):
 
-    if message.from_user.id != ADMIN_ID:
-        return
+    user_id = message.from_user.id
 
     try:
+        # ⏳ Create 1 minute invite link (single use)
         invite = bot.create_chat_invite_link(
-            chat_id=VIP_GROUP_ID
+            chat_id=VIP_GROUP_ID,
+            expire_date=int(time.time()) + 60,
+            member_limit=1
         )
 
-        bot.send_message(
-            ADMIN_ID,
-            f"🔗 Permanent VIP Link:\n\n{invite.invite_link}"
+        link = invite.invite_link
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "🔐 Join Now",
+                url=link
+            )
         )
 
-    except Exception as e:
-        bot.send_message(ADMIN_ID, "Failed to generate link.")
+        sent = bot.send_message(
+            user_id,
+            "⏳ Link expires in 60 seconds...",
+            reply_markup=kb
+        )
+
+        # ⏳ Countdown system
+        for remaining in range(59, -1, -1):
+            time.sleep(1)
+
+            try:
+                bot.edit_message_text(
+                    f"⏳ Link expires in {remaining} seconds...",
+                    chat_id=user_id,
+                    message_id=sent.message_id,
+                    reply_markup=kb
+                )
+            except:
+                break
+
+        # 🛑 After timeout
+        try:
+            bot.edit_message_text(
+                "❌ TIME OUT\n\nThis link has expired.",
+                chat_id=user_id,
+                message_id=sent.message_id
+            )
+        except:
+            pass
+
+    except Exception:
+        bot.send_message(user_id, "Failed to generate link.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
 def handle_vip_join(c):
