@@ -4104,7 +4104,6 @@ def pay_all_unpaid(call):
         else:
             owned_ids = set()
 
-        # idan user ya riga ya mallaki wasu fim
         if owned_ids:
             kb_owned = InlineKeyboardMarkup()
             kb_owned.add(
@@ -4236,7 +4235,7 @@ def pay_all_unpaid(call):
             )
         )
 
-        bot.send_message(
+        sent = bot.send_message(
             uid,
             f"""🧺 <b>PAY ALL UNPAID ORDERS</b>
 
@@ -4257,6 +4256,9 @@ def pay_all_unpaid(call):
             reply_markup=kb
         )
 
+        # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
+        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
+
     except Exception:
         pass
 
@@ -4266,9 +4268,6 @@ def pay_all_unpaid(call):
             conn.close()
         except:
             pass
-
-
-
 
 import uuid
 from datetime import datetime
@@ -4659,6 +4658,8 @@ def handle_callback(c):
     except:
         return
 
+    
+
     from psycopg2.extras import RealDictCursor
     import uuid
 
@@ -4853,7 +4854,7 @@ def handle_callback(c):
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
-        bot.send_message(
+        sent = bot.send_message(
             uid,
             f"""🧺 <b>CART CHECKOUT</b>
 
@@ -4874,10 +4875,13 @@ def handle_callback(c):
             reply_markup=kb
         )
 
+        # ===== NEW: STORE MESSAGE FOR WEBHOOK AUTO DELETE =====
+        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
+
         bot.answer_callback_query(c.id)
         return
 
-    
+
     
 
 # =====================
