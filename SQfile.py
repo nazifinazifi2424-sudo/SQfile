@@ -1458,226 +1458,242 @@ Tap below to continue👇.
     cur.close()
     conn.close()
 
-
-import threading
-import time
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))
-def handle_vip_join(c):
-
-    try:
-        bot.answer_callback_query(c.id)
-
-        user_id = c.from_user.id
-        first_name = c.from_user.first_name or "User"
-
-        sent_chat_id = c.message.chat.id
-        sent_message_id = c.message.message_id
-
-        # ===== JOIN BUTTON =====
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "🔐 Join VIP Now",
-                url=VIP_LINK
-            )
-        )
-
-        bot.edit_message_text(
-            f"🔐 <b>VIP ACCESS READY</b>\n\n"
-            f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"
-            f"Tap below to join 👇",
-            chat_id=sent_chat_id,
-            message_id=sent_message_id,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        # ===== COUNTDOWN =====
-        def countdown():
-
-            for remaining in range(COUNTDOWN_SECONDS - 1, -1, -1):
-
-                time.sleep(1)
-
-                # ===== CHECK DIRECT FROM GROUP =====
-                try:
-                    member = bot.get_chat_member(VIP_GROUP_ID, user_id)
-
-                    if member.status in ["member", "administrator", "creator"]:
-
-                        # ================= DB UPDATE ACTIVE =================
-                        try:
-                            from datetime import datetime, timedelta
-
-                            conn = get_conn()
-                            cur = conn.cursor()
-
-                            # ✅ JOIN DATE = lokacin da ya shiga
-                            join_date = datetime.now()
-
-                            # ✅ EXPIRE = lissafi daga saman file
-                            if VIP_DURATION_UNIT == "minutes":
-                                expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)
-                            else:
-                                expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)
-
+import threading  
+import time  
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton  
+  
+  
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))  
+def handle_vip_join(c):  
+  
+    try:  
+        bot.answer_callback_query(c.id)  
+  
+        user_id = c.from_user.id  
+        first_name = c.from_user.first_name or "User"  
+  
+        sent_chat_id = c.message.chat.id  
+        sent_message_id = c.message.message_id  
+  
+        # ===== JOIN BUTTON =====  
+        kb = InlineKeyboardMarkup()  
+        kb.add(  
+            InlineKeyboardButton(  
+                "🔐 Join VIP Now",  
+                url=VIP_LINK  
+            )  
+        )  
+  
+        bot.edit_message_text(  
+            f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+            f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"  
+            f"Tap below to join 👇",  
+            chat_id=sent_chat_id,  
+            message_id=sent_message_id,  
+            parse_mode="HTML",  
+            reply_markup=kb  
+        )  
+  
+        # ===== COUNTDOWN =====  
+        def countdown():  
+  
+            for remaining in range(COUNTDOWN_SECONDS - 1, -1, -1):  
+  
+                time.sleep(1)  
+  
+                # ===== CHECK DIRECT FROM GROUP =====  
+                try:  
+                    member = bot.get_chat_member(VIP_GROUP_ID, user_id)  
+  
+                    if member.status in ["member", "administrator", "creator"]:  
+  
+                        # ================= DB UPDATE ACTIVE =================  
+                        try:  
+                            from datetime import datetime, timedelta  
+  
+                            conn = get_conn()  
+                            cur = conn.cursor()  
+  
+                            # ✅ JOIN DATE = lokacin da ya shiga  
+                            join_date = datetime.now()  
+  
+                            # ✅ EXPIRE = lissafi daga saman file  
+                            if VIP_DURATION_UNIT == "minutes":  
+                                expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)  
+                            else:  
+                                expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)  
+  
+                            # ===== CHECK IF USER EXISTS =====
                             cur.execute(
-                                """
-                                UPDATE vip_members
-                                SET status='active',
-                                    join_date=%s,
-                                    expire_at=%s,
-                                    warn1_sent=FALSE,
-                                    warn2_sent=FALSE
-                                WHERE user_id=%s
-                                """,
-                                (join_date, expire_at, user_id)
+                                "SELECT 1 FROM vip_members WHERE user_id=%s",
+                                (user_id,)
                             )
+                            exists = cur.fetchone()
 
-                            conn.commit()
-                            cur.close()
-                            conn.close()
+                            if exists:
+                                cur.execute(  
+                                    """  
+                                    UPDATE vip_members  
+                                    SET status='active',  
+                                        join_date=%s,  
+                                        expire_at=%s,  
+                                        warn1_sent=FALSE,  
+                                        warn2_sent=FALSE  
+                                    WHERE user_id=%s  
+                                    """,  
+                                    (join_date, expire_at, user_id)  
+                                )  
+                            else:
+                                cur.execute(
+                                    """
+                                    INSERT INTO vip_members
+                                    (user_id, status, join_date, expire_at, warn1_sent, warn2_sent)
+                                    VALUES (%s, 'active', %s, %s, FALSE, FALSE)
+                                    """,
+                                    (user_id, join_date, expire_at)
+                                )
 
-                        except:
-                            pass
-                        # =====================================================
-
-                        # EDIT MESSAGE TO USER JOINED
-                        try:
-                            bot.edit_message_text(
-                                f"{first_name} Joined ✅",
-                                chat_id=sent_chat_id,
-                                message_id=sent_message_id
-                            )
-                        except:
-                            pass
-
-                        # SEND THANK YOU PRIVATE MESSAGE
-                        try:
-                            bot.send_message(
-                                user_id,
-                                "🙏 Thank you our valued customer.\n"
-                                "Fatanmu zakaji dadin wannan group."
-                            )
-                        except:
-                            pass
-
-                        return
-                except:
-                    pass
-
-                # ===== UPDATE COUNTDOWN =====
-                try:
-                    bot.edit_message_text(
-                        f"🔐 <b>VIP ACCESS READY</b>\n\n"
-                        f"⏳ Link expires in {remaining} seconds...\n\n"
-                        f"Tap below to join 👇",
-                        chat_id=sent_chat_id,
-                        message_id=sent_message_id,
-                        parse_mode="HTML",
-                        reply_markup=kb
-                    )
-                except:
-                    pass
-
-            # ===== TIME OUT =====
-            admin_kb = InlineKeyboardMarkup()
-            admin_kb.add(
-                InlineKeyboardButton(
-                    "👤ADMIN HELP",
-                    url=f"https://t.me/{ADMIN_USERNAME}"
-                )
-            )
-
-            try:
-                bot.edit_message_text(
-                    "❌ TIME OUT\n\n"
-                    "This link has expired.",
-                    chat_id=sent_chat_id,
-                    message_id=sent_message_id,
-                    reply_markup=admin_kb
-                )
-            except:
-                pass
-
-            try:
-                time.sleep(2)
-                bot.send_message(
-                    user_id,
-                    "An turama maka link amma link din har yayi expire\n"
-                    "baka shiga ba don haka tintini admin."
-                )
-            except:
-                pass
-
-        threading.Thread(target=countdown).start()
-
-    except:
-        pass
-
-import threading
-import time
-from datetime import datetime
-
-def vip_expiry_checker():
-
-    while True:
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            cur.execute(
-                """
-                SELECT user_id
-                FROM vip_members
-                WHERE status='active'
-                AND expire_at IS NOT NULL
-                AND expire_at <= NOW()
-                """
-            )
-
-            expired_users = cur.fetchall()
-
-            for row in expired_users:
-                user_id = row[0]
-
-                # ===== REMOVE FROM GROUP (NOT PERMANENT BAN) =====
-                try:
-                    bot.ban_chat_member(VIP_GROUP_ID, user_id)
-                    bot.unban_chat_member(VIP_GROUP_ID, user_id)
-                except:
-                    pass
-
-                # ===== UPDATE STATUS =====
-                try:
-                    cur.execute(
-                        """
-                        UPDATE vip_members
-                        SET status='expired'
-                        WHERE user_id=%s
-                        """,
-                        (user_id,)
-                    )
-                    conn.commit()
-
-                    # ===== WARNING 3 CALL =====
-                    send_expired_message(user_id)
-
-                except:
-                    pass
-
-            cur.close()
-            conn.close()
-
-        except:
-            pass
-
-        time.sleep(60)  # check every 60 seconds
-
-
+                            conn.commit()  
+                            cur.close()  
+                            conn.close()  
+  
+                        except:  
+                            pass  
+                        # =====================================================  
+  
+                        # EDIT MESSAGE TO USER JOINED  
+                        try:  
+                            bot.edit_message_text(  
+                                f"{first_name} Joined ✅",  
+                                chat_id=sent_chat_id,  
+                                message_id=sent_message_id  
+                            )  
+                        except:  
+                            pass  
+  
+                        # SEND THANK YOU PRIVATE MESSAGE  
+                        try:  
+                            bot.send_message(  
+                                user_id,  
+                                "🙏 Thank you our valued customer.\n"  
+                                "Fatanmu zakaji dadin wannan group."  
+                            )  
+                        except:  
+                            pass  
+  
+                        return  
+                except:  
+                    pass  
+  
+                # ===== UPDATE COUNTDOWN =====  
+                try:  
+                    bot.edit_message_text(  
+                        f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+                        f"⏳ Link expires in {remaining} seconds...\n\n"  
+                        f"Tap below to join 👇",  
+                        chat_id=sent_chat_id,  
+                        message_id=sent_message_id,  
+                        parse_mode="HTML",  
+                        reply_markup=kb  
+                    )  
+                except:  
+                    pass  
+  
+            # ===== TIME OUT =====  
+            admin_kb = InlineKeyboardMarkup()  
+            admin_kb.add(  
+                InlineKeyboardButton(  
+                    "👤ADMIN HELP",  
+                    url=f"https://t.me/{ADMIN_USERNAME}"  
+                )  
+            )  
+  
+            try:  
+                bot.edit_message_text(  
+                    "❌ TIME OUT\n\n"  
+                    "This link has expired.",  
+                    chat_id=sent_chat_id,  
+                    message_id=sent_message_id,  
+                    reply_markup=admin_kb  
+                )  
+            except:  
+                pass  
+  
+            try:  
+                time.sleep(2)  
+                bot.send_message(  
+                    user_id,  
+                    "An turama maka link amma link din har yayi expire\n"  
+                    "baka shiga ba don haka tintini admin."  
+                )  
+            except:  
+                pass  
+  
+        threading.Thread(target=countdown).start()  
+  
+    except:  
+        pass  
+  
+import threading  
+import time  
+from datetime import datetime  
+  
+def vip_expiry_checker():  
+  
+    while True:  
+        try:  
+            conn = get_conn()  
+            cur = conn.cursor()  
+  
+            cur.execute(  
+                """  
+                SELECT user_id  
+                FROM vip_members  
+                WHERE status='active'  
+                AND expire_at IS NOT NULL  
+                AND expire_at <= NOW()  
+                """  
+            )  
+  
+            expired_users = cur.fetchall()  
+  
+            for row in expired_users:  
+                user_id = row[0]  
+  
+                # ===== REMOVE FROM GROUP (NOT PERMANENT BAN) =====  
+                try:  
+                    bot.ban_chat_member(VIP_GROUP_ID, user_id)  
+                    bot.unban_chat_member(VIP_GROUP_ID, user_id)  
+                except:  
+                    pass  
+  
+                # ===== UPDATE STATUS =====  
+                try:  
+                    cur.execute(  
+                        """  
+                        UPDATE vip_members  
+                        SET status='expired'  
+                        WHERE user_id=%s  
+                        """,  
+                        (user_id,)  
+                    )  
+                    conn.commit()  
+  
+                    # ===== WARNING 3 CALL =====  
+                    send_expired_message(user_id)  
+  
+                except:  
+                    pass  
+  
+            cur.close()  
+            conn.close()  
+  
+        except:  
+            pass  
+  
+        time.sleep(60)  # check every 60 seconds  
+  
+  
 threading.Thread(target=vip_expiry_checker, daemon=True).start()
 
 # ==========================================
