@@ -2509,12 +2509,6 @@ def start(message):
     uname = f"@{message.from_user.username}" if message.from_user.username else "Babu username"
     text = (message.text or "").strip()
 
-    print("DEBUG: /start called by", uid)
-    try:
-        bot.send_message(ADMIN_ID, f"DEBUG:\n/start called\nUID: {uid}\nTEXT: {text}")
-    except:
-        pass
-
     # ========= REF =========
     param = None
     if text.startswith("/start "):
@@ -2535,9 +2529,9 @@ def start(message):
                     parse_mode="HTML"
                 )
             except Exception as e:
-                print("DEBUG REF ERROR:", e)
+                pass
         except Exception as e:
-            print("DEBUG REF MAIN ERROR:", e)
+            pass
 
     # ========= ADMIN NOTIFY =========
     try:
@@ -2555,22 +2549,12 @@ def start(message):
     # ========= JOIN CHECK =========
     try:
         joined = check_join(uid)
-        print("DEBUG JOIN STATUS:", joined)
-        bot.send_message(ADMIN_ID, f"DEBUG:\nJOIN STATUS for {uid}: {joined}")
     except Exception as e:
-        print("DEBUG CHECK_JOIN ERROR:", e)
-        bot.send_message(ADMIN_ID, f"DEBUG ERROR in check_join:\n{e}")
         joined = False
 
 
     # ❌ IDAN BAI SHIGA BA
     if not joined:
-        print("DEBUG: User NOT joined")
-        try:
-            bot.send_message(ADMIN_ID, f"DEBUG:\nUser {uid} NOT joined channel")
-        except:
-            pass
-
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
@@ -2592,12 +2576,6 @@ def start(message):
         return
 
     # ========= MENUS =========
-    print("DEBUG: Sending Main Menu")
-    try:
-        bot.send_message(ADMIN_ID, f"DEBUG:\nSending MAIN MENU to {uid}")
-    except:
-        pass
-
     bot.send_message(
         uid,
         "Abokin hulɗa, muna farin cikin maraba da kai na zuwa shagon fina-finanmu.",
@@ -2614,36 +2592,20 @@ def start(message):
 @bot.callback_query_handler(func=lambda call: call.data == "checkjoin")
 def checkjoin_callback(call):
     uid = call.from_user.id
-
-    print("DEBUG: CALLBACK checkjoin triggered by", uid)
-    try:
-        bot.send_message(ADMIN_ID, f"DEBUG:\nCallback triggered\nUID: {uid}")
-    except:
-        pass
+    fname = call.from_user.first_name or ""
 
     try:
         joined = check_join(uid)
-        print("DEBUG CALLBACK JOIN STATUS:", joined)
-        bot.send_message(ADMIN_ID, f"DEBUG:\nCallback JOIN STATUS for {uid}: {joined}")
     except Exception as e:
-        print("DEBUG CALLBACK CHECK_JOIN ERROR:", e)
-        bot.send_message(ADMIN_ID, f"DEBUG CALLBACK ERROR in check_join:\n{e}")
         joined = False
 
     if not joined:
-        print("DEBUG: Callback says NOT joined")
         bot.answer_callback_query(
             call.id,
-            "Har yanzu baka shiga channel ɗinmu ba.\nDa fatan za ka shiga kafin ka ci gaba.",
+            f"Malam {fname}\n\nHar yanzu baka shiga channel ɗinmu ba.\nDa fatan za ka shiga kafin ka ci gaba.",
             show_alert=True
         )
         return
-
-    print("DEBUG: Callback calling start() safely")
-    try:
-        bot.send_message(ADMIN_ID, f"DEBUG:\nCallback calling start() safely for {uid}")
-    except:
-        pass
 
     bot.answer_callback_query(call.id)
 
@@ -2658,8 +2620,8 @@ def checkjoin_callback(call):
     try:
         start(fake_message)
     except Exception as e:
-        print("DEBUG ERROR calling start from callback:", e)
-        bot.send_message(ADMIN_ID, f"DEBUG ERROR calling start():\n{e}")
+        bot.send_message(ADMIN_ID, f"ERROR calling start():\n{e}")
+
 
 
 # ======================================
