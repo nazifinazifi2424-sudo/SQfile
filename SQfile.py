@@ -2468,23 +2468,35 @@ def reply_menu(uid=None):
     return kb
 # end
 
-
-
-
 def user_main_menu(uid=None):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
 
     cart_label = tr_user(uid, "btn_cart", default="Check cart")
     help_label = tr_user(uid, "btn_help", default="HELP")
+    vip_label = "🔐VIP GROUP"
+    done_label = "Done"
 
-    # An cire "Films din wannan satin"
-    # Buttons 1   2 a layi daya
-    kb.add(
-        KeyboardButton(help_label),
-        KeyboardButton(cart_label)
+    # ===== VIP GROUP a sama shi kaɗai =====
+    kb.row(
+        KeyboardButton(vip_label)
     )
 
+    # ===== HELP da CART a layi daya =====
+    if str(uid) == str(ADMIN_ID):   # 🔐 Admin only check
+        kb.row(
+            KeyboardButton(help_label),
+            KeyboardButton(cart_label),
+            KeyboardButton(done_label)   # Admin kaɗai zai gani
+        )
+    else:
+        kb.row(
+            KeyboardButton(help_label),
+            KeyboardButton(cart_label)
+        )
+
     return kb
+
+
 
 #Start
 def movie_buttons_inline(mid, user_id=None):
