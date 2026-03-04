@@ -2585,7 +2585,7 @@ def start(message):
         reply_markup=reply_menu(uid)
     )
 
-# ========= CHECK JOIN CALLBACK =========
+
 @bot.callback_query_handler(func=lambda call: call.data == "checkjoin")
 def checkjoin_callback(call):
     uid = call.from_user.id
@@ -2599,7 +2599,9 @@ def checkjoin_callback(call):
         return
 
     bot.answer_callback_query(call.id)
-    start(call.message)
+
+    send_main_menu(uid)   # 👈 Wannan ya fi kyau
+
 
 # ======================================
 # ======================================
