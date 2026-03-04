@@ -1434,14 +1434,14 @@ def vipgroup_handler(c):
 
 {first_name}, you are almost in our VIP group.
 
-💎 VIP Access
-💰 ₦{VIP_PRICE} only
+💎 VIP Algaita Bot(Group)
+💵 ₦{VIP_PRICE} only
 ⏳ {duration_text} access
 
 ⚡ Access starts after payment
 🔐 Secure payment
 
-Tap below to continue.
+Tap below to continue👇.
 """,
         chat_id=c.message.chat.id,
         message_id=c.message.message_id,
@@ -1560,7 +1560,7 @@ def handle_vip_join(c):
                             bot.send_message(
                                 user_id,
                                 "🙏 Thank you our valued customer.\n"
-                                "Fatana zakaji dadin wannan group."
+                                "Fatanmu zakaji dadin wannan group."
                             )
                         except:
                             pass
@@ -1743,8 +1743,8 @@ def vip_warning_system():
                         kb = InlineKeyboardMarkup()
                         kb.add(
                             InlineKeyboardButton(
-                                "🔁 REPAY NOW",
-                                callback_data="vipsub"
+                                "💳REPAY NOW",
+                                callback_data="subvip"
                             )
                         )
 
@@ -1788,8 +1788,8 @@ def vip_warning_system():
                         kb = InlineKeyboardMarkup()
                         kb.add(
                             InlineKeyboardButton(
-                                "🔁 REPAY NOW",
-                                callback_data="vipsub"
+                                "💳REPAY NOW",
+                                callback_data="subvip"
                             )
                         )
 
@@ -1836,8 +1836,8 @@ def send_expired_message(user_id):
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
-                "🔁 REPAY NOW",
-                callback_data="vipsub"
+                "💳REPAY NOW",
+                callback_data="subvip"
             )
         )
 
