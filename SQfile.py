@@ -642,13 +642,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
 VIP_PRICE = 101
-VIP_DURATION_VALUE = 20
+VIP_DURATION_VALUE = 4
 VIP_DURATION_UNIT = "minutes"
 
-WARNING_1_VALUE = 17
+WARNING_1_VALUE = 2
 WARNING_1_UNIT = "minutes"
 
-WARNING_2_VALUE = 19
+WARNING_2_VALUE = 3
 WARNING_2_UNIT = "minutes"
 ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
@@ -1845,6 +1845,8 @@ def send_expired_message(user_id):
     except:
         pass
 
+
+
 # ==========================================
 # ADMIN MANUAL VIP ADD SYSTEM (/vip)
 # ==========================================
@@ -1860,7 +1862,7 @@ vip_waiting_admin = set()
 @bot.message_handler(commands=['vip'])
 def vip_command(message):
 
-    if message.from_user.id not in ADMIN_IDS:
+    if message.from_user.id != ADMIN_ID:
         return
 
     vip_waiting_admin.add(message.from_user.id)
@@ -1877,7 +1879,7 @@ def vip_command(message):
 @bot.message_handler(func=lambda m: m.from_user.id in vip_waiting_admin)
 def receive_vip_user_id(message):
 
-    if message.from_user.id not in ADMIN_IDS:
+    if message.from_user.id != ADMIN_ID:
         return
 
     try:
@@ -1955,6 +1957,9 @@ def receive_vip_user_id(message):
         f"An saka user {user_id} a VIP.\n\n"
         f"Za a cire shi ranar:\n{expire_text}"
     )
+
+
+
 #=========================================================
 @bot.message_handler(
     func=lambda m: (
