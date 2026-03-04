@@ -990,8 +990,9 @@ def paystack_webhook():
         )
 
         if PAYMENT_NOTIFY_GROUP:
-            from datetime import datetime
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            now_local = now + timedelta(hours=1)
 
             bot.send_message(
                 PAYMENT_NOTIFY_GROUP,
@@ -1005,7 +1006,7 @@ def paystack_webhook():
 🗃 <b>Order ID:</b> <code>{order_id}</code>
 
 💰 <b>Amount:</b> ₦{paid_amount}
-⏰ <b>Time:</b> {now}
+⏰ <b>Time:</b> {now_local.strftime("%Y-%m-%d %H:%M:%S")}
 """,
                 parse_mode="HTML"
             )
@@ -1026,7 +1027,10 @@ def paystack_webhook():
         else:
             end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
 
-        # ===== CHECK IF USER ALREADY IN GROUP =====
+        # Nigeria display fix only
+        start_local = start_date + timedelta(hours=1)
+        end_local = end_date + timedelta(hours=1)
+
         already_in_group = False
         try:
             member = bot.get_chat_member(VIP_GROUP_ID, user_id)
@@ -1063,17 +1067,27 @@ def paystack_webhook():
                 user_id,
                 f"""💎 <b>AN SABUNTA VIP NAKA</b>
 
-Muna tayaka murnar sabunta biyan VIP ɗinka.
-
-Domin more samun duk fim ɗin da ranka yake so,
-ci gaba da ziyartar VIP Group kawai.
-
-📅 <b>Ka biya a yau:</b> {start_date.strftime("%Y-%m-%d")}
-⏳ <b>Sake biya aranar ko kafin:<b> {end_date.strftime("%Y-%m-%d")}
+📅 <b>Ka biya a yau:</b> {start_local.strftime("%Y-%m-%d")}
+⏳ <b>Sake biya aranar ko kafin:</b> {end_local.strftime("%Y-%m-%d")}
 
 Na gode da kasancewa tare da mu 🙏""",
                 parse_mode="HTML"
             )
+
+            # Admin notification
+            try:
+                bot.send_message(
+                    ADMIN_ID,
+                    f"""🔔 VIP RENEWAL
+
+👤 Name: {full_name}
+🆔 User ID: {user_id}
+💰 Amount: ₦{paid_amount}
+
+Ya sabunta VIP subscription nasa."""
+                )
+            except:
+                pass
 
         else:
 
@@ -1111,15 +1125,8 @@ Na gode da kasancewa tare da mu 🙏""",
                 user_id,
                 f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
 
-👤 <b>Name:</b> {full_name}
-🆔 <b>User ID:</b> <code>{user_id}</code>
-
-💳 <b>Amount Paid:</b> ₦{paid_amount}
-
-📅 <b>Start Date:</b> {start_date.strftime("%Y-%m-%d")}
-⏳ <b>End Date:</b> {end_date.strftime("%Y-%m-%d")}
-
-🔐 Click the button below to join the VIP Group.
+📅 <b>Start Date:</b> {start_local.strftime("%Y-%m-%d")}
+⏳ <b>End Date:</b> {end_local.strftime("%Y-%m-%d")}
 """,
                 parse_mode="HTML",
                 reply_markup=vip_kb
@@ -1950,14 +1957,16 @@ def receive_vip_user_id(message):
     # ===============================
     # SUCCESS MESSAGE TO ADMIN
     # ===============================
-    expire_text = expire_at.strftime("%d %B %Y %H:%M:%S")
+    
+    # ✅ DISPLAY FIX (Nigeria Time +1 hour)
+    expire_local = expire_at + timedelta(hours=1)
+    expire_text = expire_local.strftime("%d %B %Y %H:%M:%S")
 
     bot.send_message(
         message.chat.id,
         f"An saka user {user_id} a VIP.\n\n"
         f"Za a cire shi ranar:\n{expire_text}"
     )
-
 
 
 #=========================================================
