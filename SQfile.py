@@ -2657,10 +2657,11 @@ def user_buttons(message):
     if txt == "HELP":
 
         kb = InlineKeyboardMarkup()
-        # ===== Arrange HELP and Cart on same row =====
+        # ===== Arrange HELP, Cart and VIP on same row =====
         kb.row(
             InlineKeyboardButton("HELP", callback_data="help_dummy"),
-            InlineKeyboardButton("Check cart", callback_data="cart_dummy")
+            InlineKeyboardButton("Check cart", callback_data="cart_dummy"),
+            InlineKeyboardButton("🔐VIP GROUP", callback_data="vip_group_dummy")
         )
 
         if ADMIN_USERNAME:
