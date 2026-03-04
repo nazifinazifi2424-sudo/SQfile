@@ -2638,8 +2638,6 @@ def checkjoin_callback(call):
     except Exception as e:
         bot.send_message(ADMIN_ID, f"ERROR calling start():\n{e}")
 
-
-
 # ======================================
 # ======================================
 # TEXT BUTTON HANDLER (GLOBAL SAFE)
@@ -2647,7 +2645,7 @@ def checkjoin_callback(call):
 @bot.message_handler(
     func=lambda msg: (
         isinstance(getattr(msg, "text", None), str)
-        and msg.text.strip() in ["HELP", "Check cart"]
+        and msg.text.strip() in ["HELP", "Check cart", "🔐VIP GROUP"]
     )
 )
 def user_buttons(message):
@@ -2659,6 +2657,11 @@ def user_buttons(message):
     if txt == "HELP":
 
         kb = InlineKeyboardMarkup()
+        # ===== Arrange HELP and Cart on same row =====
+        kb.row(
+            InlineKeyboardButton("HELP", callback_data="help_dummy"),
+            InlineKeyboardButton("Check cart", callback_data="cart_dummy")
+        )
 
         if ADMIN_USERNAME:
             kb.add(
@@ -2707,6 +2710,17 @@ def user_buttons(message):
                 "⚠️ An samu matsala wajen bude cart."
             )
 
+        return
+
+    # ======= VIP GROUP =======
+    if txt == "🔐VIP GROUP":
+        # Ana amfani da callback handler dinka da ka bayar
+        class CallMock:
+            def __init__(self, msg):
+                self.message = msg
+                self.id = None
+        # Yi trigger kai tsaye
+        vip_group_info(CallMock(message))
         return
 
 # ======================================
