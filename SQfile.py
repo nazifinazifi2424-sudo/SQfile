@@ -2639,16 +2639,24 @@ def checkjoin_callback(call):
         )
         return
 
-    print("DEBUG: Callback calling start()")
+    print("DEBUG: Callback calling start() safely")
     try:
-        bot.send_message(ADMIN_ID, f"DEBUG:\nCallback calling start() for {uid}")
+        bot.send_message(ADMIN_ID, f"DEBUG:\nCallback calling start() safely for {uid}")
     except:
         pass
 
     bot.answer_callback_query(call.id)
 
+    # 👇 NAN NE GYARAN DA YA HANA BOT YA KIRA KANSA
+    class FakeMessage:
+        def __init__(self, user):
+            self.from_user = user
+            self.text = "/start"
+
+    fake_message = FakeMessage(call.from_user)
+
     try:
-        start(call.message)
+        start(fake_message)
     except Exception as e:
         print("DEBUG ERROR calling start from callback:", e)
         bot.send_message(ADMIN_ID, f"DEBUG ERROR calling start():\n{e}")
