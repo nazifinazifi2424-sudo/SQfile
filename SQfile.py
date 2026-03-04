@@ -2504,15 +2504,10 @@ def movie_buttons_inline(mid, user_id=None):
 # ========== START ==========
 @bot.message_handler(commands=["start"])
 def start(message):
-    print("🔥 START COMMAND TRIGGERED")
-
     uid = message.from_user.id
     fname = message.from_user.first_name or ""
     uname = f"@{message.from_user.username}" if message.from_user.username else "Babu username"
     text = (message.text or "").strip()
-
-    print("User ID:", uid)
-    print("Message Text:", text)
 
     # ========= REF =========
     param = None
@@ -2523,62 +2518,41 @@ def start(message):
         if len(parts) > 1:
             param = parts[1].strip()
 
-    print("Ref Param:", param)
-
     if param and param.startswith("ref"):
         try:
             ref_id = int(param[3:])
-            print("Referral ID detected:", ref_id)
-
             add_referral(ref_id, uid)
-
             try:
                 bot.send_message(
                     ref_id,
                     f"Someone used your invite link! ID: <code>{uid}</code>",
                     parse_mode="HTML"
                 )
-            except Exception as e:
-                print("Failed to notify ref user:", e)
-        except Exception as e:
-            print("Referral error:", e)
+            except:
+                pass
+        except:
+            pass
 
     # ========= ADMIN NOTIFY =========
     try:
-        print("Sending admin notification to:", ADMIN_ID)
-
         bot.send_message(
             ADMIN_ID,
             f"🟢 SABON VISITOR!\n\n"
             f"👤 Sunan: <b>{fname}</b>\n"
             f"🔗 Username: {uname}\n"
-            f"🆔 ID: <code>{uid}</code>\n\n"
-            f"🐞 DEBUG START TRIGGERED",
+            f"🆔 ID: <code>{uid}</code>",
             parse_mode="HTML"
         )
     except Exception as e:
         print("Failed to notify admin about visitor:", e)
 
     # ========= JOIN CHECK =========
-    print("Checking join status...")
     joined = check_join(uid)
-    print("Join Result:", joined)
 
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"🐞 DEBUG JOIN CHECK\n"
-            f"User: <code>{uid}</code>\n"
-            f"Joined Result: <b>{joined}</b>",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        print("Failed to send debug join result:", e)
+
 
     # ❌ IDAN BAI SHIGA BA
     if not joined:
-        print("User NOT joined channel")
-
         kb = InlineKeyboardMarkup()
         kb.add(
             InlineKeyboardButton(
@@ -2592,17 +2566,12 @@ def start(message):
                 callback_data="checkjoin"
             )
         )
-
         bot.send_message(
             uid,
             "⚠️ Kafin ka ci gaba, dole ne ka shiga channel ɗinmu.",
             reply_markup=kb
         )
-
-        print("Join message sent to user")
         return
-
-    print("User joined. Sending main menu...")
 
     # ========= MENUS =========
     bot.send_message(
@@ -2610,26 +2579,27 @@ def start(message):
         "Abokin hulɗa, muna farin cikin maraba da kai na zuwa shagon fina-finanmu.",
         reply_markup=user_main_menu(uid)
     )
-
-    print("Main menu 1 sent")
-
     bot.send_message(
         uid,
         "Shagon Algaita Movie Store na kawo maka zaɓaɓɓun fina-finai masu inganci. Mun tace su tsaf daga ɗanyen kaya, mun ware mafi kyau kawai. Duk fim ɗin da ka siya a nan, tabbas ba za mu ba ka kunya ba.\n\n Muna kawo fina-finan kowanne kamfanin fassara anan.",
         reply_markup=reply_menu(uid)
     )
 
-    print("Main menu 2 sent")
+# ========= CHECK JOIN CALLBACK =========
+@bot.callback_query_handler(func=lambda call: call.data == "checkjoin")
+def checkjoin_callback(call):
+    uid = call.from_user.id
 
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"✅ DEBUG MENU SENT\nUser: <code>{uid}</code>",
-            parse_mode="HTML"
+    if not check_join(uid):
+        bot.answer_callback_query(
+            call.id,
+            "Har yanzu baka shiga channel ɗinmu ba.\nDa fatan za ka shiga kafin ka ci gaba.",
+            show_alert=True
         )
-    except:
-        pass
+        return
 
+    bot.answer_callback_query(call.id)
+    start(call.message)
 
 # ======================================
 # ======================================
