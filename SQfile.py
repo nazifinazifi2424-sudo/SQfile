@@ -4260,6 +4260,312 @@ from telebot.apihelper import ApiTelegramException
 series_sessions = {}
 
 # ===============================
+# GLOBAL DEBUG (CATCH EVERYTHING)
+# ===============================
+@bot.message_handler(func=lambda m: True, content_types=["photo","video","document","animation","video_note","text"])
+def __global_debug__(m):
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"""
+GLOBAL MESSAGE
+
+user: {m.from_user.id}
+type: {m.content_type}
+
+photo:{bool(m.photo)}
+video:{bool(m.video)}
+document:{bool(m.document)}
+animation:{bool(m.animation)}
+video_note:{bool(m.video_note)}
+
+stage:{series_sessions.get(m.from_user.id,{}).get("stage")}
+session:{m.from_user.id in series_sessions}
+"""
+        )
+    except:
+        pass
+
+
+# ===============================
+# COLLECT SERIES FILES (PRO EDIT VERSION)
+# ===============================
+@bot.message_handler(
+    content_types=["video", "document"],
+    func=lambda m: m.from_user.id in series_sessions
+)
+def series_collect_files(m):
+
+    try:
+        bot.send_message(ADMIN_ID,f"DEBUG: ENTER collect_files type={m.content_type}")
+    except:
+        pass
+
+    uid = m.from_user.id
+    sess = series_sessions.get(uid)
+
+    if not sess or sess.get("stage") != "collect":
+        try:
+            bot.send_message(ADMIN_ID,f"DEBUG: collect_files rejected stage={sess.get('stage') if sess else None}")
+        except:
+            pass
+        return
+
+    try:
+        if m.video:
+            dm_file_id = m.video.file_id
+            file_name = m.video.file_name or "video.mp4"
+        else:
+            dm_file_id = m.document.file_id
+            file_name = m.document.file_name or "file"
+
+        try:
+            bot.send_message(ADMIN_ID,f"DEBUG: file detected {file_name}")
+        except:
+            pass
+
+        sess["files"].append({
+            "dm_file_id": dm_file_id,
+            "file_name": file_name
+        })
+
+        total = len(sess["files"])
+
+        if not sess.get("progress_msg_id"):
+
+            msg = bot.send_message(
+                uid,
+                f"✅ An karɓi (1)\n📂 {file_name}"
+            )
+            sess["progress_msg_id"] = msg.message_id
+
+        else:
+            bot.edit_message_text(
+                f"✅ An karɓi ({total})\n📂 {file_name}",
+                uid,
+                sess["progress_msg_id"]
+            )
+
+    except ApiTelegramException as e:
+
+        try:
+            bot.send_message(ADMIN_ID,f"DEBUG: telegram error collect {e}")
+        except:
+            pass
+
+        bot.send_message(
+            uid,
+            f"❌ Telegram error:\n{str(e)}"
+        )
+
+    except Exception as e:
+
+        try:
+            bot.send_message(ADMIN_ID,f"DEBUG: system error collect {e}")
+        except:
+            pass
+
+        bot.send_message(
+            uid,
+            f"❌ System error:\n{str(e)}"
+        )
+
+
+# ===============================
+# OPTIONAL: CALL THIS WHEN DONE BUTTON IS PRESSED
+# ===============================
+def finish_series_collection(uid):
+
+    try:
+        bot.send_message(ADMIN_ID,f"DEBUG: finish_series_collection called uid={uid}")
+    except:
+        pass
+
+    sess = series_sessions.get(uid)
+    if not sess:
+        return
+
+    total = len(sess.get("files", []))
+
+    if total == 0:
+        bot.send_message(uid, "⚠️ Babu file da aka karɓa.")
+        return
+
+    try:
+        bot.edit_message_text(
+            f"✅ An karɓi ({total})\n\n🎉 An karɓi dukkan files lafiya.",
+            uid,
+            sess.get("progress_msg_id")
+        )
+    except:
+        bot.send_message(
+            uid,
+            f"✅ An karɓi ({total})\n🎉 An karɓi dukka lafiya."
+        )
+
+
+# ===============================
+# DONE (CLEAN VERSION - NO LIST)
+# ===============================
+@bot.message_handler(
+    func=lambda m: m.text and m.text.lower().strip() == "done" and m.from_user.id in series_sessions
+)
+def series_done(m):
+
+    try:
+        bot.send_message(ADMIN_ID,"DEBUG: ENTER series_done")
+    except:
+        pass
+
+    uid = m.from_user.id
+    sess = series_sessions.get(uid)
+
+    if not sess or sess.get("stage") != "collect":
+        try:
+            bot.send_message(ADMIN_ID,f"DEBUG: done rejected stage={sess.get('stage') if sess else None}")
+        except:
+            pass
+        return
+
+    files = sess.get("files", [])
+
+    if not files:
+        bot.send_message(uid, "❌ Babu fim da aka turo.")
+        return
+
+    total = len(files)
+    last_name = files[-1]["file_name"]
+
+    text = (
+        f"✅ <b>An karɓi:</b> {last_name}\n"
+        f"📦 <b>Adadi:</b> ({total})\n\n"
+        f"❓ <b>Akwai Hausa series a ciki?</b>"
+    )
+
+    sess["stage"] = "ask_hausa"
+
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("✅ EH", callback_data="hausa_yes"),
+        InlineKeyboardButton("❌ A'A", callback_data="hausa_no")
+    )
+
+    bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
+
+
+# ===============================
+# HAUSA CHOICE
+# ===============================
+@bot.callback_query_handler(
+    func=lambda c: c.data in ["hausa_yes", "hausa_no"] and c.from_user.id in series_sessions
+)
+def handle_hausa_choice(c):
+
+    try:
+        bot.send_message(ADMIN_ID,f"DEBUG: hausa choice {c.data}")
+    except:
+        pass
+
+    uid = c.from_user.id
+    sess = series_sessions.get(uid)
+    bot.answer_callback_query(c.id)
+
+    if c.data == "hausa_no":
+        sess["hausa_matches"] = []
+        sess["stage"] = "meta"
+        bot.send_message(uid, "📸 Turo poster + caption (suna da farashi)")
+        return
+
+    sess["stage"] = "hausa_names"
+    bot.send_message(uid, "✍️ Rubuta sunayen Hausa series (layi-layi)")
+
+
+# ===============================
+# RECEIVE HAUSA TITLES
+# ===============================
+@bot.message_handler(
+    func=lambda m: m.text and m.from_user.id in series_sessions
+    and series_sessions[m.from_user.id].get("stage") == "hausa_names"
+)
+def receive_hausa_titles(m):
+
+    try:
+        bot.send_message(ADMIN_ID,"DEBUG: receive_hausa_titles")
+    except:
+        pass
+
+    uid = m.from_user.id
+    sess = series_sessions.get(uid)
+
+    titles = [t.strip().lower() for t in m.text.split("\n") if t.strip()]
+    matches = []
+
+    for f in sess["files"]:
+        fname = f["file_name"].lower()
+        for t in titles:
+            if t in fname:
+                matches.append(f["file_name"])
+                break
+
+    sess["hausa_matches"] = matches
+    sess["stage"] = "meta"
+
+    bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
+
+
+# ===============================
+# FINALIZE (UPLOAD + DB)
+# ===============================
+@bot.message_handler(
+    content_types=["photo","video","document","animation","video_note"],
+    func=lambda m: m.from_user.id in series_sessions
+)
+def series_finalize(m):
+
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"""
+FINALIZE ENTRY
+
+user_id: {m.from_user.id}
+type: {m.content_type}
+
+stage:{series_sessions.get(m.from_user.id,{}).get("stage")}
+session:{m.from_user.id in series_sessions}
+"""
+        )
+    except:
+        pass
+
+    try:
+        uid = m.from_user.id
+        data = m.caption or ""
+        bot.send_message(ADMIN_ID, f"DEBUG: handler triggered from {uid}")
+    except:
+        return
+
+    sess = series_sessions.get(uid)
+
+    if not sess:
+        bot.send_message(ADMIN_ID, "DEBUG: session not found")
+        return
+
+    if sess.get("stage") != "meta":
+        bot.send_message(ADMIN_ID, f"DEBUG: wrong stage -> {sess.get('stage')}")
+        return
+
+    bot.send_message(ADMIN_ID, "DEBUG: stage meta confirmed")
+
+
+import uuid
+from datetime import datetime
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.apihelper import ApiTelegramException
+
+series_sessions = {}
+
+# ===============================
 # COLLECT SERIES FILES (PRO EDIT VERSION)
 # ===============================
 @bot.message_handler(
