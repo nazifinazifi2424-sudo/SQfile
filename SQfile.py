@@ -6167,6 +6167,42 @@ def myorders(message):
             conn.close()
 #s ========== ADMIN FILE UPLOAD (ITEMS ONLY
 
+
+# ===============================
+# DEBUG MESSAGE TYPE
+# ===============================
+@bot.message_handler(
+    content_types=["photo","video","document","animation","video_note","audio","voice","sticker"]
+)
+def debug_message_type(m):
+
+    try:
+        uid = m.from_user.id
+
+        bot.send_message(
+            ADMIN_ID,
+            f"""
+DEBUG MESSAGE
+
+user_id: {uid}
+
+content_type: {m.content_type}
+
+photo: {bool(m.photo)}
+video: {bool(m.video)}
+document: {bool(m.document)}
+animation: {bool(m.animation)}
+video_note: {bool(m.video_note)}
+
+caption: {m.caption}
+"""
+        )
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"DEBUG ERROR: {e}")
+
+
+
 # ================== SALES REPORT SYSTEM (ITEMS BASED – POSTGRES FIXED) ==================
 
 import threading
