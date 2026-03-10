@@ -692,22 +692,28 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ========= BOT =========
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-# ===============================
-# GLOBAL DEBUG (PUT AT TOP)
-# ===============================
-@bot.message_handler(func=lambda m: True, content_types=[
-    "text","photo","video","document","animation","video_note",
-    "audio","voice","sticker","contact","location"
-])
-def global_debug(m):
 
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"""
-GLOBAL DEBUG
+# ===============================
+# WHO IS CATCHING MESSAGE DEBUG
+# ===============================
+@bot.message_handler(content_types=["photo","video","document","animation","video_note","text"])
+def who_catches_message(m):
 
+    uid = m.from_user.id
+
+    stage = None
+    if uid in series_sessions:
+        stage = series_sessions[uid].get("stage")
+
+    bot.send_message(
+        ADMIN_ID,
+        f"""
+WHO CAUGHT MESSAGE
+
+user_id: {uid}
 content_type: {m.content_type}
+
+stage: {stage}
 
 photo: {bool(m.photo)}
 video: {bool(m.video)}
@@ -715,12 +721,9 @@ document: {bool(m.document)}
 animation: {bool(m.animation)}
 video_note: {bool(m.video_note)}
 
-text: {m.text}
 caption: {m.caption}
 """
-        )
-    except:
-        pass
+    )
 
 # ========= FLASK =========
 app = Flask(__name__)
