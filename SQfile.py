@@ -692,7 +692,35 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ========= BOT =========
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+# ===============================
+# GLOBAL DEBUG (PUT AT TOP)
+# ===============================
+@bot.message_handler(func=lambda m: True, content_types=[
+    "text","photo","video","document","animation","video_note",
+    "audio","voice","sticker","contact","location"
+])
+def global_debug(m):
 
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"""
+GLOBAL DEBUG
+
+content_type: {m.content_type}
+
+photo: {bool(m.photo)}
+video: {bool(m.video)}
+document: {bool(m.document)}
+animation: {bool(m.animation)}
+video_note: {bool(m.video_note)}
+
+text: {m.text}
+caption: {m.caption}
+"""
+        )
+    except:
+        pass
 
 # ========= FLASK =========
 app = Flask(__name__)
@@ -6166,40 +6194,6 @@ def myorders(message):
         if conn:
             conn.close()
 #s ========== ADMIN FILE UPLOAD (ITEMS ONLY
-
-
-# ===============================
-# DEBUG MESSAGE TYPE
-# ===============================
-@bot.message_handler(
-    content_types=["photo","video","document","animation","video_note","audio","voice","sticker"]
-)
-def debug_message_type(m):
-
-    try:
-        uid = m.from_user.id
-
-        bot.send_message(
-            ADMIN_ID,
-            f"""
-DEBUG MESSAGE
-
-user_id: {uid}
-
-content_type: {m.content_type}
-
-photo: {bool(m.photo)}
-video: {bool(m.video)}
-document: {bool(m.document)}
-animation: {bool(m.animation)}
-video_note: {bool(m.video_note)}
-
-caption: {m.caption}
-"""
-        )
-
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DEBUG ERROR: {e}")
 
 
 
