@@ -693,37 +693,6 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ========= BOT =========
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# ===============================
-# WHO IS CATCHING MESSAGE DEBUG
-# ===============================
-@bot.message_handler(content_types=["photo","video","document","animation","video_note","text"])
-def who_catches_message(m):
-
-    uid = m.from_user.id
-
-    stage = None
-    if uid in series_sessions:
-        stage = series_sessions[uid].get("stage")
-
-    bot.send_message(
-        ADMIN_ID,
-        f"""
-WHO CAUGHT MESSAGE
-
-user_id: {uid}
-content_type: {m.content_type}
-
-stage: {stage}
-
-photo: {bool(m.photo)}
-video: {bool(m.video)}
-document: {bool(m.document)}
-animation: {bool(m.animation)}
-video_note: {bool(m.video_note)}
-
-caption: {m.caption}
-"""
-    )
 
 # ========= FLASK =========
 app = Flask(__name__)
