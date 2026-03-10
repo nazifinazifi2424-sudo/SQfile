@@ -4252,6 +4252,191 @@ def pay_all_unpaid(call):
             pass
 
 
+import uuid
+from datetime import datetime
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.apihelper import ApiTelegramException
+
+series_sessions = {}
+
+# ===============================
+# COLLECT SERIES FILES (PRO EDIT VERSION)
+# ===============================
+@bot.message_handler(
+    content_types=["video", "document"],
+    func=lambda m: m.from_user.id in series_sessions
+)
+def series_collect_files(m):
+
+    uid = m.from_user.id
+    sess = series_sessions.get(uid)
+
+    if not sess or sess.get("stage") != "collect":
+        return
+
+    try:
+        # ================= GET FILE =================
+        if m.video:
+            dm_file_id = m.video.file_id
+            file_name = m.video.file_name or "video.mp4"
+        else:
+            dm_file_id = m.document.file_id
+            file_name = m.document.file_name or "file"
+
+        # ================= SAVE =================
+        sess["files"].append({
+            "dm_file_id": dm_file_id,
+            "file_name": file_name
+        })
+
+        total = len(sess["files"])
+
+        # ================= CREATE OR EDIT MESSAGE =================
+        if not sess.get("progress_msg_id"):
+
+            msg = bot.send_message(
+                uid,
+                f"✅ An karɓi (1)\n📂 {file_name}"
+            )
+            sess["progress_msg_id"] = msg.message_id
+
+        else:
+            bot.edit_message_text(
+                f"✅ An karɓi ({total})\n📂 {file_name}",
+                uid,
+                sess["progress_msg_id"]
+            )
+
+    except ApiTelegramException as e:
+        bot.send_message(
+            uid,
+            f"❌ Telegram error:\n{str(e)}"
+        )
+
+    except Exception as e:
+        bot.send_message(
+            uid,
+            f"❌ System error:\n{str(e)}"
+        )
+
+
+# ===============================
+# OPTIONAL: CALL THIS WHEN DONE BUTTON IS PRESSED
+# ===============================
+def finish_series_collection(uid):
+
+    sess = series_sessions.get(uid)
+    if not sess:
+        return
+
+    total = len(sess.get("files", []))
+
+    if total == 0:
+        bot.send_message(uid, "⚠️ Babu file da aka karɓa.")
+        return
+
+    try:
+        bot.edit_message_text(
+            f"✅ An karɓi ({total})\n\n🎉 An karɓi dukkan files lafiya.",
+            uid,
+            sess.get("progress_msg_id")
+        )
+    except:
+        bot.send_message(
+            uid,
+            f"✅ An karɓi ({total})\n🎉 An karɓi dukka lafiya."
+        )
+
+
+# ===============================
+# DONE (CLEAN VERSION - NO LIST)
+# ===============================
+@bot.message_handler(
+    func=lambda m: m.text and m.text.lower().strip() == "done" and m.from_user.id in series_sessions
+)
+def series_done(m):
+
+    uid = m.from_user.id
+    sess = series_sessions.get(uid)
+
+    if not sess or sess.get("stage") != "collect":
+        return
+
+    files = sess.get("files", [])
+
+    if not files:
+        bot.send_message(uid, "❌ Babu fim da aka turo.")
+        return
+
+    total = len(files)
+
+    # sunan fim na ƙarshe da aka karɓa
+    last_name = files[-1]["file_name"]
+
+    # ================= MESSAGE =================
+    text = (
+        f"✅ <b>An karɓi:</b> {last_name}\n"
+        f"📦 <b>Adadi:</b> ({total})\n\n"
+        f"❓ <b>Akwai Hausa series a ciki?</b>"
+    )
+
+    sess["stage"] = "ask_hausa"
+
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("✅ EH", callback_data="hausa_yes"),
+        InlineKeyboardButton("❌ A'A", callback_data="hausa_no")
+    )
+
+    bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
+# ===============================
+# HAUSA CHOICE
+# ===============================
+@bot.callback_query_handler(
+    func=lambda c: c.data in ["hausa_yes", "hausa_no"] and c.from_user.id in series_sessions
+)
+def handle_hausa_choice(c):
+    uid = c.from_user.id
+    sess = series_sessions.get(uid)
+    bot.answer_callback_query(c.id)
+
+    if c.data == "hausa_no":
+        sess["hausa_matches"] = []
+        sess["stage"] = "meta"
+        bot.send_message(uid, "📸 Turo poster + caption (suna da farashi)")
+        return
+
+    sess["stage"] = "hausa_names"
+    bot.send_message(uid, "✍️ Rubuta sunayen Hausa series (layi-layi)")
+
+# ===============================
+# RECEIVE HAUSA TITLES
+# ===============================
+@bot.message_handler(
+    func=lambda m: m.text and m.from_user.id in series_sessions
+    and series_sessions[m.from_user.id].get("stage") == "hausa_names"
+)
+def receive_hausa_titles(m):
+    uid = m.from_user.id
+    sess = series_sessions.get(uid)
+
+    titles = [t.strip().lower() for t in m.text.split("\n") if t.strip()]
+    matches = []
+
+    for f in sess["files"]:
+        fname = f["file_name"].lower()
+        for t in titles:
+            if t in fname:
+                matches.append(f["file_name"])
+                break
+
+    sess["hausa_matches"] = matches
+    sess["stage"] = "meta"
+
+    bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
+
+
+
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
@@ -4526,188 +4711,6 @@ stage: {series_sessions.get(m.from_user.id,{}).get("stage")}
     del series_sessions[uid]
 
 
-import uuid
-from datetime import datetime
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.apihelper import ApiTelegramException
-
-series_sessions = {}
-
-# ===============================
-# COLLECT SERIES FILES (PRO EDIT VERSION)
-# ===============================
-@bot.message_handler(
-    content_types=["video", "document"],
-    func=lambda m: m.from_user.id in series_sessions
-)
-def series_collect_files(m):
-
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    if not sess or sess.get("stage") != "collect":
-        return
-
-    try:
-        # ================= GET FILE =================
-        if m.video:
-            dm_file_id = m.video.file_id
-            file_name = m.video.file_name or "video.mp4"
-        else:
-            dm_file_id = m.document.file_id
-            file_name = m.document.file_name or "file"
-
-        # ================= SAVE =================
-        sess["files"].append({
-            "dm_file_id": dm_file_id,
-            "file_name": file_name
-        })
-
-        total = len(sess["files"])
-
-        # ================= CREATE OR EDIT MESSAGE =================
-        if not sess.get("progress_msg_id"):
-
-            msg = bot.send_message(
-                uid,
-                f"✅ An karɓi (1)\n📂 {file_name}"
-            )
-            sess["progress_msg_id"] = msg.message_id
-
-        else:
-            bot.edit_message_text(
-                f"✅ An karɓi ({total})\n📂 {file_name}",
-                uid,
-                sess["progress_msg_id"]
-            )
-
-    except ApiTelegramException as e:
-        bot.send_message(
-            uid,
-            f"❌ Telegram error:\n{str(e)}"
-        )
-
-    except Exception as e:
-        bot.send_message(
-            uid,
-            f"❌ System error:\n{str(e)}"
-        )
-
-
-# ===============================
-# OPTIONAL: CALL THIS WHEN DONE BUTTON IS PRESSED
-# ===============================
-def finish_series_collection(uid):
-
-    sess = series_sessions.get(uid)
-    if not sess:
-        return
-
-    total = len(sess.get("files", []))
-
-    if total == 0:
-        bot.send_message(uid, "⚠️ Babu file da aka karɓa.")
-        return
-
-    try:
-        bot.edit_message_text(
-            f"✅ An karɓi ({total})\n\n🎉 An karɓi dukkan files lafiya.",
-            uid,
-            sess.get("progress_msg_id")
-        )
-    except:
-        bot.send_message(
-            uid,
-            f"✅ An karɓi ({total})\n🎉 An karɓi dukka lafiya."
-        )
-
-
-# ===============================
-# DONE (CLEAN VERSION - NO LIST)
-# ===============================
-@bot.message_handler(
-    func=lambda m: m.text and m.text.lower().strip() == "done" and m.from_user.id in series_sessions
-)
-def series_done(m):
-
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    if not sess or sess.get("stage") != "collect":
-        return
-
-    files = sess.get("files", [])
-
-    if not files:
-        bot.send_message(uid, "❌ Babu fim da aka turo.")
-        return
-
-    total = len(files)
-
-    # sunan fim na ƙarshe da aka karɓa
-    last_name = files[-1]["file_name"]
-
-    # ================= MESSAGE =================
-    text = (
-        f"✅ <b>An karɓi:</b> {last_name}\n"
-        f"📦 <b>Adadi:</b> ({total})\n\n"
-        f"❓ <b>Akwai Hausa series a ciki?</b>"
-    )
-
-    sess["stage"] = "ask_hausa"
-
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("✅ EH", callback_data="hausa_yes"),
-        InlineKeyboardButton("❌ A'A", callback_data="hausa_no")
-    )
-
-    bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
-# ===============================
-# HAUSA CHOICE
-# ===============================
-@bot.callback_query_handler(
-    func=lambda c: c.data in ["hausa_yes", "hausa_no"] and c.from_user.id in series_sessions
-)
-def handle_hausa_choice(c):
-    uid = c.from_user.id
-    sess = series_sessions.get(uid)
-    bot.answer_callback_query(c.id)
-
-    if c.data == "hausa_no":
-        sess["hausa_matches"] = []
-        sess["stage"] = "meta"
-        bot.send_message(uid, "📸 Turo poster + caption (suna da farashi)")
-        return
-
-    sess["stage"] = "hausa_names"
-    bot.send_message(uid, "✍️ Rubuta sunayen Hausa series (layi-layi)")
-
-# ===============================
-# RECEIVE HAUSA TITLES
-# ===============================
-@bot.message_handler(
-    func=lambda m: m.text and m.from_user.id in series_sessions
-    and series_sessions[m.from_user.id].get("stage") == "hausa_names"
-)
-def receive_hausa_titles(m):
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    titles = [t.strip().lower() for t in m.text.split("\n") if t.strip()]
-    matches = []
-
-    for f in sess["files"]:
-        fname = f["file_name"].lower()
-        for t in titles:
-            if t in fname:
-                matches.append(f["file_name"])
-                break
-
-    sess["hausa_matches"] = matches
-    sess["stage"] = "meta"
-
-    bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
 
 
 @bot.callback_query_handler(func=lambda c: True)
