@@ -29,8 +29,6 @@ def get_conn():
 conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
-
-
 # ==========================================
 # AUTO DB FIX: ENSURE invite_link COLUMN
 # ==========================================
@@ -302,6 +300,8 @@ def ensure_orders_columns():
 
 # 🔥 Run migration once at startup
 ensure_orders_columns()
+
+
 
 
 # ======================
@@ -634,30 +634,30 @@ ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
-ADMINS = [8537505191]
+ADMINS = [6603268127]
 
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
-VIP_PRICE = 101
-VIP_DURATION_VALUE = 4
-VIP_DURATION_UNIT = "minutes"
+VIP_PRICE = 1500
+VIP_DURATION_VALUE = 33
+VIP_DURATION_UNIT = "days"
 
-WARNING_1_VALUE = 2
-WARNING_1_UNIT = "minutes"
+WARNING_1_VALUE = 30
+WARNING_1_UNIT = "days"
 
-WARNING_2_VALUE = 3
-WARNING_2_UNIT = "minutes"
-ADMIN_ID = 8537505191
+WARNING_2_VALUE = 32
+WARNING_2_UNIT = "days"
+ADMIN_ID = 6603268127
 OTP_ADMIN_ID = 6603268127
 
-BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@Danchirinps"
+BOT_USERNAME = "Algaitabot"
+CHANNEL = "@Algaitamoviestore"
 
 COUNTDOWN_SECONDS = 70
-VIP_LINK = "https://t.me/+o7qBXIs-FX5lYWZk"  # saka permanent group link naka
+VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -671,11 +671,12 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PAYSTACK_BASE = "https://api.paystack.co"
 
 
-VIP_GROUP_ID = -1003769342354
+VIP_GROUP_ID = -1003656360408
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003769342354
-STORAGE_CHANNEL = -1003794258511
+PAYMENT_NOTIFY_GROUP = -1003555015230
+STORAGE_CHANNEL = -1003520788779
+
 SEND_ADMIN_PAYMENT_NOTIF = False
 
 ADMIN_USERNAME = "CEOalgaitabot"
@@ -803,6 +804,7 @@ def send_feedback_prompt(user_id, order_id):
         print("✅ Feedback prompt sent:", user_id, order_id)
     except Exception as e:
         print("FEEDBACK SEND ERROR:", e)
+
 
 
 @app.route("/webhook", methods=["POST"])
@@ -973,17 +975,17 @@ def paystack_webhook():
 
         bot.send_message(
             user_id,
-            f"""🎉 <b>PAYMENT SUCCESSFUL</b>
+            f"""🎉 <b>PAYMENT SUCCESSFUL</b>  
 
-👤 <b>Name:</b> {full_name}
-🆔 <b>User ID:</b> <code>{user_id}</code>
+👤 <b>Name:</b> {full_name}  
+🆔 <b>User ID:</b> <code>{user_id}</code>  
 
-🎬 <b>Items:</b> {titles_text}
-🗃 <b>Order ID:</b> <code>{order_id}</code>
+🎬 <b>Items:</b> {titles_text}  
+🗃 <b>Order ID:</b> <code>{order_id}</code>  
 
-💳 <b>Amount Paid:</b> ₦{paid_amount}
+💳 <b>Amount Paid:</b> ₦{paid_amount}  
 
-⬇️ Click the button below to download your files.
+⬇️ Click the button below to download your files.  
 """,
             parse_mode="HTML",
             reply_markup=kb
@@ -991,22 +993,21 @@ def paystack_webhook():
 
         if PAYMENT_NOTIFY_GROUP:
             from datetime import datetime, timedelta
-            now = datetime.now()
-            now_local = now + timedelta(hours=1)
+            now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
             bot.send_message(
                 PAYMENT_NOTIFY_GROUP,
-                f"""✅ <b>NEW PAYMENT RECEIVED</b>
+                f"""✅ <b>NEW PAYMENT RECEIVED</b>  
 
-👤 <b>Name:</b> {full_name}
-🔗 <b>Username:</b> {tg_username}
-🆔 <b>User ID:</b> <code>{user_id}</code>
+👤 <b>Name:</b> {full_name}  
+🔗 <b>Username:</b> {tg_username}  
+🆔 <b>User ID:</b> <code>{user_id}</code>  
 
-🎬 <b>Items:</b> {titles_text}
-🗃 <b>Order ID:</b> <code>{order_id}</code>
+🎬 <b>Items:</b> {titles_text}  
+🗃 <b>Order ID:</b> <code>{order_id}</code>  
 
-💰 <b>Amount:</b> ₦{paid_amount}
-⏰ <b>Time:</b> {now_local.strftime("%Y-%m-%d %H:%M:%S")}
+💰 <b>Amount:</b> ₦{paid_amount}  
+⏰ <b>Time:</b> {now}  
 """,
                 parse_mode="HTML"
             )
@@ -1021,13 +1022,12 @@ def paystack_webhook():
         from datetime import datetime, timedelta
 
         start_date = datetime.now()
+        end_date = start_date + (
+            timedelta(minutes=VIP_DURATION_VALUE)
+            if VIP_DURATION_UNIT == "minutes"
+            else timedelta(days=VIP_DURATION_VALUE)
+        )
 
-        if VIP_DURATION_UNIT == "minutes":
-            end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
-        else:
-            end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
-
-        # Nigeria display fix only
         start_local = start_date + timedelta(hours=1)
         end_local = end_date + timedelta(hours=1)
 
@@ -1043,18 +1043,18 @@ def paystack_webhook():
 
             cur.execute(
                 """
-                INSERT INTO vip_members   
-                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    order_id = EXCLUDED.order_id,
-                    join_date = EXCLUDED.join_date,
-                    expire_at = EXCLUDED.expire_at,
-                    status = 'active',
-                    warn1_sent = FALSE,
-                    warn2_sent = FALSE,
-                    payment_date = NOW()
+                INSERT INTO vip_members     
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)  
+                VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())  
+                ON CONFLICT (user_id)  
+                DO UPDATE SET  
+                    order_id = EXCLUDED.order_id,  
+                    join_date = EXCLUDED.join_date,  
+                    expire_at = EXCLUDED.expire_at,  
+                    status = 'active',  
+                    warn1_sent = FALSE,  
+                    warn2_sent = FALSE,  
+                    payment_date = NOW()  
                 """,
                 (user_id, order_id, start_date, end_date)
             )
@@ -1065,26 +1065,43 @@ def paystack_webhook():
 
             bot.send_message(
                 user_id,
-                f"""💎 <b>AN SABUNTA VIP NAKA</b>
+                f"""💎 <b>AN SABUNTA VIP NAKA</b>  
 
-📅 <b>Ka biya a yau:</b> {start_local.strftime("%Y-%m-%d")}
-⏳ <b>Sake biya aranar ko kafin:</b> {end_local.strftime("%Y-%m-%d")}
+Muna tayaka murnar sabunta biyan VIP ɗinka.  
+
+Domin more samun duk fim ɗin da ranka yake so,  
+ci gaba da ziyartar VIP Group kawai.  
+
+📅 <b>Ka biya a yau:</b> {start_local.strftime("%Y-%m-%d")}  
+⏳ <b>Sake biya aranar ko kafin:</b> {end_local.strftime("%Y-%m-%d")}  
 
 Na gode da kasancewa tare da mu 🙏""",
                 parse_mode="HTML"
             )
 
-            # Admin notification
+            if PAYMENT_NOTIFY_GROUP:
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""💎 <b>VIP RENEWAL PAYMENT</b>  
+
+👤 <b>Name:</b> {full_name}  
+🔗 <b>Username:</b> {tg_username}  
+🆔 <b>User ID:</b> <code>{user_id}</code>  
+
+🗃 <b>Order ID:</b> <code>{order_id}</code>  
+
+💰 <b>Amount:</b> ₦{paid_amount}  
+⏰ <b>Time:</b> {now}  
+""",
+                    parse_mode="HTML"
+                )
+
             try:
                 bot.send_message(
                     ADMIN_ID,
-                    f"""🔔 VIP RENEWAL
-
-👤 Name: {full_name}
-🆔 User ID: {user_id}
-💰 Amount: ₦{paid_amount}
-
-Ya sabunta VIP subscription nasa."""
+                    f"🔔 VIP RENEWAL\n\n👤 {full_name}\n🆔 {user_id}\n💰 ₦{paid_amount}\n\nYa sabunta VIP dinsa."
                 )
             except:
                 pass
@@ -1093,18 +1110,18 @@ Ya sabunta VIP subscription nasa."""
 
             cur.execute(
                 """
-                INSERT INTO vip_members   
-                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    order_id = EXCLUDED.order_id,
-                    join_date = NULL,
-                    expire_at = NULL,
-                    status = 'active',
-                    warn1_sent = FALSE,
-                    warn2_sent = FALSE,
-                    payment_date = NOW()
+                INSERT INTO vip_members     
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)  
+                VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())  
+                ON CONFLICT (user_id)  
+                DO UPDATE SET  
+                    order_id = EXCLUDED.order_id,  
+                    join_date = NULL,  
+                    expire_at = NULL,  
+                    status = 'active',  
+                    warn1_sent = FALSE,  
+                    warn2_sent = FALSE,  
+                    payment_date = NOW()  
                 """,
                 (user_id, order_id)
             )
@@ -1123,18 +1140,45 @@ Ya sabunta VIP subscription nasa."""
 
             bot.send_message(
                 user_id,
-                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
+                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>  
 
-📅 <b>Start Date:</b> {start_local.strftime("%Y-%m-%d")}
-⏳ <b>End Date:</b> {end_local.strftime("%Y-%m-%d")}
+👤 <b>Name:</b> {full_name}  
+🆔 <b>User ID:</b> <code>{user_id}</code>  
+
+💳 <b>Amount Paid:</b> ₦{paid_amount}  
+
+📅 <b>Start Date:</b> {start_local.strftime("%Y-%m-%d")}  
+⏳ <b>End Date:</b> {end_local.strftime("%Y-%m-%d")}  
+
+🔐 Click the button below to join the VIP Group.  
 """,
                 parse_mode="HTML",
                 reply_markup=vip_kb
             )
 
+            if PAYMENT_NOTIFY_GROUP:
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""💎 <b>NEW VIP SUBSCRIPTION</b>  
+
+👤 <b>Name:</b> {full_name}  
+🔗 <b>Username:</b> {tg_username}  
+🆔 <b>User ID:</b> <code>{user_id}</code>  
+
+🗃 <b>Order ID:</b> <code>{order_id}</code>  
+
+💰 <b>Amount:</b> ₦{paid_amount}  
+⏰ <b>Time:</b> {now}  
+""",
+                    parse_mode="HTML"
+                )
+
         return "OK", 200
 
     return "OK", 200
+
 
 
 # 
@@ -1320,7 +1364,7 @@ def vip_group_info(call):
     text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
 ━━━━━━━━━━━━━━━━━━
 🔹 <b>Kudin Rijista:</b> ₦1,500  
-🔹 <b>Subscription:</b> Kwana 30  
+🔹 <b>Subscription:</b> Kwana 33  
 🔹 Ba za a sake biyan kudi ba har sai bayan kwanaki 30
 ━━━━━━━━━━━━━━━━━━
 🔹 Bayan ka biya, za a tura maka <b>1-Time Secure Link</b>  
@@ -1766,7 +1810,7 @@ def vip_warning_system():
 
                         bot.send_message(
                             user_id,
-                            f"⏳ TUNATARWA ZANYI MAKA/n\n"
+                            f"⏳ TUNATARWA ZANYI MAKA\n\n"
                             f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value} {unit_text}.\n\n"
                             f"Muna matuƙar godiya da kasancewarka tare da mu ❤️\n"
                             f"Da fatan za ka sabunta kafin lokacin ya ƙare domin cigaba da more VIP group.",
@@ -1811,7 +1855,7 @@ def vip_warning_system():
 
                         bot.send_message(
                             user_id,
-                            f"⚠NAZO NA SANAR DAKAIn\n"
+                            f"⚠NAZO NA SANAR DAKAI\n\n"
                             f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value2} {unit_text2}.\n\n"
                             f"Idan ba ka sabunta ba kafin lokacin ya cika, za a cire ka daga VIP group.\n"
                             f"Da fatan za ka sabunta yanzu domin kada a cire ka.",
@@ -4251,7 +4295,6 @@ def pay_all_unpaid(call):
         except:
             pass
 
-
 import uuid
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -4267,11 +4310,6 @@ series_sessions = {}
     func=lambda m: m.from_user.id in series_sessions
 )
 def series_collect_files(m):
-
-    try:
-        bot.send_message(ADMIN_ID,f"DEBUG COLLECT -> type:{m.content_type} user:{m.from_user.id}")
-    except:
-        pass
 
     uid = m.from_user.id
     sess = series_sessions.get(uid)
@@ -4361,11 +4399,6 @@ def finish_series_collection(uid):
 )
 def series_done(m):
 
-    try:
-        bot.send_message(ADMIN_ID,f"DEBUG DONE -> user:{m.from_user.id}")
-    except:
-        pass
-
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
@@ -4399,7 +4432,6 @@ def series_done(m):
     )
 
     bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
-
 # ===============================
 # HAUSA CHOICE
 # ===============================
@@ -4447,6 +4479,7 @@ def receive_hausa_titles(m):
     bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
 
 
+
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
@@ -4456,40 +4489,191 @@ import uuid
 from datetime import datetime
 
 @bot.message_handler(
-    content_types=["photo","video","document"],
+    content_types=["photo"],
     func=lambda m: m.from_user.id in series_sessions
 )
 def series_finalize(m):
 
     try:
-        bot.send_message(
-            ADMIN_ID,
-            f"DEBUG FINALIZE -> type:{m.content_type} user:{m.from_user.id}"
-        )
-    except:
-        pass
-
-    try:
         uid = m.from_user.id
         data = m.caption or ""
-        bot.send_message(ADMIN_ID, f"DEBUG: handler triggered from {uid}")
     except:
         return
 
     sess = series_sessions.get(uid)
 
-    if not sess:
-        bot.send_message(ADMIN_ID, "DEBUG: session not found")
-        return
-
     if sess.get("stage") != "meta":
-        bot.send_message(ADMIN_ID, f"DEBUG: wrong stage -> {sess.get('stage')}")
         return
 
-    bot.send_message(ADMIN_ID, "DEBUG: stage meta confirmed")
+    # ================= PARSE CAPTION =================
+    try:
+        title, raw_price = data.strip().rsplit("\n", 1)
+        has_comma = "," in raw_price
+        price = int(raw_price.replace(",", "").strip())
+    except:
+        bot.send_message(uid, "❌ Caption bai dace ba.")
+        return
 
+    poster_file_id = m.photo[-1].file_id
 
+    # ================= DB CONNECT =================
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+    except:
+        return
 
+    # ================= CREATE SERIES =================
+    try:
+        cur.execute(
+            "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
+            (title, price, poster_file_id)
+        )
+        series_id = cur.fetchone()[0]
+    except:
+        return
+
+    item_ids = []
+    created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    group_key = str(uuid.uuid4())
+    total_files = len(sess["files"])
+
+    # 🔥 ONE CLEAN MESSAGE
+    progress_msg = bot.send_message(
+        ADMIN_ID,
+        f"⏳ Loading... (0/{total_files})"
+    )
+
+    # ================= SAFE SEND =================
+    def safe_send_document(chat_id, file_id, caption):
+
+        while True:
+            try:
+                return bot.send_document(chat_id, file_id, caption=caption)
+
+            except ApiTelegramException as e:
+
+                if e.error_code == 429:
+                    retry = int(e.result_json["parameters"]["retry_after"])
+
+                    bot.edit_message_text(
+                        f"⏸ Rate limit hit.\nWaiting {retry}s...\n"
+                        f"{len(item_ids)}/{total_files} saved",
+                        ADMIN_ID,
+                        progress_msg.message_id
+                    )
+
+                    time.sleep(retry)
+
+                    bot.edit_message_text(
+                        f"⏳ Loading... ({len(item_ids)}/{total_files})",
+                        ADMIN_ID,
+                        progress_msg.message_id
+                    )
+
+                    continue
+                else:
+                    return None
+
+            except:
+                return None
+
+    # ================= UPLOAD LOOP =================
+    for f in sess["files"]:
+
+        msg = safe_send_document(
+            STORAGE_CHANNEL,
+            f["dm_file_id"],
+            f["file_name"]
+        )
+
+        if not msg:
+            continue
+
+        doc = msg.document or msg.video
+        if not doc:
+            continue
+
+        try:
+            cur.execute(
+                """
+                INSERT INTO items
+                (title, price, file_id, file_name, group_key,
+                 created_at, channel_msg_id, channel_username)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    title,
+                    price,
+                    doc.file_id,
+                    f["file_name"],
+                    group_key,
+                    created_at,
+                    msg.message_id,
+                    STORAGE_CHANNEL
+                )
+            )
+            new_id = cur.fetchone()[0]
+            item_ids.append(new_id)
+
+        except:
+            continue
+
+        # Update progress cleanly
+        bot.edit_message_text(
+            f"⏳ Loading... ({len(item_ids)}/{total_files})",
+            ADMIN_ID,
+            progress_msg.message_id
+        )
+
+        time.sleep(1.1)
+
+    # ================= COMMIT =================
+    try:
+        conn.commit()
+    except:
+        pass
+
+    cur.close()
+    conn.close()
+
+    # ================= PUBLIC POST =================
+    try:
+        display_price = f"{price:,}" if has_comma else str(price)
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "🛒 Add to cart",
+                callback_data=f"addcartdm:{group_key}"
+            ),
+            InlineKeyboardButton(
+                "💳 Buy now",
+                url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{group_key}"
+            )
+        )
+
+        bot.send_photo(
+            CHANNEL,
+            poster_file_id,
+            caption=f"🎬 <b>{title}</b>\n💵Price: ₦{display_price}",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+    except:
+        pass
+
+    # Final message
+    bot.edit_message_text(
+        f"✅ Completed.\n{len(item_ids)}/{total_files} saved successfully.",
+        ADMIN_ID,
+        progress_msg.message_id
+    )
+
+    bot.send_message(uid, "🎉 Series an adana dukka lafiya.")
+    del series_sessions[uid]
 
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -5979,8 +6163,6 @@ def myorders(message):
         if conn:
             conn.close()
 #s ========== ADMIN FILE UPLOAD (ITEMS ONLY
-
-
 
 # ================== SALES REPORT SYSTEM (ITEMS BASED – POSTGRES FIXED) ==================
 
