@@ -4260,34 +4260,6 @@ from telebot.apihelper import ApiTelegramException
 series_sessions = {}
 
 # ===============================
-# GLOBAL DEBUG (CATCH EVERYTHING)
-# ===============================
-@bot.message_handler(func=lambda m: True, content_types=["photo","video","document","animation","video_note","text"])
-def __global_debug__(m):
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"""
-GLOBAL MESSAGE
-
-user: {m.from_user.id}
-type: {m.content_type}
-
-photo:{bool(m.photo)}
-video:{bool(m.video)}
-document:{bool(m.document)}
-animation:{bool(m.animation)}
-video_note:{bool(m.video_note)}
-
-stage:{series_sessions.get(m.from_user.id,{}).get("stage")}
-session:{m.from_user.id in series_sessions}
-"""
-        )
-    except:
-        pass
-
-
-# ===============================
 # COLLECT SERIES FILES (PRO EDIT VERSION)
 # ===============================
 @bot.message_handler(
@@ -4297,282 +4269,9 @@ session:{m.from_user.id in series_sessions}
 def series_collect_files(m):
 
     try:
-        bot.send_message(ADMIN_ID,f"DEBUG: ENTER collect_files type={m.content_type}")
+        bot.send_message(ADMIN_ID,f"DEBUG COLLECT -> type:{m.content_type} user:{m.from_user.id}")
     except:
         pass
-
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    if not sess or sess.get("stage") != "collect":
-        try:
-            bot.send_message(ADMIN_ID,f"DEBUG: collect_files rejected stage={sess.get('stage') if sess else None}")
-        except:
-            pass
-        return
-
-    try:
-        if m.video:
-            dm_file_id = m.video.file_id
-            file_name = m.video.file_name or "video.mp4"
-        else:
-            dm_file_id = m.document.file_id
-            file_name = m.document.file_name or "file"
-
-        try:
-            bot.send_message(ADMIN_ID,f"DEBUG: file detected {file_name}")
-        except:
-            pass
-
-        sess["files"].append({
-            "dm_file_id": dm_file_id,
-            "file_name": file_name
-        })
-
-        total = len(sess["files"])
-
-        if not sess.get("progress_msg_id"):
-
-            msg = bot.send_message(
-                uid,
-                f"✅ An karɓi (1)\n📂 {file_name}"
-            )
-            sess["progress_msg_id"] = msg.message_id
-
-        else:
-            bot.edit_message_text(
-                f"✅ An karɓi ({total})\n📂 {file_name}",
-                uid,
-                sess["progress_msg_id"]
-            )
-
-    except ApiTelegramException as e:
-
-        try:
-            bot.send_message(ADMIN_ID,f"DEBUG: telegram error collect {e}")
-        except:
-            pass
-
-        bot.send_message(
-            uid,
-            f"❌ Telegram error:\n{str(e)}"
-        )
-
-    except Exception as e:
-
-        try:
-            bot.send_message(ADMIN_ID,f"DEBUG: system error collect {e}")
-        except:
-            pass
-
-        bot.send_message(
-            uid,
-            f"❌ System error:\n{str(e)}"
-        )
-
-
-# ===============================
-# OPTIONAL: CALL THIS WHEN DONE BUTTON IS PRESSED
-# ===============================
-def finish_series_collection(uid):
-
-    try:
-        bot.send_message(ADMIN_ID,f"DEBUG: finish_series_collection called uid={uid}")
-    except:
-        pass
-
-    sess = series_sessions.get(uid)
-    if not sess:
-        return
-
-    total = len(sess.get("files", []))
-
-    if total == 0:
-        bot.send_message(uid, "⚠️ Babu file da aka karɓa.")
-        return
-
-    try:
-        bot.edit_message_text(
-            f"✅ An karɓi ({total})\n\n🎉 An karɓi dukkan files lafiya.",
-            uid,
-            sess.get("progress_msg_id")
-        )
-    except:
-        bot.send_message(
-            uid,
-            f"✅ An karɓi ({total})\n🎉 An karɓi dukka lafiya."
-        )
-
-
-# ===============================
-# DONE (CLEAN VERSION - NO LIST)
-# ===============================
-@bot.message_handler(
-    func=lambda m: m.text and m.text.lower().strip() == "done" and m.from_user.id in series_sessions
-)
-def series_done(m):
-
-    try:
-        bot.send_message(ADMIN_ID,"DEBUG: ENTER series_done")
-    except:
-        pass
-
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    if not sess or sess.get("stage") != "collect":
-        try:
-            bot.send_message(ADMIN_ID,f"DEBUG: done rejected stage={sess.get('stage') if sess else None}")
-        except:
-            pass
-        return
-
-    files = sess.get("files", [])
-
-    if not files:
-        bot.send_message(uid, "❌ Babu fim da aka turo.")
-        return
-
-    total = len(files)
-    last_name = files[-1]["file_name"]
-
-    text = (
-        f"✅ <b>An karɓi:</b> {last_name}\n"
-        f"📦 <b>Adadi:</b> ({total})\n\n"
-        f"❓ <b>Akwai Hausa series a ciki?</b>"
-    )
-
-    sess["stage"] = "ask_hausa"
-
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("✅ EH", callback_data="hausa_yes"),
-        InlineKeyboardButton("❌ A'A", callback_data="hausa_no")
-    )
-
-    bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
-
-
-# ===============================
-# HAUSA CHOICE
-# ===============================
-@bot.callback_query_handler(
-    func=lambda c: c.data in ["hausa_yes", "hausa_no"] and c.from_user.id in series_sessions
-)
-def handle_hausa_choice(c):
-
-    try:
-        bot.send_message(ADMIN_ID,f"DEBUG: hausa choice {c.data}")
-    except:
-        pass
-
-    uid = c.from_user.id
-    sess = series_sessions.get(uid)
-    bot.answer_callback_query(c.id)
-
-    if c.data == "hausa_no":
-        sess["hausa_matches"] = []
-        sess["stage"] = "meta"
-        bot.send_message(uid, "📸 Turo poster + caption (suna da farashi)")
-        return
-
-    sess["stage"] = "hausa_names"
-    bot.send_message(uid, "✍️ Rubuta sunayen Hausa series (layi-layi)")
-
-
-# ===============================
-# RECEIVE HAUSA TITLES
-# ===============================
-@bot.message_handler(
-    func=lambda m: m.text and m.from_user.id in series_sessions
-    and series_sessions[m.from_user.id].get("stage") == "hausa_names"
-)
-def receive_hausa_titles(m):
-
-    try:
-        bot.send_message(ADMIN_ID,"DEBUG: receive_hausa_titles")
-    except:
-        pass
-
-    uid = m.from_user.id
-    sess = series_sessions.get(uid)
-
-    titles = [t.strip().lower() for t in m.text.split("\n") if t.strip()]
-    matches = []
-
-    for f in sess["files"]:
-        fname = f["file_name"].lower()
-        for t in titles:
-            if t in fname:
-                matches.append(f["file_name"])
-                break
-
-    sess["hausa_matches"] = matches
-    sess["stage"] = "meta"
-
-    bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
-
-
-# ===============================
-# FINALIZE (UPLOAD + DB)
-# ===============================
-@bot.message_handler(
-    content_types=["photo","video","document","animation","video_note"],
-    func=lambda m: m.from_user.id in series_sessions
-)
-def series_finalize(m):
-
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"""
-FINALIZE ENTRY
-
-user_id: {m.from_user.id}
-type: {m.content_type}
-
-stage:{series_sessions.get(m.from_user.id,{}).get("stage")}
-session:{m.from_user.id in series_sessions}
-"""
-        )
-    except:
-        pass
-
-    try:
-        uid = m.from_user.id
-        data = m.caption or ""
-        bot.send_message(ADMIN_ID, f"DEBUG: handler triggered from {uid}")
-    except:
-        return
-
-    sess = series_sessions.get(uid)
-
-    if not sess:
-        bot.send_message(ADMIN_ID, "DEBUG: session not found")
-        return
-
-    if sess.get("stage") != "meta":
-        bot.send_message(ADMIN_ID, f"DEBUG: wrong stage -> {sess.get('stage')}")
-        return
-
-    bot.send_message(ADMIN_ID, "DEBUG: stage meta confirmed")
-
-
-import uuid
-from datetime import datetime
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from telebot.apihelper import ApiTelegramException
-
-series_sessions = {}
-
-# ===============================
-# COLLECT SERIES FILES (PRO EDIT VERSION)
-# ===============================
-@bot.message_handler(
-    content_types=["video", "document"],
-    func=lambda m: m.from_user.id in series_sessions
-)
-def series_collect_files(m):
 
     uid = m.from_user.id
     sess = series_sessions.get(uid)
@@ -4662,6 +4361,11 @@ def finish_series_collection(uid):
 )
 def series_done(m):
 
+    try:
+        bot.send_message(ADMIN_ID,f"DEBUG DONE -> user:{m.from_user.id}")
+    except:
+        pass
+
     uid = m.from_user.id
     sess = series_sessions.get(uid)
 
@@ -4695,6 +4399,7 @@ def series_done(m):
     )
 
     bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
+
 # ===============================
 # HAUSA CHOICE
 # ===============================
@@ -4742,7 +4447,6 @@ def receive_hausa_titles(m):
     bot.send_message(uid, "📸 Yanzu turo poster + caption (suna da farashi)")
 
 
-
 # ===============================
 # FINALIZE (UPLOAD + DB)
 # ===============================
@@ -4752,40 +4456,18 @@ import uuid
 from datetime import datetime
 
 @bot.message_handler(
-    content_types=["photo","video","document","animation","video_note"],
+    content_types=["photo","video","document"],
     func=lambda m: m.from_user.id in series_sessions
 )
 def series_finalize(m):
 
-    # ================= HARD DEBUG START =================
     try:
         bot.send_message(
             ADMIN_ID,
-            f"""
-FINALIZE ENTRY
-
-user_id: {m.from_user.id}
-content_type: {m.content_type}
-
-photo: {bool(m.photo)}
-video: {bool(m.video)}
-document: {bool(m.document)}
-animation: {bool(m.animation)}
-video_note: {bool(m.video_note)}
-
-caption:
-{m.caption}
-
-text:
-{m.text}
-
-session_exists: {m.from_user.id in series_sessions}
-stage: {series_sessions.get(m.from_user.id,{}).get("stage")}
-"""
+            f"DEBUG FINALIZE -> type:{m.content_type} user:{m.from_user.id}"
         )
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"FINALIZE DEBUG ERROR: {e}")
-    # ================= HARD DEBUG END =================
+    except:
+        pass
 
     try:
         uid = m.from_user.id
@@ -4806,215 +4488,6 @@ stage: {series_sessions.get(m.from_user.id,{}).get("stage")}
 
     bot.send_message(ADMIN_ID, "DEBUG: stage meta confirmed")
 
-    # ================= PARSE CAPTION =================
-    try:
-        title, raw_price = data.strip().rsplit("\n", 1)
-        has_comma = "," in raw_price
-        price = int(raw_price.replace(",", "").strip())
-
-        bot.send_message(ADMIN_ID, f"DEBUG: parsed title={title} price={price}")
-
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DEBUG: caption parse error -> {e}")
-        bot.send_message(uid, "❌ Caption bai dace ba.")
-        return
-
-    # ================= POSTER DETECT =================
-    if m.photo:
-        poster_file_id = m.photo[-1].file_id
-        poster_type = "photo"
-
-    elif m.video:
-        poster_file_id = m.video.file_id
-        poster_type = "video"
-
-    elif m.animation:
-        poster_file_id = m.animation.file_id
-        poster_type = "video"
-
-    elif m.video_note:
-        poster_file_id = m.video_note.file_id
-        poster_type = "video"
-
-    elif m.document:
-        poster_file_id = m.document.file_id
-        poster_type = "document"
-
-    bot.send_message(ADMIN_ID, f"DEBUG: poster detected -> {poster_type}")
-
-    # ================= DB CONNECT =================
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        bot.send_message(ADMIN_ID, "DEBUG: DB connected")
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DEBUG: DB connection error -> {e}")
-        return
-
-    # ================= CREATE SERIES =================
-    try:
-        cur.execute(
-            "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
-            (title, price, poster_file_id)
-        )
-        series_id = cur.fetchone()[0]
-
-        bot.send_message(ADMIN_ID, f"DEBUG: series created id={series_id}")
-
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DEBUG: series insert error -> {e}")
-        return
-
-    item_ids = []
-    created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    group_key = str(uuid.uuid4())
-    total_files = len(sess["files"])
-
-    bot.send_message(ADMIN_ID, f"DEBUG: group_key={group_key} files={total_files}")
-
-    progress_msg = bot.send_message(
-        ADMIN_ID,
-        f"⏳ Loading... (0/{total_files})"
-    )
-
-    # ================= SAFE SEND =================
-    def safe_send_document(chat_id, file_id, caption):
-
-        while True:
-            try:
-                return bot.send_document(chat_id, file_id, caption=caption)
-
-            except ApiTelegramException as e:
-
-                if e.error_code == 429:
-                    retry = int(e.result_json["parameters"]["retry_after"])
-
-                    bot.send_message(ADMIN_ID, f"DEBUG: rate limit {retry}s")
-
-                    time.sleep(retry)
-                    continue
-                else:
-                    bot.send_message(ADMIN_ID, f"DEBUG: telegram error {e}")
-                    return None
-
-            except Exception as e:
-                bot.send_message(ADMIN_ID, f"DEBUG: send_document error {e}")
-                return None
-
-    # ================= UPLOAD LOOP =================
-    for f in sess["files"]:
-
-        msg = safe_send_document(
-            STORAGE_CHANNEL,
-            f["dm_file_id"],
-            f["file_name"]
-        )
-
-        if not msg:
-            bot.send_message(ADMIN_ID, "DEBUG: upload returned None")
-            continue
-
-        doc = msg.document or msg.video or msg.animation
-        if not doc:
-            bot.send_message(ADMIN_ID, "DEBUG: no document/video in msg")
-            continue
-
-        try:
-            cur.execute(
-                """
-                INSERT INTO items
-                (title, price, file_id, file_name, group_key,
-                 created_at, channel_msg_id, channel_username)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                RETURNING id
-                """,
-                (
-                    title,
-                    price,
-                    doc.file_id,
-                    f["file_name"],
-                    group_key,
-                    created_at,
-                    msg.message_id,
-                    STORAGE_CHANNEL
-                )
-            )
-
-            new_id = cur.fetchone()[0]
-            item_ids.append(new_id)
-
-        except Exception as e:
-            bot.send_message(ADMIN_ID, f"DEBUG: item insert error -> {e}")
-            continue
-
-        bot.edit_message_text(
-            f"⏳ Loading... ({len(item_ids)}/{total_files})",
-            ADMIN_ID,
-            progress_msg.message_id
-        )
-
-        time.sleep(1.1)
-
-    # ================= COMMIT =================
-    try:
-        conn.commit()
-        bot.send_message(ADMIN_ID, "DEBUG: DB commit success")
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DEBUG: commit error -> {e}")
-
-    cur.close()
-    conn.close()
-
-    # ================= PUBLIC POST =================
-    try:
-
-        display_price = f"{price:,}" if has_comma else str(price)
-
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "🛒 Add to cart",
-                callback_data=f"addcartdm:{group_key}"
-            ),
-            InlineKeyboardButton(
-                "💳 Buy now",
-                url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{group_key}"
-            )
-        )
-
-        if poster_type == "photo":
-
-            bot.send_photo(
-                CHANNEL,
-                poster_file_id,
-                caption=f"🎬 <b>{title}</b>\n💵Price: ₦{display_price}",
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-
-        else:
-
-            bot.send_video(
-                CHANNEL,
-                poster_file_id,
-                caption=f"🎬 <b>{title}</b>\n💵Price: ₦{display_price}",
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-
-        bot.send_message(ADMIN_ID, "DEBUG: channel post success")
-
-    except Exception as e:
-        bot.send_message(ADMIN_ID, f"DEBUG: channel post error -> {e}")
-
-    bot.edit_message_text(
-        f"✅ Completed.\n{len(item_ids)}/{total_files} saved successfully.",
-        ADMIN_ID,
-        progress_msg.message_id
-    )
-
-    bot.send_message(uid, "🎉 Series an adana dukka lafiya.")
-    del series_sessions[uid]
 
 
 
