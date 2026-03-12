@@ -1735,7 +1735,7 @@ def vip_expiry_checker():
         except:  
             pass  
   
-        time.sleep(60)  # check every 60 seconds  
+        time.sleep(4320)  # check every 60 seconds  
   
   
 threading.Thread(target=vip_expiry_checker, daemon=True).start()
