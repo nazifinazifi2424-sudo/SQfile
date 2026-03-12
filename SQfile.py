@@ -1878,7 +1878,7 @@ def vip_warning_system():
         except:
             pass
 
-        time.sleep(30)  # yana duba duk 30 seconds
+        time.sleep(7200)  # yana duba duk 30 seconds
 
 
 threading.Thread(target=vip_warning_system, daemon=True).start()
