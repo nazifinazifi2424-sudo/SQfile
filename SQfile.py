@@ -4096,7 +4096,8 @@ def user_buttons(message):
     txt = message.text.strip()
     uid = str(message.from_user.id)   # 🔐 STRING FOR POSTGRES
 
-    # ======= TAIMAKO =======
+
+    # ======= HELP =======
     if txt == "HELP":
 
         kb = InlineKeyboardMarkup()
@@ -4124,7 +4125,8 @@ def user_buttons(message):
 
         return
 
-    # ======= CART =======
+
+    # ======= CHECK CART =======
     if txt == "Check cart":
 
         try:
@@ -4150,28 +4152,48 @@ def user_buttons(message):
 
         return
 
+
     # ======= VIP GROUP =======
     if txt == "🔐VIP GROUP":
+
         class CallMock:
             def __init__(self, msg):
-                self.message = msg
+                self.id = "vip_text_button"
                 self.from_user = msg.from_user
-                self.id = None
+                self.message = msg
 
         vip_group_info(CallMock(message))
         return
 
+
     # ======= MY WALLET =======
     if txt == "🏦My wallet💰":
+
         class CallMock:
             def __init__(self, msg):
-                self.message = msg
+                self.id = "wallet_text_button"
                 self.from_user = msg.from_user
-                self.id = None
+                self.message = msg
 
-        # kira asalin wallet block
-        open_wallet(CallMock(message))
+        try:
+            wallet_back(CallMock(message))
+        except Exception as e:
+
+            import traceback
+            error_details = traceback.format_exc()
+
+            bot.send_message(
+                message.chat.id,
+                f"❌ WALLET ERROR\n\n"
+                f"Type: {type(e).__name__}\n"
+                f"Message: {str(e)}\n\n"
+                f"Trace:\n{error_details[:3000]}"
+            )
+
         return
+
+
+
 # ======================================
 # ======================================
 
