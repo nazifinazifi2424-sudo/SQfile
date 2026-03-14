@@ -2651,7 +2651,7 @@ def wallet_amount_handler(c):
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton(f"💳 Top-up ₦{amount}", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet"))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet_back"))
 
     bot.edit_message_text(
         f"""💰 *Wallet Deposit*
