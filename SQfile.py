@@ -4074,6 +4074,7 @@ def checkjoin_callback(call):
     except Exception as e:
         bot.send_message(ADMIN_ID, f"ERROR calling start():\n{e}")
 
+
 # ======================================
 # ======================================
 # TEXT BUTTON HANDLER (GLOBAL SAFE)
@@ -4081,7 +4082,7 @@ def checkjoin_callback(call):
 @bot.message_handler(
     func=lambda msg: (
         isinstance(getattr(msg, "text", None), str)
-        and msg.text.strip() in ["HELP", "Check cart", "🔐VIP GROUP"]
+        and msg.text.strip() in ["HELP", "Check cart", "🔐VIP GROUP", "🏦My wallet💰"]
     )
 )
 def user_buttons(message):
@@ -4093,12 +4094,6 @@ def user_buttons(message):
     if txt == "HELP":
 
         kb = InlineKeyboardMarkup()
-        # ===== Arrange HELP, Cart and VIP on same row =====
-        kb.row(
-            InlineKeyboardButton("HELP", callback_data="help_dummy"),
-            InlineKeyboardButton("Check cart", callback_data="cart_dummy"),
-            InlineKeyboardButton("🔐VIP GROUP", callback_data="vip_group_dummy")
-        )
 
         if ADMIN_USERNAME:
             kb.add(
@@ -4158,6 +4153,17 @@ def user_buttons(message):
                 self.id = None
         # Yi trigger kai tsaye
         vip_group_info(CallMock(message))
+        return
+
+    # ======= MY WALLET =======
+    if txt == "🏦My wallet💰":
+        class CallMock:
+            def __init__(self, msg):
+                self.message = msg
+                self.from_user = msg.from_user
+                self.id = None
+
+        open_wallet(CallMock(message))
         return
 
 # ======================================
