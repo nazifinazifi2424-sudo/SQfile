@@ -4081,7 +4081,6 @@ def checkjoin_callback(call):
     except Exception as e:
         bot.send_message(ADMIN_ID, f"ERROR calling start():\n{e}")
 
-
 # ======================================
 # ======================================
 # TEXT BUTTON HANDLER (GLOBAL SAFE)
@@ -4153,12 +4152,12 @@ def user_buttons(message):
 
     # ======= VIP GROUP =======
     if txt == "🔐VIP GROUP":
-        # Ana amfani da callback handler dinka da ka bayar
         class CallMock:
             def __init__(self, msg):
                 self.message = msg
+                self.from_user = msg.from_user
                 self.id = None
-        # Yi trigger kai tsaye
+
         vip_group_info(CallMock(message))
         return
 
@@ -4170,8 +4169,11 @@ def user_buttons(message):
                 self.from_user = msg.from_user
                 self.id = None
 
+        # kira asalin wallet block
         open_wallet(CallMock(message))
         return
+# ======================================
+# ======================================
 
 # ======================================
 # CLEAR CART
