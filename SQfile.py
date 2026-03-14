@@ -2378,11 +2378,6 @@ Balance: ₦0
     conn.close()
 # ==========================================
 
-
-
-# ==========================================
-
-# ==================================
 # ==========================================
 # WALLET LAST 5 TRANSACTIONS
 # ==========================================
@@ -2416,40 +2411,50 @@ def wallet_history(c):
 
     if not rows:
 
-        bot.send_message(
-            uid,
-            """📜 WALLET TRANSACTIONS
+        text = """📜 WALLET TRANSACTIONS
 
 Babu wani transaction a wallet ɗinka tukuna."""
-        )
 
-        cur.close()
-        conn.close()
-        return
+    else:
 
-    # ===== FORMAT MESSAGE =====
-    lines = []
+        # ===== FORMAT MESSAGE =====
+        lines = []
 
-    for amount, ttype, desc, time in rows:
+        for amount, ttype, desc, time in rows:
 
-        if ttype == "deposit":
-            sign = "➕"
-        elif ttype == "purchase":
-            sign = "➖"
-        else:
-            sign = "•"
+            if ttype == "deposit":
+                sign = "➕"
+            elif ttype == "purchase":
+                sign = "➖"
+            else:
+                sign = "•"
 
-        lines.append(
-            f"{sign} ₦{amount} — {desc}\n🕒 {time}"
-        )
+            lines.append(
+                f"{sign} ₦{amount} — {desc}\n🕒 {time}"
+            )
 
-    text = "📜 LAST 5 WALLET TRANSACTIONS\n\n"
-    text += "\n\n".join(lines)
+        text = "📜 LAST 5 WALLET TRANSACTIONS\n\n"
+        text += "\n\n".join(lines)
 
-    bot.send_message(uid, text)
+    # ===== BUTTON =====
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=uid,
+        message_id=c.message.message_id,
+        reply_markup=kb
+    )
 
     cur.close()
     conn.close()
+
+# ==========================================
+
 
 @bot.callback_query_handler(func=lambda c: c.data == "add_money")
 def add_money_menu(c):
