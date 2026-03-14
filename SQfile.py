@@ -3913,7 +3913,7 @@ def reply_menu(uid=None):
 
     # ===== WALLET (TOP BUTTON) =====
     kb.add(
-        InlineKeyboardButton("👛 My Wallet", callback_data="wallet")
+        InlineKeyboardButton(🏦MY WALLET💵", callback_data="wallet")
     )
 
     # ===== Labels =====
