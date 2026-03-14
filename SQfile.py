@@ -2336,24 +2336,20 @@ def open_wallet(c):
     if row:
         balance = int(row[0])
         text = f"""Malam {name}
-
-🆔 Your ID: {uid}
-
 Ragowar kudin ka ya rage
 
-👛 My Wallet
+👛 {name} Wallet
+🆔 Wallet ID: {uid}
 
 Balance: ₦{balance}
 """
     else:
         balance = 0
         text = f"""Malam {name}
-
-🆔 Your ID: {uid}
-
 Yi hakuri baka da kudi a wallet din ka
 
-👛 My Wallet
+👛 {name} Wallet
+🆔 Wallet ID: {uid}
 
 Balance: ₦0
 """
@@ -2381,6 +2377,9 @@ Balance: ₦0
 
     cur.close()
     conn.close()
+# ==========================================
+
+
 # ==========================================
 # WALLET LAST 5 TRANSACTIONS
 # ==========================================
