@@ -2306,14 +2306,17 @@ def receive_vip_user_id(message):
     )
 
 
-
 # MY WALLET SYSTEM
 # ==========================================
 
 @bot.callback_query_handler(func=lambda c: c.data == "wallet")
 def open_wallet(c):
 
-    bot.answer_callback_query(c.id)
+    # Kare error idan ba callback query ba
+    try:
+        bot.answer_callback_query(c.id)
+    except:
+        pass
 
     uid = c.from_user.id
     name = c.from_user.first_name or "User"
@@ -2376,6 +2379,7 @@ Balance: ₦0
 
     cur.close()
     conn.close()
+
 # ==========================================
 # ==========================================
 # BACK TO WALLET (EDIT MESSAGE)
