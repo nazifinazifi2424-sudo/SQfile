@@ -2595,6 +2595,7 @@ Danna button da ke kasa domin biyan kudin.
     )
 
 
+
 from datetime import datetime, timedelta
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("walletpay:"))
@@ -2659,26 +2660,13 @@ def wallet_pay_handler(call):
     # ================= INSUFFICIENT BALANCE =================
     if balance < amount:
 
-        bot.answer_callback_query(call.id)
-
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("💳 PAY NOW", callback_data=f"paystack:{order_id}")
-        )
-        kb.add(
-            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
-        )
-
-        bot.send_message(
-            user_id,
-            f"""❌ <b>Insufficient wallet balance</b>
-
-💰 Your balance: ₦{balance}
-🎬 Movie price: ₦{amount}
-
-Please click PAY NOW to complete payment.""",
-            parse_mode="HTML",
-            reply_markup=kb
+        bot.answer_callback_query(
+            call.id,
+            f"❌ Insufficient wallet balance\n\n"
+            f"Your balance: ₦{balance}\n"
+            f"Movie price: ₦{amount}\n\n"
+            f"Please click PAY NOW to complete payment.",
+            show_alert=True
         )
 
         wallet_cur.close()
@@ -2853,6 +2841,7 @@ You used wallet balance
 """,
             parse_mode="HTML"
         )
+
         
 # ==========================================
 # TRANSFER MONEY START
