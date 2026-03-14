@@ -2378,6 +2378,10 @@ Balance: ₦0
     conn.close()
 # ==========================================
 
+
+
+# ==========================================
+
 # ==================================
 # ==========================================
 # WALLET LAST 5 TRANSACTIONS
@@ -2840,7 +2844,8 @@ You used wallet balance
             parse_mode="HTML"
         )
 
-        
+
+
 # ==========================================
 # TRANSFER MONEY START
 # ==========================================
@@ -2858,20 +2863,24 @@ You can send money to your friend here.
 
 A nan zaka iya tura kudi zuwa ga abokinka.
 
-🆔 Ka shigar da ID na abokinka idan kana son tura masa kudi.
+🆔 In ka taba Transfer Now za'a bukaci Wallet ID na abokin ka.
 """
 
     kb = InlineKeyboardMarkup()
 
     kb.row(
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet"),
         InlineKeyboardButton("💸 Transfer Now", callback_data="start_transfer")
     )
 
-    bot.send_message(
-        uid,
+    bot.edit_message_text(
         text,
+        chat_id=uid,
+        message_id=c.message.message_id,
         reply_markup=kb
-    )        
+    )
+
+# ==========================================
         
 
 # ==========================================
