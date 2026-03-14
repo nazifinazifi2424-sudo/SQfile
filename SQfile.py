@@ -2379,6 +2379,73 @@ Balance: ₦0
 # ==========================================
 
 # ==========================================
+# BACK TO WALLET (EDIT MESSAGE)
+# ==========================================
+
+@bot.callback_query_handler(func=lambda c: c.data == "wallet_back")
+def wallet_back(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    if row:
+        balance = int(row[0])
+        text = f"""Malam {name}
+Ragowar kudin ka ya rage
+
+👛 {name} Wallet
+🆔 Wallet ID: <code>{uid}</code>
+
+Balance: ₦{balance}
+"""
+    else:
+        text = f"""Malam {name}
+Yi hakuri baka da kudi a wallet din ka
+
+👛 {name} Wallet
+🆔 Wallet ID: <code>{uid}</code>
+
+Balance: ₦0
+"""
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("➕ Add Money", callback_data="add_money"),
+        InlineKeyboardButton("📜 Transactions", callback_data="wallet_history")
+    )
+
+    kb.row(
+        InlineKeyboardButton("💸 Transfer Money", callback_data="transfer_money")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=uid,
+        message_id=c.message.message_id,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+    cur.close()
+    conn.close()
+
+# ==========================================
 # WALLET LAST 5 TRANSACTIONS
 # ==========================================
 
@@ -2440,7 +2507,7 @@ Babu wani transaction a wallet ɗinka tukuna."""
     kb = InlineKeyboardMarkup()
 
     kb.row(
-        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet")
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="back_wallet")
     )
 
     bot.edit_message_text(
@@ -2874,7 +2941,7 @@ A nan zaka iya tura kudi zuwa ga abokinka.
     kb = InlineKeyboardMarkup()
 
     kb.row(
-        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet"),
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="back_wallet"),
         InlineKeyboardButton("💸 Transfer Now", callback_data="start_transfer")
     )
 
