@@ -2963,7 +2963,6 @@ A nan zaka iya tura kudi zuwa ga abokinka.
 
 # ==========================================
         
-
 # ==========================================
 # TRANSFER ENTER FRIEND ID
 # ==========================================
@@ -2987,7 +2986,9 @@ def ask_friend_id(c):
 
     TRANSFER_STAGE[uid] = {
         "stage": "waiting_friend_id",
-        "expire": time.time() + timeout
+        "expire": time.time() + timeout,
+        "msg_id": msg_id,
+        "chat_id": chat_id
     }
 
     def countdown():
@@ -3043,7 +3044,8 @@ Ka sake gwadawa idan kana son tura kudi.""",
                 pass
 
     threading.Thread(target=countdown, daemon=True).start()
-    
+
+
 # ==========================================
 # RECEIVE FRIEND ID
 # ==========================================
@@ -3073,12 +3075,30 @@ def receive_friend_id(message):
         )
         return
 
-    # ===== TRY GET NAME =====
+    # ===== GET FULL SENDER NAME =====
+    sender_first = message.from_user.first_name or ""
+    sender_last = message.from_user.last_name or ""
+    sender_name = (sender_first + " " + sender_last).strip()
+
+    # ===== TRY GET RECEIVER NAME =====
     try:
         user = bot.get_chat(friend_id)
-        friend_name = user.first_name or "User"
+        r_first = user.first_name or ""
+        r_last = user.last_name or ""
+        receiver_name = (r_first + " " + r_last).strip()
+        if receiver_name == "":
+            receiver_name = "User"
     except:
-        friend_name = "User"
+        receiver_name = "User"
+
+    # ===== DELETE COUNTDOWN MESSAGE =====
+    try:
+        bot.delete_message(
+            TRANSFER_STAGE[uid]["chat_id"],
+            TRANSFER_STAGE[uid]["msg_id"]
+        )
+    except:
+        pass
 
     # ===== SAVE FRIEND ID =====
     TRANSFER_STAGE[uid]["friend_id"] = friend_id
@@ -3099,13 +3119,16 @@ def receive_friend_id(message):
         chat_id,
 f"""✅ An karbi ID
 
-👤 Name: {friend_name}
-🆔 ID: {friend_id}
+👤 Sender Name: {sender_name}
+🆔 Sender ID: {uid}
+
+👤 Receiver Name: {receiver_name}
+🆔 Receiver ID: {friend_id}
 
 Zabi adadin kudin da zaka tura masa.
 """,
         reply_markup=kb
-    )    
+    )
 
 # ==========================================
 # TRANSFER AMOUNT SELECTED
