@@ -1096,7 +1096,7 @@ def paystack_webhook():
         wallet_kb = InlineKeyboardMarkup()
         wallet_kb.add(
             InlineKeyboardButton(
-                "👛 My Wallet",
+                "🏦MY WALLET💵",
                 callback_data="wallet"
             )
         )
@@ -2339,7 +2339,7 @@ def open_wallet(c):
         text = f"""Malam {name}
 Ragowar kudin ka ya rage
 
-👛 {name} Wallet
+💰 {name} Wallet
 🆔 Wallet ID: <code>{uid}</code>
 
 Balance: ₦{balance}
@@ -2349,7 +2349,7 @@ Balance: ₦{balance}
         text = f"""Malam {name}
 Yi hakuri baka da kudi a wallet din ka
 
-👛 {name} Wallet
+💰 {name} Wallet
 🆔 Wallet ID: <code>{uid}</code>
 
 Balance: ₦0
@@ -2415,7 +2415,7 @@ def wallet_back(c):
         text = f"""Malam {name}
 Ragowar kudin ka ya rage
 
-👛 {name} Wallet
+💰 {name} Wallet
 🆔 Wallet ID: <code>{uid}</code>
 
 Balance: ₦{balance}
@@ -2424,7 +2424,7 @@ Balance: ₦{balance}
         text = f"""Malam {name}
 Yi hakuri baka da kudi a wallet din ka
 
-👛 {name} Wallet
+💰 {name} Wallet
 🆔 Wallet ID: <code>{uid}</code>
 
 Balance: ₦0
@@ -3913,7 +3913,7 @@ def reply_menu(uid=None):
 
     # ===== WALLET (TOP BUTTON) =====
     kb.add(
-        InlineKeyboardButton(🏦MY WALLET💵", callback_data="wallet")
+        InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")
     )
 
     # ===== Labels =====
@@ -5320,7 +5320,7 @@ def groupitem_deeplink_handler(msg):
 
     # SECOND ROW
     kb.row(
-        InlineKeyboardButton("👛 Pay with Wallet", callback_data=f"walletpay:{order_id}"),
+        InlineKeyboardButton("💵PAY WITH WALLET", callback_data=f"walletpay:{order_id}"),
         InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
     )
 
