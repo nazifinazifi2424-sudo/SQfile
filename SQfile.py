@@ -2926,7 +2926,6 @@ You used wallet balance
         )
 
 
-
 # ==========================================
 # TRANSFER MONEY START
 # ==========================================
@@ -2934,9 +2933,55 @@ You used wallet balance
 @bot.callback_query_handler(func=lambda c: c.data == "transfer_money")
 def transfer_money_start(c):
 
-    bot.answer_callback_query(c.id)
-
     uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    # ===== CHECK WALLET BALANCE =====
+    conn = get_wallet_conn()
+    if not conn:
+        bot.answer_callback_query(
+            c.id,
+            "Wallet error",
+            show_alert=True
+        )
+        return
+
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    if row:
+        balance = float(row[0])
+    else:
+        balance = 0.0
+
+    cur.close()
+    conn.close()
+
+    # ===== IF BALANCE LESS THAN 100 =====
+    if balance < 100:
+
+        bot.answer_callback_query(
+            c.id,
+            f"""Malam {name}
+
+Baka da isasshen kudi a wallet din ka.
+
+Your balance: ₦{balance:.2f}
+
+Domin turawa wani dole sai kana da akalla ₦100.""",
+            show_alert=True
+        )
+
+        return
+
+    # ===== CONTINUE NORMAL SYSTEM =====
+    bot.answer_callback_query(c.id)
 
     text = """💸 TRANSFER MONEY
 
