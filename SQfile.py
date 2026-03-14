@@ -2377,7 +2377,6 @@ Balance: ₦0
     cur.close()
     conn.close()
 # ==========================================
-
 # ==========================================
 # BACK TO WALLET (EDIT MESSAGE)
 # ==========================================
@@ -2385,7 +2384,11 @@ Balance: ₦0
 @bot.callback_query_handler(func=lambda c: c.data == "wallet_back")
 def wallet_back(c):
 
-    bot.answer_callback_query(c.id)
+    # 🔒 Kare error idan ba callback query ba
+    try:
+        bot.answer_callback_query(c.id)
+    except:
+        pass
 
     uid = c.from_user.id
     name = c.from_user.first_name or "User"
@@ -2444,6 +2447,8 @@ Balance: ₦0
 
     cur.close()
     conn.close()
+
+
 
 # ==========================================
 # WALLET LAST 5 TRANSACTIONS
