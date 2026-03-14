@@ -3892,6 +3892,7 @@ def reply_menu(uid=None):
     return kb
 # end
 
+
 def user_main_menu(uid=None):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
 
@@ -3899,8 +3900,14 @@ def user_main_menu(uid=None):
     help_label = tr_user(uid, "btn_help", default="HELP")
     vip_label = "🔐VIP GROUP"
     done_label = "Done"
+    wallet_label = "🏦My wallet💰"
 
-    # ===== VIP GROUP a sama shi kaɗai =====
+    # ===== MY WALLET a sama =====
+    kb.row(
+        KeyboardButton(wallet_label)
+    )
+
+    # ===== VIP GROUP a kasa kadan =====
     kb.row(
         KeyboardButton(vip_label)
     )
