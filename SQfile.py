@@ -2307,8 +2307,6 @@ def receive_vip_user_id(message):
 
 
 
-
-# ==========================================
 # MY WALLET SYSTEM
 # ==========================================
 
@@ -2339,7 +2337,7 @@ def open_wallet(c):
 Ragowar kudin ka ya rage
 
 👛 {name} Wallet
-🆔 Wallet ID: {uid}
+🆔 Wallet ID: <code>{uid}</code>
 
 Balance: ₦{balance}
 """
@@ -2349,7 +2347,7 @@ Balance: ₦{balance}
 Yi hakuri baka da kudi a wallet din ka
 
 👛 {name} Wallet
-🆔 Wallet ID: {uid}
+🆔 Wallet ID: <code>{uid}</code>
 
 Balance: ₦0
 """
@@ -2372,6 +2370,7 @@ Balance: ₦0
     bot.send_message(
         uid,
         text,
+        parse_mode="HTML",
         reply_markup=kb
     )
 
@@ -2379,7 +2378,7 @@ Balance: ₦0
     conn.close()
 # ==========================================
 
-
+# ==================================
 # ==========================================
 # WALLET LAST 5 TRANSACTIONS
 # ==========================================
