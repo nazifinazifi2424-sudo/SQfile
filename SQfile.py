@@ -4086,6 +4086,7 @@ def checkjoin_callback(call):
     except Exception as e:
         bot.send_message(ADMIN_ID, f"ERROR calling start():\n{e}")
 
+
 # ======================================
 # ======================================
 # TEXT BUTTON HANDLER (GLOBAL SAFE)
@@ -4181,7 +4182,9 @@ def user_buttons(message):
                 self.message = msg
 
         try:
-            wallet_back(CallMock(message))
+            # kira asalin wallet block
+            open_wallet(CallMock(message))
+
         except Exception as e:
 
             import traceback
@@ -4196,6 +4199,7 @@ def user_buttons(message):
             )
 
         return
+
 
 
 
