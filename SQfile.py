@@ -2507,7 +2507,7 @@ Babu wani transaction a wallet ɗinka tukuna."""
     kb = InlineKeyboardMarkup()
 
     kb.row(
-        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="back_wallet")
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet_back")
     )
 
     bot.edit_message_text(
@@ -2941,7 +2941,7 @@ A nan zaka iya tura kudi zuwa ga abokinka.
     kb = InlineKeyboardMarkup()
 
     kb.row(
-        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="back_wallet"),
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet_back"),
         InlineKeyboardButton("💸 Transfer Now", callback_data="start_transfer")
     )
 
