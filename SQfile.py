@@ -764,6 +764,12 @@ OTP_ADMIN_ID = 6603268127
 BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
+
+API_URL = "https://alrahuzdata.com.ng/api/data/"
+API_KEY = "66f2e5c39ac8640f13cd888f161385b12f7e5e92"
+
+
+
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
@@ -1633,6 +1639,88 @@ def deliver_items(call):
     )
 
     send_feedback_prompt(user_id, order_id)
+
+
+# ==========================================
+# ADMIN API DATA SCANNER
+# ==========================================
+
+@bot.message_handler(commands=['scanapi'])
+def scan_api(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    bot.send_message(
+        ADMIN_ID,
+        "🔎 Scanning data plans..."
+    )
+
+    headers = {
+        "Authorization": f"Token {API_KEY}"
+    }
+
+    try:
+
+        r = requests.get(PLAN_URL, headers=headers)
+        data = r.json()
+
+        result = []
+
+        for plan in data:
+
+            plan_id = plan.get("id", "N/A")
+            plan_name = str(plan.get("name", "Unknown"))
+            price = plan.get("price", "N/A")
+
+            name = plan_name.lower()
+
+            if "sme" in name:
+                dtype = "SME"
+
+            elif "gifting" in name:
+                dtype = "GIFTING"
+
+            elif "awoof" in name:
+                dtype = "AWOOF"
+
+            elif "cg" in name:
+                dtype = "CG"
+
+            elif "share" in name:
+                dtype = "DATA SHARE"
+
+            else:
+                dtype = "OTHER"
+
+            result.append(
+f"""📶 TYPE: {dtype}
+🆔 PLAN ID: {plan_id}
+📦 PLAN: {plan_name}
+💰 PRICE: {price}
+"""
+            )
+
+        if not result:
+
+            bot.send_message(
+                ADMIN_ID,
+                "❌ No data plans found."
+            )
+            return
+
+        bot.send_message(
+            ADMIN_ID,
+            "📡 DATA PLAN REPORT\n\n" + "\n".join(result)
+        )
+
+    except Exception as e:
+
+        bot.send_message(
+            ADMIN_ID,
+            f"❌ API ERROR\n\n{e}"
+        )
+
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
