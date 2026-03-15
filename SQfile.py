@@ -765,9 +765,8 @@ BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
 
-API_URL = "https://alrahuzdata.com.ng/api/data/"
+PLAN_URL = "https://alrahuzdata.com.ng/api/data/"
 API_KEY = "66f2e5c39ac8640f13cd888f161385b12f7e5e92"
-
 
 
 COUNTDOWN_SECONDS = 70
