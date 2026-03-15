@@ -1639,7 +1639,6 @@ def deliver_items(call):
 
     send_feedback_prompt(user_id, order_id)
 
-
 # ==========================================
 # ADMIN API DATA SCANNER
 # ==========================================
@@ -1650,10 +1649,7 @@ def scan_api(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    bot.send_message(
-        ADMIN_ID,
-        "🔎 Scanning data plans..."
-    )
+    bot.send_message(ADMIN_ID, "🔎 Scanning API data plans...")
 
     headers = {
         "Authorization": f"Token {API_KEY}"
@@ -1662,11 +1658,21 @@ def scan_api(message):
     try:
 
         r = requests.get(PLAN_URL, headers=headers)
-        data = r.json()
+        res = r.json()
+
+        # idan API ya dawo da {"data": [...]}
+        if isinstance(res, dict) and "data" in res:
+            plans = res["data"]
+        else:
+            plans = res
 
         result = []
 
-        for plan in data:
+        for plan in plans:
+
+            # tabbatar plan dictionary ne
+            if not isinstance(plan, dict):
+                continue
 
             plan_id = plan.get("id", "N/A")
             plan_name = str(plan.get("name", "Unknown"))
@@ -1676,19 +1682,14 @@ def scan_api(message):
 
             if "sme" in name:
                 dtype = "SME"
-
             elif "gifting" in name:
                 dtype = "GIFTING"
-
             elif "awoof" in name:
                 dtype = "AWOOF"
-
             elif "cg" in name:
                 dtype = "CG"
-
             elif "share" in name:
                 dtype = "DATA SHARE"
-
             else:
                 dtype = "OTHER"
 
@@ -1701,11 +1702,7 @@ f"""📶 TYPE: {dtype}
             )
 
         if not result:
-
-            bot.send_message(
-                ADMIN_ID,
-                "❌ No data plans found."
-            )
+            bot.send_message(ADMIN_ID, "❌ No data plans found.")
             return
 
         bot.send_message(
@@ -1719,6 +1716,8 @@ f"""📶 TYPE: {dtype}
             ADMIN_ID,
             f"❌ API ERROR\n\n{e}"
         )
+
+
 
 
 
