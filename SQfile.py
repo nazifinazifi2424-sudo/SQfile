@@ -764,8 +764,8 @@ OTP_ADMIN_ID = 6603268127
 BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
+API_URL = "https://alrahuzdata.com.ng/api/data/"
 
-PLAN_URL = "https://alrahuzdata.com.ng/api/data/"
 API_KEY = "66f2e5c39ac8640f13cd888f161385b12f7e5e92"
 
 
@@ -1639,6 +1639,7 @@ def deliver_items(call):
 
     send_feedback_prompt(user_id, order_id)
 
+
 # ==========================================
 # ADMIN API DATA SCANNER
 # ==========================================
@@ -1649,65 +1650,50 @@ def scan_api(message):
     if message.from_user.id != ADMIN_ID:
         return
 
-    bot.send_message(ADMIN_ID, "🔎 Scanning API data plans...")
+    bot.send_message(ADMIN_ID, "🔎 Scanning API plan IDs...")
 
     headers = {
-        "Authorization": f"Token {API_KEY}"
+        "Authorization": f"Token {API_KEY}",
+        "Content-Type": "application/json"
     }
+
+    found = []
 
     try:
 
-        r = requests.get(PLAN_URL, headers=headers)
-        res = r.json()
+        # scanning plan IDs 1 - 50
+        for plan_id in range(1, 50):
 
-        # idan API ya dawo da {"data": [...]}
-        if isinstance(res, dict) and "data" in res:
-            plans = res["data"]
-        else:
-            plans = res
+            payload = {
+                "network": 1,
+                "mobile_number": "09000000000",
+                "plan": plan_id,
+                "Ported_number": True
+            }
 
-        result = []
+            r = requests.post(API_URL, json=payload, headers=headers)
 
-        for plan in plans:
+            text = r.text.lower()
 
-            # tabbatar plan dictionary ne
-            if not isinstance(plan, dict):
-                continue
+            if "success" in text or "successful" in text:
 
-            plan_id = plan.get("id", "N/A")
-            plan_name = str(plan.get("name", "Unknown"))
-            price = plan.get("price", "N/A")
+                found.append(f"✅ WORKING PLAN ID ➜ {plan_id}")
 
-            name = plan_name.lower()
+            elif "insufficient" in text:
 
-            if "sme" in name:
-                dtype = "SME"
-            elif "gifting" in name:
-                dtype = "GIFTING"
-            elif "awoof" in name:
-                dtype = "AWOOF"
-            elif "cg" in name:
-                dtype = "CG"
-            elif "share" in name:
-                dtype = "DATA SHARE"
-            else:
-                dtype = "OTHER"
+                found.append(f"💰 PLAN ID {plan_id} exists (need balance)")
 
-            result.append(
-f"""📶 TYPE: {dtype}
-🆔 PLAN ID: {plan_id}
-📦 PLAN: {plan_name}
-💰 PRICE: {price}
-"""
+        if not found:
+
+            bot.send_message(
+                ADMIN_ID,
+                "❌ No working plan IDs found."
             )
-
-        if not result:
-            bot.send_message(ADMIN_ID, "❌ No data plans found.")
             return
 
         bot.send_message(
             ADMIN_ID,
-            "📡 DATA PLAN REPORT\n\n" + "\n".join(result)
+            "📡 API PLAN SCAN RESULT\n\n" + "\n".join(found)
         )
 
     except Exception as e:
@@ -1716,9 +1702,6 @@ f"""📶 TYPE: {dtype}
             ADMIN_ID,
             f"❌ API ERROR\n\n{e}"
         )
-
-
-
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
