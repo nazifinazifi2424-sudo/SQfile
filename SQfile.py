@@ -6,7 +6,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 import psycopg2
 import time
 import os
-import requests
+
 # ======================
 # DATABASE CONNECTION
 # ======================
@@ -749,6 +749,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
+CASHBACK = 20
+
 VIP_PRICE = 1500
 VIP_DURATION_VALUE = 33
 VIP_DURATION_UNIT = "days"
@@ -763,11 +765,6 @@ OTP_ADMIN_ID = 6603268127
 
 BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
-
-API_URL = "https://alrahuzdata.com.ng/api/data/"
-
-API_KEY = "66f2e5c39ac8640f13cd888f161385b12f7e5e92"
-
 
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
@@ -1241,6 +1238,51 @@ Use the button below to open your wallet.
 
         titles_text = ", ".join(lines) if lines else "N/A"
 
+
+        # ================= CASHBACK REWARD =================
+        cashback = (paid_amount // 200) * CASHBACK
+        if cashback > 200:
+            cashback = 200
+
+        if cashback > 0:
+            wallet_conn = get_wallet_conn()
+            wallet_cur = wallet_conn.cursor()
+
+            wallet_cur.execute(
+                """
+                INSERT INTO wallet_balance (user_id, balance)
+                VALUES (%s,%s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                balance = wallet_balance.balance + EXCLUDED.balance,
+                updated_at = NOW()
+                """,
+                (user_id, cashback)
+            )
+
+            wallet_cur.execute(
+                """
+                INSERT INTO wallet_transactions
+                (user_id, amount, type, reference, description)
+                VALUES (%s,%s,'cashback',%s,'Movie Cashback Reward')
+                """,
+                (user_id, cashback, order_id)
+            )
+
+            wallet_conn.commit()
+            wallet_cur.close()
+            wallet_conn.close()
+
+            bot.send_message(
+                user_id,
+                f"""🎁 Cashback Reward
+
+Wallet ID: <code>{user_id}</code>
+
+You received ₦{cashback} cashback.""" ,
+                parse_mode="HTML"
+            )
+
         conn.commit()
         cur.close()
         conn.close()
@@ -1638,45 +1680,6 @@ def deliver_items(call):
     )
 
     send_feedback_prompt(user_id, order_id)
-
-# ==========================================
-# API TEST
-# ==========================================
-
-@bot.message_handler(commands=['testapi'])
-def test_api(message):
-
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    headers = {
-        "Authorization": API_KEY,
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "network": 1,
-        "mobile_number": "09000000000",
-        "plan": 1,
-        "Ported_number": True
-    }
-
-    try:
-
-        r = requests.post(API_URL, json=payload, headers=headers)
-
-        bot.send_message(
-            ADMIN_ID,
-            f"API RESPONSE:\n\n{r.text}"
-        )
-
-    except Exception as e:
-
-        bot.send_message(
-            ADMIN_ID,
-            f"ERROR:\n{e}"
-        )
-
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
@@ -5364,7 +5367,7 @@ def groupitem_deeplink_handler(msg):
 
     # SECOND ROW
     kb.row(
-        InlineKeyboardButton("💵PAY WITH WALLET", callback_data=f"walletpay:{order_id}"),
+        InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
         InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
     )
 
@@ -5803,13 +5806,16 @@ def pay_all_unpaid(call):
                 seen.add(key)
 
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
 
+        # PAY NOW
         kb.add(
-            InlineKeyboardButton(
-                "❌ Cancel",
-                callback_data=f"cancel:{order_id}"
-            )
+            InlineKeyboardButton("💳 PAY NOW", url=pay_url)
+        )
+
+        # NEW WALLET BUTTON (LIKE GROUPITEM)
+        kb.row(
+            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
         )
 
         sent = bot.send_message(
@@ -6238,6 +6244,7 @@ def handle_callback(c):
 
     
 
+
     from psycopg2.extras import RealDictCursor
     import uuid
 
@@ -6429,8 +6436,17 @@ def handle_callback(c):
         item_count = sum(len(g["items"]) for g in groups.values())
 
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+        # TOP ROW
+        kb.add(
+            InlineKeyboardButton("💳 PAY NOW", url=pay_url)
+        )
+
+        # SECOND ROW (NEW WALLET SYSTEM ADDED)
+        kb.row(
+            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
+        )
 
         sent = bot.send_message(
             uid,
@@ -6458,6 +6474,7 @@ def handle_callback(c):
 
         bot.answer_callback_query(c.id)
         return
+ 
 
 
     
