@@ -1639,7 +1639,6 @@ def deliver_items(call):
 
     send_feedback_prompt(user_id, order_id)
 
-
 # ==========================================
 # API TEST
 # ==========================================
@@ -1651,7 +1650,7 @@ def test_api(message):
         return
 
     headers = {
-        "Authorization": f"Token {API_KEY}",
+        "Authorization": API_KEY,
         "Content-Type": "application/json"
     }
 
@@ -1678,69 +1677,6 @@ def test_api(message):
             f"ERROR:\n{e}"
         )
 
-
-# ==========================================
-# ADMIN API DATA SCANNER
-# ==========================================
-
-@bot.message_handler(commands=['scanapi'])
-def scan_api(message):
-
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    bot.send_message(ADMIN_ID, "🔎 Scanning API plan IDs...")
-
-    headers = {
-        "Authorization": f"Token {API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    found = []
-
-    try:
-
-        # scanning plan IDs 1 - 50
-        for plan_id in range(1, 50):
-
-            payload = {
-                "network": 1,
-                "mobile_number": "09000000000",
-                "plan": plan_id,
-                "Ported_number": True
-            }
-
-            r = requests.post(API_URL, json=payload, headers=headers)
-
-            text = r.text.lower()
-
-            if "success" in text or "successful" in text:
-
-                found.append(f"✅ WORKING PLAN ID ➜ {plan_id}")
-
-            elif "insufficient" in text:
-
-                found.append(f"💰 PLAN ID {plan_id} exists (need balance)")
-
-        if not found:
-
-            bot.send_message(
-                ADMIN_ID,
-                "❌ No working plan IDs found."
-            )
-            return
-
-        bot.send_message(
-            ADMIN_ID,
-            "📡 API PLAN SCAN RESULT\n\n" + "\n".join(found)
-        )
-
-    except Exception as e:
-
-        bot.send_message(
-            ADMIN_ID,
-            f"❌ API ERROR\n\n{e}"
-        )
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
