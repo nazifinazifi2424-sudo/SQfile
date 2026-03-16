@@ -1641,6 +1641,45 @@ def deliver_items(call):
 
 
 # ==========================================
+# API TEST
+# ==========================================
+
+@bot.message_handler(commands=['testapi'])
+def test_api(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    headers = {
+        "Authorization": f"Token {API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "network": 1,
+        "mobile_number": "09000000000",
+        "plan": 1,
+        "Ported_number": True
+    }
+
+    try:
+
+        r = requests.post(API_URL, json=payload, headers=headers)
+
+        bot.send_message(
+            ADMIN_ID,
+            f"API RESPONSE:\n\n{r.text}"
+        )
+
+    except Exception as e:
+
+        bot.send_message(
+            ADMIN_ID,
+            f"ERROR:\n{e}"
+        )
+
+
+# ==========================================
 # ADMIN API DATA SCANNER
 # ==========================================
 
