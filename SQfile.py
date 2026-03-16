@@ -742,7 +742,7 @@ ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
-ADMINS = [8537505191]
+ADMINS = [6603268127]
 
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -760,11 +760,11 @@ WARNING_1_UNIT = "days"
 
 WARNING_2_VALUE = 32
 WARNING_2_UNIT = "days"
-ADMIN_ID = 8537505191
+ADMIN_ID = 6603268127
 OTP_ADMIN_ID = 6603268127
 
-BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@Danchirinps"
+BOT_USERNAME = "Algaitabot"
+CHANNEL = "@Algaitamoviestore"
 
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
@@ -784,8 +784,8 @@ PAYSTACK_BASE = "https://api.paystack.co"
 VIP_GROUP_ID = -1003656360408
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003769342354
-STORAGE_CHANNEL = -1003794258511
+PAYMENT_NOTIFY_GROUP = -1003555015230
+STORAGE_CHANNEL = -1003520788779
 
 SEND_ADMIN_PAYMENT_NOTIF = False
 
@@ -1275,11 +1275,13 @@ Use the button below to open your wallet.
 
             bot.send_message(
                 user_id,
-                f"""🎁 Cashback Reward
+                f"""🎁 Cashback Reward🎉
 
 Wallet ID: <code>{user_id}</code>
 
-You received ₦{cashback} cashback.""" ,
+You received ₦{cashback} cashback,  
+
+Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
                 parse_mode="HTML"
             )
 
