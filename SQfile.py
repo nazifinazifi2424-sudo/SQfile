@@ -635,7 +635,7 @@ ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
-ADMINS = [6210912739, 5009954635] 
+ADMINS = [8537505191, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
@@ -656,7 +656,7 @@ WARNING_1_UNIT = "days"
 WARNING_2_VALUE = 32
 WARNING_2_UNIT = "days"
 
-ADMIN_ID = 6210912739
+ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
 
