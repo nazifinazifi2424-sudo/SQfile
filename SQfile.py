@@ -107,6 +107,90 @@ def migrate_wallet_safe():
 
     print("🎉 WALLET MIGRATION COMPLETE")
 
+def create_wallet_tables():
+    import os
+    import psycopg2
+
+    NEW_DB = os.environ.get("NEW_WALLET_DATABASE_URL")
+
+    conn = psycopg2.connect(NEW_DB, sslmode="require")
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    # -------- WALLET BALANCE --------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS wallet_balance (
+        user_id BIGINT PRIMARY KEY,
+        balance BIGINT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # -------- WALLET TRANSACTIONS --------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        amount BIGINT NOT NULL,
+        type VARCHAR(30) NOT NULL,
+        reference TEXT,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user
+    ON wallet_transactions(user_id)
+    """)
+
+    # -------- WALLET DEPOSITS --------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS wallet_deposits (
+        id TEXT PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        amount BIGINT NOT NULL,
+        type VARCHAR(30) DEFAULT 'wallet',
+        paystack_ref TEXT UNIQUE,
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        paid_at TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_wallet_deposits_user
+    ON wallet_deposits(user_id)
+    """)
+
+    # -------- WALLET WITHDRAWALS --------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS wallet_withdrawals (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        amount BIGINT,
+        status VARCHAR(20) DEFAULT 'pending',
+        processed_by BIGINT,
+        reference TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        processed_at TIMESTAMP
+    )
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_wallet_withdrawals_user
+    ON wallet_withdrawals(user_id)
+    """)
+
+    cur.close()
+    conn.close()
+
+    print("✅ NEW WALLET DB TABLES CREATED")
+
+
+
+
 # AUTO DB FIX: ENSURE invite_link COLUMN
 # ==========================================
 def ensure_vip_invite_column():
@@ -7935,8 +8019,10 @@ def sales_report_scheduler():
 
 
 # ▶️ START BACKGROUND REPORT THREAD
+# ▶️ START BACKGROUND REPORT THREAD
 # ================== START SERVER ==================
 if __name__ == "__main__":
+    create_wallet_tables()
     migrate_wallet_safe()
     
     if BOT_MODE == "webhook":
