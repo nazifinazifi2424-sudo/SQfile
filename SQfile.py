@@ -65,7 +65,7 @@ def migrate_wallet_safe():
     OLD_DB = os.environ.get("WALLET_DATABASE_URL")
     NEW_DB = os.environ.get("NEW_WALLET_DATABASE_URL")
 
-    print("🚀 STARTING FULL WALLET MIGRATION...")
+    print("🚀 STARTING FULL SAFE MIGRATION (CHUNK MODE)...")
 
     old_conn = psycopg2.connect(OLD_DB, sslmode="require")
     new_conn = psycopg2.connect(NEW_DB, sslmode="require")
@@ -83,71 +83,72 @@ def migrate_wallet_safe():
         "wallet_withdrawals"
     ]
 
+    BATCH_SIZE = 500
+
     for table in tables:
         print(f"\n📦 Migrating {table}...")
 
-        # Fetch data
         old_cur.execute(f"SELECT * FROM {table}")
-        rows = old_cur.fetchall()
-
-        if not rows:
-            print(f"⚠️ {table} is empty")
-            continue
 
         cols = [desc[0] for desc in old_cur.description]
 
-        # 🚫 Remove SERIAL id for transactions & withdrawals
         if table in ["wallet_transactions", "wallet_withdrawals"]:
             cols = [c for c in cols if c != "id"]
 
         col_str = ",".join(cols)
         placeholders = ",".join(["%s"] * len(cols))
 
-        inserted = 0
-        skipped = 0
+        total = 0
 
-        for row in rows:
-            try:
-                # remove id value if needed
-                if table in ["wallet_transactions", "wallet_withdrawals"]:
-                    row = tuple(v for i, v in enumerate(row) if old_cur.description[i][0] != "id")
+        while True:
+            rows = old_cur.fetchmany(BATCH_SIZE)
 
-                # special handling
-                if table == "wallet_balance":
-                    query = f"""
-                    INSERT INTO wallet_balance ({col_str})
-                    VALUES ({placeholders})
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        balance = EXCLUDED.balance,
-                        updated_at = NOW()
-                    """
-                elif table == "wallet_deposits":
-                    query = f"""
-                    INSERT INTO wallet_deposits ({col_str})
-                    VALUES ({placeholders})
-                    ON CONFLICT (id) DO NOTHING
-                    """
-                else:
-                    query = f"""
-                    INSERT INTO {table} ({col_str})
-                    VALUES ({placeholders})
-                    """
+            if not rows:
+                break
 
-                new_cur.execute(query, row)
-                inserted += 1
+            for row in rows:
+                try:
+                    if table in ["wallet_transactions", "wallet_withdrawals"]:
+                        row = tuple(v for i, v in enumerate(row) if old_cur.description[i][0] != "id")
 
-            except Exception as e:
-                skipped += 1
-                print(f"⚠️ Skipped row in {table}: {e}")
+                    if table == "wallet_balance":
+                        query = f"""
+                        INSERT INTO wallet_balance ({col_str})
+                        VALUES ({placeholders})
+                        ON CONFLICT (user_id) DO UPDATE SET
+                            balance = EXCLUDED.balance,
+                            updated_at = NOW()
+                        """
+                    elif table == "wallet_deposits":
+                        query = f"""
+                        INSERT INTO wallet_deposits ({col_str})
+                        VALUES ({placeholders})
+                        ON CONFLICT (id) DO NOTHING
+                        """
+                    else:
+                        query = f"""
+                        INSERT INTO {table} ({col_str})
+                        VALUES ({placeholders})
+                        """
 
-        print(f"✅ {table}: inserted={inserted}, skipped={skipped}")
+                    new_cur.execute(query, row)
+                    total += 1
+
+                except Exception as e:
+                    print(f"⚠️ Skip error: {e}")
+
+            print(f"➡️ {table}: migrated {total} rows...")
+
+        print(f"✅ DONE {table}: total migrated = {total}")
 
     old_cur.close()
     new_cur.close()
     old_conn.close()
     new_conn.close()
 
-    print("\n🎉 FULL WALLET MIGRATION COMPLETE")
+    print("\n🎉 ALL DATA MIGRATED SUCCESSFULLY")
+
+
 
 def create_wallet_tables():
     import os
