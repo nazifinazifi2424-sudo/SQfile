@@ -57,6 +57,56 @@ wallet_conn.autocommit = True
 wallet_cur = wallet_conn.cursor()
 
 
+def migrate_wallet_safe():
+    import os
+    import psycopg2
+
+    OLD_DB = os.environ.get("WALLET_DATABASE_URL")
+    NEW_DB = os.environ.get("NEW_WALLET_DATABASE_URL")
+
+    old_conn = psycopg2.connect(OLD_DB, sslmode="require")
+    new_conn = psycopg2.connect(NEW_DB, sslmode="require")
+
+    old_cur = old_conn.cursor()
+    new_cur = new_conn.cursor()
+
+    tables = [
+        "wallet_balance",
+        "wallet_transactions",
+        "wallet_deposits",
+        "wallet_withdrawals"
+    ]
+
+    for table in tables:
+        print(f"🚀 Migrating {table}...")
+
+        old_cur.execute(f"SELECT * FROM {table}")
+        rows = old_cur.fetchall()
+
+        if not rows:
+            print(f"⚠️ {table} is empty")
+            continue
+
+        cols = [desc[0] for desc in old_cur.description]
+        col_str = ",".join(cols)
+        placeholders = ",".join(["%s"] * len(cols))
+
+        for row in rows:
+            new_cur.execute(
+                f"INSERT INTO {table} ({col_str}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+                row
+            )
+
+        new_conn.commit()
+        print(f"✅ Done {table}")
+
+    old_cur.close()
+    new_cur.close()
+    old_conn.close()
+    new_conn.close()
+
+    print("🎉 WALLET MIGRATION COMPLETE")
+
 # AUTO DB FIX: ENSURE invite_link COLUMN
 # ==========================================
 def ensure_vip_invite_column():
@@ -725,6 +775,8 @@ CREATE TABLE IF NOT EXISTS how_to_buy (
 """)
 
 print("✅ DATABASE READY — BIGINT FIX APPLIED")
+
+
 import uuid
 import re
 import json
@@ -7885,7 +7937,8 @@ def sales_report_scheduler():
 # ▶️ START BACKGROUND REPORT THREAD
 # ================== START SERVER ==================
 if __name__ == "__main__":
-
+    migrate_wallet_safe()
+    
     if BOT_MODE == "webhook":
         print("🌐 Running in WEBHOOK mode")
 
