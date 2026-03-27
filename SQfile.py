@@ -4519,13 +4519,17 @@ def reply_menu(uid=None):
         InlineKeyboardButton(my_orders_label, callback_data="myorders_new")
     )
 
-    if uid in ADMINS:
+    # ➕ MY WALLET (GA KOWA)
+    kb.add(InlineKeyboardButton("💰 MY WALLET", callback_data="wallet"))
 
+    # ⬇️ SERIES&ADD (Yanzu a nan yake, ba a sama ba)
+    if uid in ADMINS:
         kb.add(InlineKeyboardButton("☢SERIES&ADD🎬", callback_data="groupitems"))
 
+    # Cart
     kb.add(InlineKeyboardButton(cart_label, callback_data="viewcart"))
 
-    # ✅ Support Help yanzu URL ne kamar Our Channel
+    # Support Help (URL)
     kb.add(
         InlineKeyboardButton(
             support_label,
@@ -4533,33 +4537,45 @@ def reply_menu(uid=None):
         )
     )
 
-    # Add a full-width Our Channel row (as in original layout screenshot)
-    kb.add(InlineKeyboardButton(channel_label, url=f"https://t.me/{CHANNEL.lstrip('@')}"))
+    # ❌ An cire "Our Channel" na sama
+    # (BA A NAN KUMA)
 
-    # Then add a row with Home (KOMA FARKO) and Our Channel side-by-side
+    # ===== ROW: HOME + OUR CHANNEL =====
     kb.row(
         InlineKeyboardButton(home_label, callback_data="go_home"),
         InlineKeyboardButton(channel_label, url=f"https://t.me/{CHANNEL.lstrip('@')}")
     )
 
+    # Change Language
     kb.row(InlineKeyboardButton(change_label, callback_data="change_language"))
 
     return kb
 
 
 
+
+
+
 def user_main_menu(uid=None):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
 
-    weekly_films = tr_user(uid, "btn_weekly_films", default="Films din wannan satin")
-    cart_label   = tr_user(uid, "btn_cart", default="🧾 Cart")
-    help_label   = tr_user(uid, "btn_help", default="Taimako")
+    cart_label = tr_user(uid, "btn_cart", default="🧾 Cart")
+    help_label = tr_user(uid, "btn_help", default="Taimako")
 
-    kb.add(KeyboardButton(weekly_films))
-    kb.add(KeyboardButton(cart_label), KeyboardButton(help_label))
+    wallet_label = "My Wallet💰"
+
+    # ===== MY WALLET a sama =====
+    kb.row(
+        KeyboardButton(wallet_label)
+    )
+
+    # ===== CART + HELP a kasa =====
+    kb.row(
+        KeyboardButton(cart_label),
+        KeyboardButton(help_label)
+    )
 
     return kb
-
 
 #Start
 def movie_buttons_inline(mid, user_id=None):
@@ -4690,22 +4706,37 @@ def getgroupid(message):
 
 @bot.message_handler(
     func=lambda msg: isinstance(getattr(msg, "text", None), str)
-    and msg.text in ["Films din wannan satin", "Taimako", "🧾 Cart"]
+    and msg.text in ["Taimako", "🧾 Cart", "🏦My wallet💰"]
 )
 def user_buttons(message):
     txt = message.text
     uid = message.from_user.id
 
-    # ======= FILMS =======
-    if txt == "Films din wannan satin":
+    # ======= MY WALLET =======
+    if txt == "🏦My wallet💰":
+
+        class CallMock:
+            def __init__(self, msg):
+                self.id = "wallet_text_button"
+                self.from_user = msg.from_user
+                self.message = msg
+
         try:
-            send_weekly_list(message)
+            open_wallet(CallMock(message))
+
         except Exception as e:
-            print("Films din wannan satin ERROR:", e)
+
+            import traceback
+            error_details = traceback.format_exc()
+
             bot.send_message(
                 message.chat.id,
-                "⚠️ An samu matsala wajen nuna fina-finan wannan satin."
+                f"❌ WALLET ERROR\n\n"
+                f"Type: {type(e).__name__}\n"
+                f"Message: {str(e)}\n\n"
+                f"Trace:\n{error_details[:3000]}"
             )
+
         return
 
     # ======= TAIMAKO =======
