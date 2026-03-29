@@ -1676,6 +1676,88 @@ Ba tare da sake biyan wani ƙarin kuɗi ba.
     bot.answer_callback_query(call.id)
 
 
+# ================= ADMIN ADD MONEY TO WALLET =================
+@bot.message_handler(commands=["addmoney"])
+def admin_add_money(msg):
+
+    user_id = msg.from_user.id
+
+    # ===== ADMIN CHECK =====
+    if user_id != ADMIN_ID:
+        bot.reply_to(msg, "❌ You are not authorized to use this command.")
+        return
+
+    try:
+        parts = msg.text.split()
+
+        if len(parts) < 2:
+            bot.reply_to(msg, "Usage: /addmoney 500")
+            return
+
+        amount = int(parts[1])
+
+        if amount <= 0:
+            bot.reply_to(msg, "❌ Invalid amount.")
+            return
+
+    except:
+        bot.reply_to(msg, "❌ Invalid format.\nUse: /addmoney 500")
+        return
+
+    # ===== DB =====
+    wallet_conn = get_wallet_conn()
+    wallet_cur = wallet_conn.cursor()
+
+    try:
+
+        # ===== UPDATE BALANCE =====
+        wallet_cur.execute(
+            """
+            INSERT INTO wallet_balance (user_id, balance)
+            VALUES (%s,%s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+            balance = wallet_balance.balance + EXCLUDED.balance,
+            updated_at = NOW()
+            """,
+            (user_id, amount)
+        )
+
+        # ===== SAVE TRANSACTION =====
+        ref = f"admin_{user_id}_{int(time.time())}"
+
+        wallet_cur.execute(
+            """
+            INSERT INTO wallet_transactions
+            (user_id, amount, type, reference, description)
+            VALUES (%s,%s,'admin_credit',%s,'Admin Wallet Funding')
+            """,
+            (user_id, amount, ref)
+        )
+
+        wallet_conn.commit()
+
+        # ===== SUCCESS MESSAGE =====
+        bot.reply_to(
+            msg,
+            f"""✅ <b>WALLET FUNDED SUCCESSFULLY</b>
+
+💰 Amount Added: ₦{amount}
+🆔 Wallet ID: <code>{user_id}</code>
+
+Your wallet has been credited successfully.""",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        wallet_conn.rollback()
+        bot.reply_to(msg, "❌ Failed to add money.")
+    
+    finally:
+        wallet_cur.close()
+        wallet_conn.close()
+
+
 # ======= VIP ORDER CREATOR (CALLBACK subvip) =========
 import uuid
 from psycopg2.extras import RealDictCursor
