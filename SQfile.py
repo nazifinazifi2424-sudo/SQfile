@@ -924,6 +924,7 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
+
 CASHBACK_PERCENT = 0.10
 CASHBACK_LIMIT = 200
 
@@ -975,10 +976,16 @@ def paystack_webhook():
             wallet_cur.execute("INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'deposit',%s,'Wallet Top-up')", (user_id, paid_amount, order_id))
             wallet_conn.commit(); wallet_cur.close(); wallet_conn.close()
 
-            cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
-            u = cur.fetchone()
-            full_name = u[0] if u and u[0] else "User"
-            username = f"@{u[1]}" if u and u[1] else "None"
+            # --- Get Full Name from Telegram ---
+            try:
+                user_info = bot.get_chat(user_id)
+                full_name = f"{user_info.first_name or ''} {user_info.last_name or ''}".strip() or "User"
+                username = f"@{user_info.username}" if user_info.username else "None"
+            except:
+                cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
+                u = cur.fetchone()
+                full_name = u[0] if u and u[0] else "User"
+                username = f"@{u[1]}" if u and u[1] else "None"
 
             # User Wallet Message
             bot.send_message(user_id, f"🎉 <b>CONGRATULATIONS {full_name}</b>\n\n💰 <b>Wallet credited:</b> ₦{paid_amount}\n🗃 <b>Order ID:</b> <code>{order_id}</code>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")))
@@ -1012,15 +1019,21 @@ def paystack_webhook():
             try: bot.delete_message(ORDER_MESSAGES[order_id][0], ORDER_MESSAGES[order_id][1]); del ORDER_MESSAGES[order_id]
             except: pass
 
-        cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
-        u = cur.fetchone(); full_name = u[0] if u and u[0] else "User"
-        tg_username = f"@{u[1]}" if u and u[1] else "unknown"
+        # --- Get Full Name from Telegram for Film/VIP ---
+        try:
+            user_info = bot.get_chat(user_id)
+            full_name = f"{user_info.first_name or ''} {user_info.last_name or ''}".strip() or "User"
+            tg_username = f"@{user_info.username}" if user_info.username else "unknown"
+        except:
+            cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
+            u = cur.fetchone()
+            full_name = u[0] if u and u[0] else "User"
+            tg_username = f"@{u[1]}" if u and u[1] else "unknown"
 
         # ------------------ VIP ORDER ------------------
         if order_type == "vip":
             from datetime import datetime, timedelta
             start_date = datetime.now()
-            # Wadannan values din dole su kasance a defined a code dinka
             end_date = start_date + (timedelta(minutes=VIP_DURATION_VALUE) if VIP_DURATION_UNIT == "minutes" else timedelta(days=VIP_DURATION_VALUE))
             start_local = start_date + timedelta(hours=1)
             end_local = end_date + timedelta(hours=1)
@@ -1094,9 +1107,6 @@ def paystack_webhook():
 
     except Exception as e:
         print(f"Webhook Error: {e}"); return "ERROR", 500
-
-
-
 
 
 
