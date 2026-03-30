@@ -1046,8 +1046,24 @@ def paystack_webhook():
 
         # ------------------ FILM ORDER ------------------
         else:
-            cur.execute("SELECT i.title FROM order_items oi JOIN items i ON i.id = oi.item_id WHERE oi.order_id=%s", (order_id,))
-            rows = cur.fetchall(); titles_text = "\n".join([f"• {r[0]}" for r in rows])
+            cur.execute("SELECT i.title, i.group_key FROM order_items oi JOIN items i ON i.id = oi.item_id WHERE oi.order_id=%s", (order_id,))
+            rows = cur.fetchall()
+            
+            groups = {}
+            for title, group_key in rows:
+                key = group_key or f"single_{title}"
+                if key not in groups:
+                    groups[key] = {"title": title, "count": 0}
+                groups[key]["count"] += 1
+
+            lines = []
+            for g in groups.values():
+                if g["count"] > 1:
+                    lines.append(f"• {g['title']} ({g['count']})")
+                else:
+                    lines.append(f"• {g['title']}")
+            
+            titles_text = "\n".join(lines)
             num_items = len(rows)
 
             calc_cashback = int(paid_amount * CASHBACK_PERCENT)
@@ -1078,6 +1094,7 @@ def paystack_webhook():
 
     except Exception as e:
         print(f"Webhook Error: {e}"); return "ERROR", 500
+
 
 
 
