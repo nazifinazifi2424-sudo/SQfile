@@ -4643,7 +4643,7 @@ def user_main_menu(uid=None):
     cart_label = tr_user(uid, "btn_cart", default="🧾 Cart")
     help_label = tr_user(uid, "btn_help", default="Taimako")
 
-    wallet_label = "My wallet💰"
+    wallet_label = "🏦My wallet💰"
 
     # ===== MY WALLET a sama =====
     kb.row(
