@@ -1,4 +1,6 @@
 
+
+
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -6864,6 +6866,8 @@ Danna Pay now domin biya 👇👇
         cur.close()
         conn.close()
 
+
+
 # ======= GROUPITEM (IDS + GROUP_KEY SUPPORT | UPDATED FORMAT) =========  
 from psycopg2.extras import RealDictCursor  
 import uuid  
@@ -6874,11 +6878,21 @@ def groupitem_deeplink_handler(msg):
     try:  
         uid = msg.from_user.id  
         raw = msg.text.split("groupitem_", 1)[1].strip()  
-    except Exception:  
+    except Exception as e:  
+        print("❌ INIT ERROR:", e)  
+        try:
+            bot.send_message(ADMIN_ID, f"INIT ERROR:\n{e}")
+        except:
+            pass
         return  
   
     conn = get_conn()  
     if not conn:  
+        print("❌ DB CONNECTION FAILED")  
+        try:
+            bot.send_message(ADMIN_ID, "DB CONNECTION FAILED")
+        except:
+            pass
         return  
   
     cur = conn.cursor(cursor_factory=RealDictCursor)  
@@ -6923,12 +6937,22 @@ def groupitem_deeplink_handler(msg):
         items = cur.fetchall()  
   
     if not items:  
+        print("❌ NO ITEMS FOUND")  
+        try:
+            bot.send_message(ADMIN_ID, f"NO ITEMS FOUND\nRAW: {raw}")
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
   
     items = [i for i in items if i.get("file_id")]  
     if not items:  
+        print("❌ ITEMS WITHOUT FILE")  
+        try:
+            bot.send_message(ADMIN_ID, "ITEMS WITHOUT FILE_ID")
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
@@ -6937,6 +6961,10 @@ def groupitem_deeplink_handler(msg):
     placeholders = ",".join(["%s"] * len(item_ids_clean))  
   
     try:  
+        print("🔍 CHECKING OWNERSHIP...")
+        print("USER:", uid)
+        print("ITEM IDS:", item_ids_clean)
+
         cur.execute(  
             f"""  
             SELECT 1 FROM user_movies  
@@ -6946,19 +6974,49 @@ def groupitem_deeplink_handler(msg):
             """,  
             (uid, *item_ids_clean)  
         )  
+
         owned = cur.fetchone()  
-    except Exception:  
+
+        print("OWNED RESULT:", owned)
+
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                f"🔍 OWNERSHIP CHECK\nUser: {uid}\nItems: {item_ids_clean}\nResult: {owned}"
+            )
+        except:
+            pass
+
+    except Exception as e:  
+        print("❌ OWNERSHIP QUERY ERROR:", e)  
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                f"❌ OWNERSHIP ERROR\nUser: {uid}\nItems: {item_ids_clean}\nError:\n{e}"
+            )
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
   
     # ✅ POPUP FIX  
     if owned:  
-        bot.send_message(uid, " ")  # trigger safe response  
+        print("⚠️ USER ALREADY OWNS ITEM")
+        try:
+            bot.send_message(ADMIN_ID, "USER ALREADY OWNS ITEM - TRIGGER POPUP")
+        except:
+            pass
+
+        bot.send_message(uid, " ")  
         try:  
             bot.answer_callback_query(msg.id, "✅ Ka riga ka mallaki wannan fim", show_alert=True)  
-        except:  
-            pass  
+        except Exception as e:
+            print("❌ POPUP ERROR:", e)
+            try:
+                bot.send_message(ADMIN_ID, f"POPUP ERROR:\n{e}")
+            except:
+                pass
         cur.close()  
         conn.close()  
         return  
@@ -6973,6 +7031,11 @@ def groupitem_deeplink_handler(msg):
     item_count = len(items)  
   
     if total <= 0:  
+        print("❌ TOTAL <= 0")  
+        try:
+            bot.send_message(ADMIN_ID, "TOTAL PRICE INVALID")
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
@@ -6993,7 +7056,12 @@ def groupitem_deeplink_handler(msg):
             (uid, *item_ids_clean, len(item_ids_clean))  
         )  
         row = cur.fetchone()  
-    except Exception:  
+    except Exception as e:  
+        print("❌ ORDER CHECK ERROR:", e)
+        try:
+            bot.send_message(ADMIN_ID, f"ORDER CHECK ERROR:\n{e}")
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
@@ -7018,7 +7086,12 @@ def groupitem_deeplink_handler(msg):
                 )  
   
             conn.commit()  
-        except Exception:  
+        except Exception as e:  
+            print("❌ INSERT ORDER ERROR:", e)
+            try:
+                bot.send_message(ADMIN_ID, f"INSERT ORDER ERROR:\n{e}")
+            except:
+                pass
             conn.rollback()  
             cur.close()  
             conn.close()  
@@ -7031,12 +7104,22 @@ def groupitem_deeplink_handler(msg):
             total,  
             items[0]["title"]  
         )  
-    except Exception:  
+    except Exception as e:  
+        print("❌ PAYSTACK ERROR:", e)
+        try:
+            bot.send_message(ADMIN_ID, f"PAYSTACK ERROR:\n{e}")
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
   
     if not pay_url:  
+        print("❌ PAY URL EMPTY")
+        try:
+            bot.send_message(ADMIN_ID, "PAY URL EMPTY")
+        except:
+            pass
         cur.close()  
         conn.close()  
         return  
@@ -7071,11 +7154,12 @@ Danna Pay now domin biya 👇👇
         reply_markup=kb  
     )  
   
-    # ✅ SAVE MESSAGE  
     ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)  
   
     cur.close()  
     conn.close()
+
+
 # ================= ADMIN MANUAL SUPPORT SYSTEM =================
 
 ADMIN_SUPPORT = {}
