@@ -924,53 +924,39 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
-CASHBACK_PERCENT = 0.10  # 10% na kudin da aka biya
-CASHBACK_LIMIT = 200    # Matsakaicin cashback da za a bayar
+CASHBACK_PERCENT = 0.10
+CASHBACK_LIMIT = 200
 
 @app.route("/webhook", methods=["POST"])
 def paystack_webhook():
     try:
-        # ================= SECURITY (SIGNATURE) =================
+        # ================= SECURITY & VALIDATION =================
         signature = request.headers.get("x-paystack-signature")
-        if not signature:
-            return "Missing signature", 401
-
+        if not signature: return "Missing signature", 401
         computed = hmac.new(PAYSTACK_SECRET.encode(), request.data, hashlib.sha512).hexdigest()
-        if signature != computed:
-            return "Invalid signature", 401
+        if signature != computed: return "Invalid signature", 401
 
-        # ================= PAYLOAD =================
         payload = request.json or {}
         event = payload.get("event")
-        if event != "charge.success":
-            return "Ignored", 200
+        if event != "charge.success": return "Ignored", 200
 
         data = payload.get("data", {})
         raw_reference = data.get("reference")
         paid_amount = int(data.get("amount", 0) / 100)
 
-        # ================= FIX ORDER ID =================
         metadata = data.get("metadata", {}) or {}
         order_id = metadata.get("order_id")
         if not order_id and raw_reference:
             order_id = raw_reference.split("_")[0]
+        if not order_id: return "Missing order id", 200
 
-        if not order_id:
-            return "Missing order id", 200
-
-        # ================= DB CONNECTION =================
-        conn = get_conn()
-        cur = conn.cursor()
-
+        conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT user_id, amount, paid, type FROM orders WHERE id=%s", (order_id,))
         row = cur.fetchone()
 
-        # =====================================================
         # ================= 1. WALLET TOPUP ===================
-        # =====================================================
         if not row:
-            wallet_conn = get_wallet_conn()
-            wallet_cur = wallet_conn.cursor()
+            wallet_conn = get_wallet_conn(); wallet_cur = wallet_conn.cursor()
             wallet_cur.execute("SELECT user_id, amount, status FROM wallet_deposits WHERE id=%s", (order_id,))
             dep = wallet_cur.fetchone()
 
@@ -983,80 +969,89 @@ def paystack_webhook():
                 wallet_cur.close(); wallet_conn.close(); cur.close(); conn.close()
                 return "Already processed", 200
 
-            # Update Wallet
+            # Update Wallet Tables
             wallet_cur.execute("UPDATE wallet_deposits SET status='success', paystack_ref=%s, paid_at=NOW() WHERE id=%s", (raw_reference, order_id))
-            wallet_cur.execute("""
-                INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s)
-                ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()
-            """, (user_id, paid_amount))
+            wallet_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()", (user_id, paid_amount))
             wallet_cur.execute("INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'deposit',%s,'Wallet Top-up')", (user_id, paid_amount, order_id))
             wallet_conn.commit(); wallet_cur.close(); wallet_conn.close()
 
-            # Get User Info
-            cur.execute("SELECT first_name FROM visited_users WHERE user_id=%s", (user_id,))
+            cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
             u = cur.fetchone()
             full_name = u[0] if u and u[0] else "User"
+            username = f"@{u[1]}" if u and u[1] else "None"
 
-            # Notify User
+            # User Wallet Message
             bot.send_message(user_id, f"🎉 <b>CONGRATULATIONS {full_name}</b>\n\n💰 <b>Wallet credited:</b> ₦{paid_amount}\n🗃 <b>Order ID:</b> <code>{order_id}</code>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")))
 
-            # Admin Notify (Wallet) - Kamar yadda yake a hotonka
+            # Admin Wallet Notify (Daidai da IMG_20260330_175405.jpg)
             if PAYMENT_NOTIFY_GROUP:
                 now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-                bot.send_message(PAYMENT_NOTIFY_GROUP, f"💰 <b>TOP-UP SUCCESSFUL</b>\n👤 {full_name}\n💳 ₦{paid_amount}\n⏰ {now}", parse_mode="HTML")
+                admin_wallet_msg = (
+                    f"💰 <b>TOP-UP SUCCESSFUL</b>\n\n"
+                    f"👤 <b>Name:</b> {full_name}\n"
+                    f"🔗 <b>Username:</b> {username}\n"
+                    f"🆔 <b>User ID:</b> <code>{user_id}</code>\n\n"
+                    f"💳 <b>Top-up:</b> ₦{paid_amount}\n\n"
+                    f"🗃 <b>Order ID:</b> <code>{order_id}</code>\n"
+                    f"📊 <b>Status:</b> success\n\n"
+                    f"⏰ <b>Time:</b> {now}"
+                )
+                bot.send_message(PAYMENT_NOTIFY_GROUP, admin_wallet_msg, parse_mode="HTML")
 
             cur.close(); conn.close(); return "OK", 200
 
-        # =====================================================
         # ================= 2. FILM & VIP ORDERS ==============
-        # =====================================================
         user_id, expected_amount, paid, order_type = row
         if paid == 1:
             cur.close(); conn.close(); return "Already processed", 200
         
         cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
 
-        # Delete Message
         if order_id in ORDER_MESSAGES:
             try: bot.delete_message(ORDER_MESSAGES[order_id][0], ORDER_MESSAGES[order_id][1]); del ORDER_MESSAGES[order_id]
             except: pass
 
-        # Get User Info
         cur.execute("SELECT first_name FROM visited_users WHERE user_id=%s", (user_id,))
-        u = cur.fetchone()
-        full_name = u[0] if u and u[0] else "User"
+        u = cur.fetchone(); full_name = u[0] if u and u[0] else "User"
 
-        # --- FILM & VIP Logic ---
         if order_type == "vip":
-            # (VIP Logic stays exactly the same as you provided)
             cur.execute("INSERT INTO vip_members (user_id, order_id, status, payment_date) VALUES (%s,%s,'active',NOW()) ON CONFLICT (user_id) DO UPDATE SET status='active', payment_date=NOW()", (user_id, order_id))
             bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar da biyan VIP naka cikin nasara.</b>", parse_mode="HTML")
-            items_for_admin = "• VIP Membership"
-            num_items = 1
+            items_for_admin = "• VIP Membership"; num_items = 1
         else:
             cur.execute("SELECT i.title FROM order_items oi JOIN items i ON i.id = oi.item_id WHERE oi.order_id=%s", (order_id,))
-            rows = cur.fetchall()
-            titles_text = "\n".join([f"• {r[0]}" for r in rows])
-            items_for_admin = titles_text
-            num_items = len(rows)
+            rows = cur.fetchall(); titles_text = "\n".join([f"• {r[0]}" for r in rows])
+            items_for_admin = titles_text; num_items = len(rows)
 
-            # --- GYARAN CASHBACK (10% Limit 200) ---
+            # Cashback Logic
             calc_cashback = int(paid_amount * CASHBACK_PERCENT)
             cashback = min(calc_cashback, CASHBACK_LIMIT)
-
             if cashback > 0:
-                w_conn = get_wallet_conn(); w_cur = w_conn.cursor()
-                w_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance", (user_id, cashback))
-                w_conn.commit(); w_cur.close(); w_conn.close()
-                # Sanar da User ya samu Cashback
+                wallet_conn = get_wallet_conn(); wallet_cur = wallet_conn.cursor()
+                wallet_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance", (user_id, cashback))
+                wallet_conn.commit(); wallet_cur.close(); wallet_conn.close()
                 bot.send_message(user_id, f"🎁 <b>Ka samu kyautar Cashback:</b> ₦{cashback}\n\nAn sanya maka a wallet naka don siyan wani fim na gaba. 🤍", parse_mode="HTML")
 
-            # Sakon nasara ga User
-            bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar da biyanka cikin nasara.</b>\n\n🎬 <b>Yanzu ka riga ka mallaki:</b>\n{titles_text}\n\n━━━━━━━━━━━━━━\n📦 <b>Order:</b> Arrived ✅\n🔐 <b>Status:</b> Confirmed\n🆔 <b>Ref:</b> <code>{order_id}</code>\n━━━━━━━━━━━━━━\n\nMun gode da amincewa da mu 🤍", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("⬇️ DOWNLOAD ITEMS", callback_data=f"deliver:{order_id}")))
+            # User Success Message (Daidai da Screenshot_20260330-154435.jpg)
+            user_film_msg = (
+                f"Hi {full_name} 👋\n\n"
+                f"🎉 <b>An tabbatar</b> da biyanka cikin nasara.\n\n"
+                f"🎬 <b>Yanzu ka riga ka mallaki:</b>\n"
+                f"{titles_text}\n\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"📦 <b>Order:</b> Arrived ✅\n"
+                f"🔐 <b>Status:</b> Confirmed\n"
+                f"🆔 <b>Ref:</b>\n"
+                f"<code>{order_id}</code>\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"Mun gode da amincewa da mu 🤍\n"
+                f"Danna <b>DOWNLOAD ITEMS</b> domin karba yanzu."
+            )
+            bot.send_message(user_id, user_film_msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("⬇️ DOWNLOAD ITEMS", callback_data=f"deliver:{order_id}")))
 
-        # --- GYARAN ADMIN NOTIFY (Kamar hotonka na TRANSACTION COMPLETED) ---
+        # Admin Film Notify (Daidai da Screenshot_20260330-154247.jpg)
         if PAYMENT_NOTIFY_GROUP:
-            admin_msg = (
+            admin_film_msg = (
                 f"🟢 <b>TRANSACTION COMPLETED</b>\n\n"
                 f"📦 Status: Confirmed\n"
                 f"🎬 Items: {num_items} files\n"
@@ -1066,13 +1061,15 @@ def paystack_webhook():
                 f"💳 Total amount: ₦{paid_amount}\n"
                 f"🧾 Ref: <code>{order_id}</code>"
             )
-            bot.send_message(PAYMENT_NOTIFY_GROUP, admin_msg, parse_mode="HTML")
+            bot.send_message(PAYMENT_NOTIFY_GROUP, admin_film_msg, parse_mode="HTML")
 
         conn.commit(); cur.close(); conn.close()
         return "OK", 200
 
     except Exception as e:
         print(f"Webhook Error: {e}"); return "ERROR", 500
+
+
 
 
 
