@@ -925,35 +925,28 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
+
 CASHBACK = 20
 
 @app.route("/webhook", methods=["POST"])
 def paystack_webhook():
     try:
-        # ================= SIGNATURE (SECURITY) =================
+        # ================= SECURITY (SIGNATURE) =================
         signature = request.headers.get("x-paystack-signature")
-
         if not signature:
             return "Missing signature", 401
 
-        computed = hmac.new(
-            PAYSTACK_SECRET.encode(),
-            request.data,
-            hashlib.sha512
-        ).hexdigest()
-
+        computed = hmac.new(PAYSTACK_SECRET.encode(), request.data, hashlib.sha512).hexdigest()
         if signature != computed:
             return "Invalid signature", 401
 
         # ================= PAYLOAD =================
         payload = request.json or {}
-
         event = payload.get("event")
         if event != "charge.success":
             return "Ignored", 200
 
         data = payload.get("data", {})
-
         raw_reference = data.get("reference")
         currency = data.get("currency")
         paid_amount = int(data.get("amount", 0) / 100)
@@ -961,22 +954,18 @@ def paystack_webhook():
         # ================= FIX ORDER ID =================
         metadata = data.get("metadata", {}) or {}
         order_id = metadata.get("order_id")
-
         if not order_id and raw_reference:
             order_id = raw_reference.split("_")[0]
 
         if not order_id:
             return "Missing order id", 200
 
-        # ================= MAIN DB CONNECTION =================
+        # ================= DB CONNECTION =================
         conn = get_conn()
         cur = conn.cursor()
 
-        # Check in orders table
-        cur.execute(
-            "SELECT user_id, amount, paid, type FROM orders WHERE id=%s",
-            (order_id,)
-        )
+        # Duba a Orders Table
+        cur.execute("SELECT user_id, amount, paid, type FROM orders WHERE id=%s", (order_id,))
         row = cur.fetchone()
 
         # =====================================================
@@ -985,76 +974,53 @@ def paystack_webhook():
         if not row:
             wallet_conn = get_wallet_conn()
             wallet_cur = wallet_conn.cursor()
-
-            wallet_cur.execute(
-                "SELECT user_id, amount, status FROM wallet_deposits WHERE id=%s",
-                (order_id,)
-            )
+            wallet_cur.execute("SELECT user_id, amount, status FROM wallet_deposits WHERE id=%s", (order_id,))
             dep = wallet_cur.fetchone()
 
             if not dep:
-                wallet_cur.close(); wallet_conn.close()
-                cur.close(); conn.close()
+                wallet_cur.close(); wallet_conn.close(); cur.close(); conn.close()
                 return "Order not found", 200
 
             user_id, expected_amount, status = dep
 
             if status == "success":
-                wallet_cur.close(); wallet_conn.close()
-                cur.close(); conn.close()
+                wallet_cur.close(); wallet_conn.close(); cur.close(); conn.close()
                 return "Already processed", 200
 
-            if paid_amount != expected_amount or currency != "NGN":
-                wallet_cur.close(); wallet_conn.close()
-                cur.close(); conn.close()
-                return "Wrong payment", 200
-
-            # Update Deposit Status
-            wallet_cur.execute(
-                "UPDATE wallet_deposits SET status='success', paystack_ref=%s, paid_at=NOW() WHERE id=%s",
-                (raw_reference, order_id)
-            )
-
-            # Update Balance
-            wallet_cur.execute(
-                """
-                INSERT INTO wallet_balance (user_id, balance)
-                VALUES (%s,%s)
-                ON CONFLICT (user_id)
-                DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()
-                """,
-                (user_id, paid_amount)
-            )
-
-            # Insert Transaction
-            wallet_cur.execute(
-                "INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'deposit',%s,'Wallet Top-up')",
-                (user_id, paid_amount, order_id)
-            )
+            # Update Wallet (Success)
+            wallet_cur.execute("UPDATE wallet_deposits SET status='success', paystack_ref=%s, paid_at=NOW() WHERE id=%s", (raw_reference, order_id))
+            wallet_cur.execute("""
+                INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s)
+                ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()
+            """, (user_id, paid_amount))
+            wallet_cur.execute("INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'deposit',%s,'Wallet Top-up')", (user_id, paid_amount, order_id))
 
             wallet_conn.commit()
             wallet_cur.close(); wallet_conn.close()
 
-            # --- Delete Message Logic ---
+            # --- Delete Message & User Info ---
             if order_id in ORDER_MESSAGES:
-                chat_id, message_id = ORDER_MESSAGES[order_id]
-                try: bot.delete_message(chat_id, message_id)
+                try: bot.delete_message(ORDER_MESSAGES[order_id][0], ORDER_MESSAGES[order_id][1])
                 except: pass
                 del ORDER_MESSAGES[order_id]
 
-            # Get User Info
-            cur.execute("SELECT first_name, last_name FROM visited_users WHERE user_id=%s", (user_id,))
+            # Get User Info (Try DB first, then Telegram)
+            cur.execute("SELECT first_name FROM visited_users WHERE user_id=%s", (user_id,))
             u = cur.fetchone()
-            full_name = f"{u[0] or ''} {u[1] or ''}".strip() if u else "User"
+            if u and u[0]:
+                full_name = u[0]
+            else:
+                try:
+                    chat = bot.get_chat(user_id)
+                    full_name = chat.first_name or "User"
+                except: full_name = "User"
 
-            # Wallet Success Message
-            wallet_kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet"))
-            bot.send_message(user_id, f"🎉 <b>CONGRATULATIONS MALAM {full_name}</b>\n\n💰 <b>Your wallet credited:</b> ₦{paid_amount}\n\n🗃 <b>Order ID:</b> <code>{order_id}</code>\n\nYour deposit was successful.", parse_mode="HTML", reply_markup=wallet_kb)
+            # Notify User & Admin (Wallet)
+            bot.send_message(user_id, f"🎉 <b>CONGRATULATIONS {full_name}</b>\n\n💰 <b>Wallet credited:</b> ₦{paid_amount}\n🗃 <b>Order ID:</b> <code>{order_id}</code>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")))
 
             if PAYMENT_NOTIFY_GROUP:
-                from datetime import datetime, timedelta
                 now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-                bot.send_message(PAYMENT_NOTIFY_GROUP, f"💰 <b>TOP-UP SUCCESSFUL</b>\n\n👤 <b>Name:</b> {full_name}\n🆔 <b>User ID:</b> <code>{user_id}</code>\n💳 <b>Top-up:</b> ₦{paid_amount}\n🗃 <b>Order ID:</b> <code>{order_id}</code>\n⏰ <b>Time:</b> {now}", parse_mode="HTML")
+                bot.send_message(PAYMENT_NOTIFY_GROUP, f"💰 <b>TOP-UP SUCCESSFUL</b>\n👤 {full_name}\n💳 ₦{paid_amount}\n⏰ {now}", parse_mode="HTML")
 
             cur.close(); conn.close()
             return "OK", 200
@@ -1065,34 +1031,33 @@ def paystack_webhook():
         user_id, expected_amount, paid, order_type = row
 
         if paid == 1:
-            cur.close(); conn.close()
-            return "Already processed", 200
+            cur.close(); conn.close(); return "Already processed", 200
+        if paid_amount != expected_amount:
+            cur.close(); conn.close(); return "Wrong payment", 200
 
-        if paid_amount != expected_amount or currency != "NGN":
-            cur.close(); conn.close()
-            return "Wrong payment", 200
-
-        # Mark Order as Paid
         cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
 
-        # Delete Message
         if order_id in ORDER_MESSAGES:
-            chat_id, message_id = ORDER_MESSAGES[order_id]
-            try: bot.delete_message(chat_id, message_id)
+            try: bot.delete_message(ORDER_MESSAGES[order_id][0], ORDER_MESSAGES[order_id][1])
             except: pass
             del ORDER_MESSAGES[order_id]
 
-        # Get User Info
-        cur.execute("SELECT first_name, last_name FROM visited_users WHERE user_id=%s", (user_id,))
+        # Get User Info (Try DB first, then Telegram)
+        cur.execute("SELECT first_name FROM visited_users WHERE user_id=%s", (user_id,))
         u = cur.fetchone()
-        full_name = f"{u[0] or ''} {u[1] or ''}".strip() if u else "User"
+        if u and u[0]:
+            full_name = u[0]
+        else:
+            try:
+                chat = bot.get_chat(user_id)
+                full_name = chat.first_name or "User"
+            except: full_name = "User"
 
-        # --- VIP LOGIC ---
+        # --- VIP Logic ---
         if order_type == "vip":
-            from datetime import datetime, timedelta
             start_date = datetime.now()
             end_date = start_date + (timedelta(minutes=VIP_DURATION_VALUE) if VIP_DURATION_UNIT == "minutes" else timedelta(days=VIP_DURATION_VALUE))
-
+            
             already_in_group = False
             try:
                 member = bot.get_chat_member(VIP_GROUP_ID, user_id)
@@ -1100,59 +1065,40 @@ def paystack_webhook():
             except: pass
 
             if already_in_group:
-                cur.execute("""
-                    INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                    VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
-                    ON CONFLICT (user_id) DO UPDATE SET order_id=EXCLUDED.order_id, status='active', payment_date=NOW()
-                """, (user_id, order_id, start_date, end_date))
-                bot.send_message(user_id, f"Hi 👋\n\n🎉 <b>An sabunta VIP naka cikin nasara.</b>", parse_mode="HTML")
+                cur.execute("INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status, payment_date) VALUES (%s,%s,%s,%s,'active',NOW()) ON CONFLICT (user_id) DO UPDATE SET order_id=EXCLUDED.order_id, expire_at=EXCLUDED.expire_at, status='active', payment_date=NOW()", (user_id, order_id, start_date, end_date))
+                bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar da biyan VIP naka cikin nasara.</b>\n\n━━━━━━━━━━━━━━\n📦 <b>Status:</b> Confirmed\n🆔 <b>Ref:</b> <code>{order_id}</code>\n━━━━━━━━━━━━━━\n\nNa gode da sake biya!", parse_mode="HTML")
             else:
-                cur.execute("""
-                    INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                    VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
-                    ON CONFLICT (user_id) DO UPDATE SET order_id=EXCLUDED.order_id, status='active', payment_date=NOW()
-                """, (user_id, order_id))
-                vip_kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔐 JOIN VIP GROUP", callback_data=f"vipnow:{order_id}"))
-                bot.send_message(user_id, f"Hi 👋\n\n🎉 <b>An tabbatar da biyan VIP naka.</b>", parse_mode="HTML", reply_markup=vip_kb)
+                cur.execute("INSERT INTO vip_members (user_id, order_id, status, payment_date) VALUES (%s,%s,'active',NOW()) ON CONFLICT (user_id) DO UPDATE SET order_id=EXCLUDED.order_id, status='active', payment_date=NOW()", (user_id, order_id))
+                bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar da biyan VIP naka cikin nasara.</b>\n\n━━━━━━━━━━━━━━\n📦 <b>Status:</b> Confirmed\n🆔 <b>Ref:</b> <code>{order_id}</code>\n━━━━━━━━━━━━━━\n\n💎 <b>VIP ACTIVATED</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔐 JOIN VIP", callback_data=f"vipnow:{order_id}")))
 
-            if PAYMENT_NOTIFY_GROUP:
-                bot.send_message(PAYMENT_NOTIFY_GROUP, f"🟢 <b>VIP SUBSCRIPTION</b>\n\n👤 {full_name}\n💳 ₦{paid_amount}", parse_mode="HTML")
-
-        # --- FILM LOGIC ---
+        # --- Film Logic ---
         else:
             cur.execute("SELECT i.title, i.group_key FROM order_items oi JOIN items i ON i.id = oi.item_id WHERE oi.order_id=%s", (order_id,))
             rows = cur.fetchall()
-            groups = {}
-            for title, group_key in rows:
-                key = group_key or f"single_{title}"
-                groups[key] = groups.get(key, {"title": title, "count": 0})
-                groups[key]["count"] += 1
-            
-            titles_text = "\n".join([f"• {g['title']} ({g['count']})" if g['count'] > 1 else f"• {g['title']}" for g in groups.values()])
+            titles = "\n".join([f"• {r[0]}" for r in rows])
 
-            # Cashback Reward
+            # Cashback
             cashback = min((paid_amount // 200) * CASHBACK, 200)
             if cashback > 0:
-                wallet_conn = get_wallet_conn()
-                wallet_cur = wallet_conn.cursor()
-                wallet_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()", (user_id, cashback))
-                wallet_cur.execute("INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'cashback',%s,'Movie Cashback Reward')", (user_id, cashback, order_id))
-                wallet_conn.commit(); wallet_cur.close(); wallet_conn.close()
-                bot.send_message(user_id, f"🎁 Cashback Reward: ₦{cashback}", parse_mode="HTML")
+                w_conn = get_wallet_conn(); w_cur = w_conn.cursor()
+                w_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance", (user_id, cashback))
+                w_conn.commit(); w_cur.close(); w_conn.close()
+                bot.send_message(user_id, f"🎁 <b>Ka samu kyautar Cashback:</b> ₦{cashback}\n\nWallet ID: <code>{user_id}</code>", parse_mode="HTML")
 
-            kb = InlineKeyboardMarkup().add(InlineKeyboardButton("⬇️ DOWNLOAD ITEMS", callback_data=f"deliver:{order_id}"))
-            bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar da biyanka Alhamdulillah✅.</b>\n\n🎬 <b>Items:</b>\n{titles_text}", parse_mode="HTML", reply_markup=kb)
+            # Asalin Format na Hotonka
+            bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar da biyanka cikin nasara.</b>\n\n🎬 <b>Yanzu ka riga ka mallaki:</b>\n{titles}\n\n━━━━━━━━━━━━━━\n📦 <b>Order:</b> Arrived ✅\n🔐 <b>Status:</b> Confirmed\n🆔 <b>Ref:</b> <code>{order_id}</code>\n━━━━━━━━━━━━━━\n\nMun gode da amincewa da mu 🤍\nDanna <b>DOWNLOAD ITEMS</b> domin karɓa yanzu👇👇👇.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("⬇️ DOWNLOAD ITEMS", callback_data=f"deliver:{order_id}")))
 
-            if PAYMENT_NOTIFY_GROUP:
-                bot.send_message(PAYMENT_NOTIFY_GROUP, f"🟢 <b>FILM PURCHASE</b>\n\n👤 {full_name}\n🎬 {len(groups)} items\n💰 ₦{paid_amount}", parse_mode="HTML")
+        # --- General Admin Notify (Transaction Completed Format) ---
+        if PAYMENT_NOTIFY_GROUP:
+            items_list = "\n".join([f"• {r[0]}" for r in rows]) if order_type != "vip" else "• VIP Membership"
+            bot.send_message(PAYMENT_NOTIFY_GROUP, f"🟢 <b>TRANSACTION COMPLETED</b>\n\n📦 Status: Confirmed\n🎬 Items: {len(rows) if order_type != 'vip' else 1} files\nItem names:\n{items_list}\n\n👤 User full name: {full_name}\n🆔 User ID: <code>{user_id}</code>\n\n💳 Total amount: ₦{paid_amount}\n🧾 Ref: <code>{order_id}</code>", parse_mode="HTML")
 
-        conn.commit()
-        cur.close(); conn.close()
+        conn.commit(); cur.close(); conn.close()
         return "OK", 200
 
     except Exception as e:
-        print(f"Webhook Error: {e}")
-        return "ERROR", 500
+        print(f"Webhook Error: {e}"); return "ERROR", 500
+
 
 
 
