@@ -1,6 +1,3 @@
-
-
-
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -7594,6 +7591,7 @@ import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ======================================================
+
 # PAY ALL (SUPPORT IDS + GROUP_KEY + DEFAULT)
 # ======================================================
 @bot.callback_query_handler(func=lambda c: c.data.startswith("payall"))
@@ -7767,6 +7765,9 @@ Zaka iya duba shi ka sake karba in kana bukata anan👇👇""",
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
 
+        # ✅ KAWAI AN ƘARA WANNAN
+        kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))
+
         first_name = call.from_user.first_name or ""
         last_name = call.from_user.last_name or ""
         full_name = f"{first_name} {last_name}".strip()
@@ -7798,6 +7799,10 @@ Danna Pay now domin biya 👇👇""",
     finally:
         cur.close()
         conn.close()
+
+
+
+
 
 import uuid
 from datetime import datetime
@@ -8687,6 +8692,7 @@ def handle_callback(c):
 
 
 
+
     from psycopg2.extras import RealDictCursor  
     import uuid  
 
@@ -8781,6 +8787,7 @@ def handle_callback(c):
         kb = InlineKeyboardMarkup()  
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))  
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))  
+        kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))  
 
         first_name = c.from_user.first_name or ""  
         last_name = c.from_user.last_name or ""  
@@ -8985,6 +8992,7 @@ Danna Pay now domin biya 👇👇
         kb = InlineKeyboardMarkup()  
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))  
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))  
+        kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))  
 
         bot.send_message(  
             uid,  
@@ -9004,6 +9012,7 @@ Danna Pay now domin biya 👇👇
 
         bot.answer_callback_query(c.id)  
         return
+
 
     # ================= MY MOVIES =================
     if data == "my_movies":
