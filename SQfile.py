@@ -1455,45 +1455,60 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
+import telebot
+import requests
 
+# LegitData API Settings
+LEGIT_TOKEN = "ba5e0d85c11376ffa9389b86f58ba2717acbb930"
+USER_URL = "https://legitdata.com.ng/api/user/"
+DATA_URL = "https://legitdata.com.ng/api/data/"
 
-@bot.message_handler(commands=['checkglad'])
-def check_glad_balance(message):
-    if message.from_user.id != ADMIN_ID:
-        return
+# Headers don kowane kira
+HEADERS = {
+    'Authorization': f'Token {LEGIT_TOKEN}',
+    'Content-Type': 'application/json'
+}
 
-    headers = {
-        "Authorization": GLAD_TOKEN,
-        "Content-Type": "application/json"
-    }
-
+# --- [ 2. CHECK BALANCE COMMAND ] ---
+@bot.message_handler(commands=['checklegit'])
+def check_balance(message):
     try:
-        response = requests.get(GLAD_URL, headers=headers)
-        
-        # Don ganin abin da ya faru a bayan fage
-        print(f"Glad Tidings Status: {response.status_code}")
-        print(f"Glad Tidings Body: {response.text}")
-
+        response = requests.get(USER_URL, headers=HEADERS)
         if response.status_code == 200:
-            data = response.json()
-            # Glad Tidings yawancin lokaci suna turo 'user' object
-            user_data = data.get('user', {})
-            username = user_data.get('username', 'Babu Suna')
-            balance = user_data.get('wallet_balance', '0.00')
-
-            msg = (
-                "🌟 **GLAD TIDINGS API CHECK** 🌟\n\n"
-                f"👤 **User:** {username}\n"
-                f"💰 **Wallet Balance:** ₦{balance}\n"
-                "✅ **Status:** API dinka a bude yake!"
-            )
+            res = response.json()
+            bal = res['user']['balance']
+            user = res['user']['username']
+            bot.reply_to(message, f"✅ **LegitData Info**\n👤 User: {user}\n💰 Balance: ₦{bal}", parse_mode="Markdown")
         else:
-            msg = f"❌ **API bai amsa ba!**\nStatus: {response.status_code}\nSako: {response.text[:100]}"
-
-        bot.send_message(ADMIN_ID, msg, parse_mode="Markdown")
-
+            bot.reply_to(message, "❌ Error: Ba a iya janyo balance ba.")
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"⚠️ Error: {str(e)}")
+        bot.reply_to(message, f"⚠️ Matsala: {str(e)}")
+
+# --- [ 3. BUY DATA FUNCTION ] ---
+# Misali: Siyan MTN 1GB (ID 387) - Zaka iya canza ID din zuwa 414 idan na kwana daya kake so
+def buy_data(chat_id, phone, plan_id, network_id):
+    payload = {
+        "network": network_id,
+        "mobile_number": phone,
+        "plan": plan_id,
+        "Ported_number": True
+    }
+    
+    try:
+        response = requests.post(DATA_URL, headers=HEADERS, json=payload)
+        res = response.json()
+        
+        if response.status_code == 201 or response.status_code == 200:
+            status = res.get('Status', 'Unknown')
+            bot.send_message(chat_id, f"✅ Sako: {status}\n📱 Number: {phone}\n📦 Plan ID: {plan_id}")
+        else:
+            bot.send_message(chat_id, f"❌ Transaction Failed: {res.get('error', 'Unknown Error')}")
+    except Exception as e:
+        bot.send_message(chat_id, f"⚠️ API Error: {str(e)}")
+
+# --- [ START BOT ] ---
+print("Bot dinka na LegitData yana aiki...")
+bot.polling()
 
 
 
