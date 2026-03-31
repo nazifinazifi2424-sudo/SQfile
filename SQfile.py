@@ -1469,46 +1469,35 @@ HEADERS = {
     'Content-Type': 'application/json'
 }
 
-# --- [ 2. CHECK BALANCE COMMAND ] ---
+
+# --- [ 2. GYARARREN CHECK BALANCE COMMAND ] ---
 @bot.message_handler(commands=['checklegit'])
 def check_balance(message):
     try:
         response = requests.get(USER_URL, headers=HEADERS)
+        
         if response.status_code == 200:
             res = response.json()
-            bal = res['user']['balance']
-            user = res['user']['username']
-            bot.reply_to(message, f"✅ **LegitData Info**\n👤 User: {user}\n💰 Balance: ₦{bal}", parse_mode="Markdown")
+            
+            # Domin magance matsalar 'balance', za mu cire kudin kai-tsaye
+            # A LegitData, kudin yana cikin 'user' sannan 'balance'
+            user_data = res.get('user', {})
+            bal = user_data.get('balance', '0.00')
+            username = user_data.get('username', 'User')
+            
+            sako = (f"✅ **LegitData Account Status**\n\n"
+                    f"👤 Sunan Account: {username}\n"
+                    f"💰 Wallet Balance: ₦{bal}")
+            
+            bot.reply_to(message, sako, parse_mode="Markdown")
         else:
-            bot.reply_to(message, "❌ Error: Ba a iya janyo balance ba.")
+            bot.reply_to(message, "❌ Error: API dinka bai ba da damar shiga ba.")
+            
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Matsala: {str(e)}")
+        # Wannan zai nuna mana takamaiman inda matsalar take idan ta sake faruwa
+        bot.reply_to(message, f"⚠️ Matsala ta afku: {str(e)}")
 
-# --- [ 3. BUY DATA FUNCTION ] ---
-# Misali: Siyan MTN 1GB (ID 387) - Zaka iya canza ID din zuwa 414 idan na kwana daya kake so
-def buy_data(chat_id, phone, plan_id, network_id):
-    payload = {
-        "network": network_id,
-        "mobile_number": phone,
-        "plan": plan_id,
-        "Ported_number": True
-    }
-    
-    try:
-        response = requests.post(DATA_URL, headers=HEADERS, json=payload)
-        res = response.json()
-        
-        if response.status_code == 201 or response.status_code == 200:
-            status = res.get('Status', 'Unknown')
-            bot.send_message(chat_id, f"✅ Sako: {status}\n📱 Number: {phone}\n📦 Plan ID: {plan_id}")
-        else:
-            bot.send_message(chat_id, f"❌ Transaction Failed: {res.get('error', 'Unknown Error')}")
-    except Exception as e:
-        bot.send_message(chat_id, f"⚠️ API Error: {str(e)}")
 
-# --- [ START BOT ] ---
-print("Bot dinka na LegitData yana aiki...")
-bot.polling()
 
 
 
