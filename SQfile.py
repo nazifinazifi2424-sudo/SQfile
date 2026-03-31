@@ -768,6 +768,9 @@ WARNING_2_UNIT = "days"
 ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
+ALR_URL = "https://alrahuzdata.com.ng/api/user/"
+ALR_TOKEN = "66f2e5c39ac8640f13cd888f161385b12f7e5e92"
+
 
 BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
@@ -1447,7 +1450,50 @@ def deliver_items(call):
 
     send_feedback_prompt(user_id, order_id)
 
+import requests
 
+@bot.message_handler(commands=['check'])
+def check_alrahuz_balance(message):
+    # Tabbatar cewa Admin ne kawai zai iya wannan command din
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    headers = {
+        "Authorization": f"Token {ALR_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        # Tura sako zuwa Alrahuz
+        response = requests.get(ALR_URL, headers=headers)
+        
+        # Print zuwa Console (Domin bincike)
+        print(f"--- ALRAHUZ CHECK ---")
+        print(f"Status Code: {response.status_code}")
+        print(f"Response: {response.text}")
+
+        if response.status_code == 200:
+            data = response.json()
+            user_name = data.get("user", {}).get("username", "Babu Suna")
+            balance = data.get("user", {}).get("wallet_balance", "0.00")
+            
+            msg = (
+                "✅ **API DINKA A BUDE YAKE!**\n\n"
+                f"👤 **Username:** {user_name}\n"
+                f"💰 **Balance:** ₦{balance}\n"
+                "📊 **Status:** Active"
+            )
+        elif response.status_code == 401:
+            msg = "❌ **Kofarku a kulle take (Unauthorized)!**\n\nAdmin din bai yi maka 'Activate' ba tukunna ko kuma Token dinka ba daidai ba ne."
+        else:
+            msg = f"⚠️ **An samu matsala daga Server dinsu!**\n\nCode: {response.status_code}\nBayani: {response.text[:100]}"
+
+        bot.send_message(ADMIN_ID, msg, parse_mode="Markdown")
+
+    except Exception as e:
+        error_msg = f"❌ **Error ya faru wajen tura sako:**\n`{str(e)}`"
+        print(error_msg)
+        bot.send_message(ADMIN_ID, error_msg, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
 def vip_group_info(call):
