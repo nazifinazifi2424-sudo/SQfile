@@ -1,4 +1,7 @@
 
+
+
+
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -1729,6 +1732,32 @@ Zaku iya siyan:
         reply_markup=kb
     )
 
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_d_&_a")
+def back_to_data_airtime(call):
+    text = """📶 Data & Airtime  
+Zaku iya siyan:  
+📡 Data mai araha (MTN, Airtel, Glo, 9mobile)  
+📞 Katin kira (Airtime)  
+⚡ Ana turawa nan take (instant delivery)  
+
+🎬 Idan kuna son sauke fim cikin sauƙi, Data mai sauri, zaku iya siya yanzu.
+"""
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("📡 Buy Data", callback_data="data"),
+        InlineKeyboardButton("📞 Buy Airtime", callback_data="airtime")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb
+    )
+
+
 @bot.callback_query_handler(func=lambda call: call.data == "airtime")
 def select_airtime_network(call):
     text = "📞 Zaɓi network ɗin da kake son saya airtime:"
@@ -1748,7 +1777,7 @@ def select_airtime_network(call):
 
     # ===== BACK BUTTON =====
     kb.add(
-        InlineKeyboardButton("◀ Back", callback_data="d_&_a")
+        InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
     )
 
     bot.edit_message_text(
@@ -1780,7 +1809,7 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
 
     # ===== BACK BUTTON =====
     kb.add(
-        InlineKeyboardButton("◀ Back", callback_data="d_&_a")
+        InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
     )
 
     bot.edit_message_text(
