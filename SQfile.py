@@ -1470,34 +1470,33 @@ HEADERS = {
 }
 
 
-# --- [ 2. GYARARREN CHECK BALANCE COMMAND ] ---
 @bot.message_handler(commands=['checklegit'])
 def check_balance(message):
     try:
         response = requests.get(USER_URL, headers=HEADERS)
-        
         if response.status_code == 200:
             res = response.json()
             
-            # Domin magance matsalar 'balance', za mu cire kudin kai-tsaye
-            # A LegitData, kudin yana cikin 'user' sannan 'balance'
+            # Wannan zai duba ko'ina don nemo kudin (Balance)
+            # Mun hada hanyoyi 3 don kada mu yi kuskure
             user_data = res.get('user', {})
-            bal = user_data.get('balance', '0.00')
-            username = user_data.get('username', 'User')
             
-            sako = (f"✅ **LegitData Account Status**\n\n"
-                    f"👤 Sunan Account: {username}\n"
-                    f"💰 Wallet Balance: ₦{bal}")
+            # Gwaji na 1: Duba cikin 'user' -> 'balance'
+            # Gwaji na 2: Duba cikin 'user' -> 'wallet_balance'
+            # Gwaji na 3: Duba babban shafin (res) kai tsaye
+            bal = user_data.get('balance') or user_data.get('wallet_balance') or res.get('balance') or "0.00"
+            username = user_data.get('username') or res.get('username') or "User"
             
-            bot.reply_to(message, sako, parse_mode="Markdown")
+            msg = (f"✅ **LegitData Live Status**\n\n"
+                   f"👤 Sunan Account: {username}\n"
+                   f"💰 Ainihin Wallet: ₦{bal}\n\n"
+                   f"🚀 Bot dinka yana ganin kudin dake Website yanzu!")
+            
+            bot.reply_to(message, msg, parse_mode="Markdown")
         else:
-            bot.reply_to(message, "❌ Error: API dinka bai ba da damar shiga ba.")
-            
+            bot.reply_to(message, "❌ Error: API dinka bai riga ya bude ba ko Token din ne ba daidai ba.")
     except Exception as e:
-        # Wannan zai nuna mana takamaiman inda matsalar take idan ta sake faruwa
-        bot.reply_to(message, f"⚠️ Matsala ta afku: {str(e)}")
-
-
+        bot.reply_to(message, f"⚠️ Matsala: {str(e)}")
 
 
 
