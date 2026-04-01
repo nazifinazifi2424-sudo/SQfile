@@ -2073,7 +2073,87 @@ def glo_corporate_duration(call):
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
 
+# ===== 9MOBILE =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobile")
+def nine_mobile_types(call):
+    text = "🛜 9mobile - Zaɓi nau'in data:"
 
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("SME", callback_data="9mobilesme"),
+        InlineKeyboardButton("Gifting", callback_data="9mobilegifting")
+    )
+
+    kb.add(
+        InlineKeyboardButton("Corporate", callback_data="9mobilecorporate")
+    )
+
+    kb.add(
+        InlineKeyboardButton("◀ Back", callback_data="data")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
+# ===== 9MOBILE SME =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobilesme")
+def nine_mobile_sme_duration(call):
+    text = "🛜 9mobile SME - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="9mobilesme_1d"),
+        InlineKeyboardButton("2Days", callback_data="9mobilesme_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="9mobilesme_7d"),
+        InlineKeyboardButton("30Days", callback_data="9mobilesme_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="9mobile"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== 9MOBILE GIFTING =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobilegifting")
+def nine_mobile_gifting_duration(call):
+    text = "🛜 9mobile Gifting - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="9mobilegift_1d"),
+        InlineKeyboardButton("2Days", callback_data="9mobilegift_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="9mobilegift_7d"),
+        InlineKeyboardButton("30Days", callback_data="9mobilegift_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="9mobile"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== 9MOBILE CORPORATE =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobilecorporate")
+def nine_mobile_corporate_duration(call):
+    text = "🛜 9mobile Corporate - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="9mobilecorp_1d"),
+        InlineKeyboardButton("2Days", callback_data="9mobilecorp_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="9mobilecorp_7d"),
+        InlineKeyboardButton("30Days", callback_data="9mobilecorp_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="9mobile"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
 
 # ================= ADMIN REMOVE MONEY FROM WALLET =================
