@@ -1711,6 +1711,7 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
+
 # --- [ COMMAND: /price ID ] ---
 @bot.message_handler(commands=['price'])
 def get_price_details(message):
@@ -1720,7 +1721,8 @@ def get_price_details(message):
         return
     
     plan_id = args[1]
-    PRICE_API = "https://legitdata.com.ng/api/data/"
+    # Gwada wannan URL din (shi ne yake kawo plans duka a rabe)
+    PRICE_API = "https://legitdata.com.ng/api/plans/" 
     
     headers = {
         'Authorization': f'Token {LEGIT_TOKEN}',
@@ -1731,16 +1733,18 @@ def get_price_details(message):
         bot.send_chat_action(message.chat.id, 'typing')
         response = requests.get(PRICE_API, headers=headers)
         
-        # 1. Tabbatar cewa an samu nasarar kira (200 OK)
         if response.status_code == 200:
-            plans = response.json()
+            res_data = response.json()
             
-            # 2. Duba ko 'plans' din List ne (tebur) ko kuma String (rubutu)
-            if isinstance(plans, list):
+            # Domin magance 'results': []
+            # Idan bayanan suna cikin 'results', mu dauko su. Idan kuma a fili suke, mu dauka.
+            plans = res_data.get('results', res_data) if isinstance(res_data, dict) else res_data
+            
+            if isinstance(plans, list) and len(plans) > 0:
                 target = next((p for p in plans if str(p.get('id')) == plan_id), None)
                 
                 if target:
-                    network = target.get('network_name', 'Babu')
+                    network = target.get('network_name') or target.get('network', 'Babu')
                     p_type = target.get('plan_type', 'Babu')
                     size = target.get('plan_size', 'Babu')
                     amount = target.get('plan_amount', '0.00')
@@ -1752,17 +1756,15 @@ def get_price_details(message):
                             f"🏷️ Nau'i: *{p_type}*\n"
                             f"📦 Girma: *{size}*\n"
                             f"💰 Farashi: *₦{amount}*\n"
-                            f"⏳ Tsawon Lokaci: *{month}*\n"
-                            f"━━━━━━━━━━━━━━━━━━\n"
-                            f"✅ Wannan shi ne ainihin kudin da za a cire.")
+                            f"⏳ Lokaci: *{month}*\n"
+                            f"━━━━━━━━━━━━━━━━━━")
                     bot.reply_to(message, sako, parse_mode="Markdown")
                 else:
-                    bot.reply_to(message, f"❌ Ban ga Data mai ID `{plan_id}` ba.")
+                    bot.reply_to(message, f"❌ Ban ga plan mai ID `{plan_id}` ba a wannan kofar.")
             else:
-                # Idan ba list ba ne, nuna abin da ya dawo
-                bot.reply_to(message, f"⚠️ API din ya turo sako maimakon jerin farashi: `{str(plans)}`")
+                bot.reply_to(message, "⚠️ Server din ya dawo da 'Empty List'. Gwada sake Reset API Token a Website.")
         else:
-            bot.reply_to(message, f"❌ Kuskure daga Server: {response.status_code}")
+            bot.reply_to(message, f"❌ Kuskure: {response.status_code}")
             
     except Exception as e:
         bot.reply_to(message, f"⚠️ Kuskure: {str(e)}")
