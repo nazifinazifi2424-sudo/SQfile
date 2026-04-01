@@ -1710,8 +1710,6 @@ def deliver_items(call):
 
     send_feedback_prompt(user_id, order_id)
 
-
-
 # --- [ COMMAND: /price ID ] ---
 @bot.message_handler(commands=['price'])
 def get_price_details(message):
@@ -1721,8 +1719,8 @@ def get_price_details(message):
         return
     
     plan_id = args[1]
-    # Gwada wannan URL din (shi ne yake kawo plans duka a rabe)
-    PRICE_API = "https://legitdata.com.ng/api/plans/" 
+    # Wannan shi ne asalin URL din da documentation dinka ya nuna
+    PRICE_API = "https://legitdata.com.ng/api/network/Plans" 
     
     headers = {
         'Authorization': f'Token {LEGIT_TOKEN}',
@@ -1734,40 +1732,40 @@ def get_price_details(message):
         response = requests.get(PRICE_API, headers=headers)
         
         if response.status_code == 200:
-            res_data = response.json()
+            plans = response.json()
             
-            # Domin magance 'results': []
-            # Idan bayanan suna cikin 'results', mu dauko su. Idan kuma a fili suke, mu dauka.
-            plans = res_data.get('results', res_data) if isinstance(res_data, dict) else res_data
+            # Nemo plan din da yayi daidai da ID
+            # Mun saita shi ya duba kowane irin tsarin JSON ya dawo
+            data_list = plans.get('results', plans) if isinstance(plans, dict) else plans
             
-            if isinstance(plans, list) and len(plans) > 0:
-                target = next((p for p in plans if str(p.get('id')) == plan_id), None)
+            target = next((p for p in data_list if str(p.get('id')) == plan_id), None)
+            
+            if target:
+                network = target.get('network_name') or "Babu"
+                p_type = target.get('plan_type') or "Babu"
+                size = target.get('plan_size') or "Babu"
+                amount = target.get('plan_amount') or "0.00"
+                month = target.get('month_validate') or "Babu"
                 
-                if target:
-                    network = target.get('network_name') or target.get('network', 'Babu')
-                    p_type = target.get('plan_type', 'Babu')
-                    size = target.get('plan_size', 'Babu')
-                    amount = target.get('plan_amount', '0.00')
-                    month = target.get('month_validate', 'Babu')
-                    
-                    sako = (f"🔍 **Bayanan Farashi (ID: {plan_id})**\n"
-                            f"━━━━━━━━━━━━━━━━━━\n"
-                            f"📶 Network: *{network}*\n"
-                            f"🏷️ Nau'i: *{p_type}*\n"
-                            f"📦 Girma: *{size}*\n"
-                            f"💰 Farashi: *₦{amount}*\n"
-                            f"⏳ Lokaci: *{month}*\n"
-                            f"━━━━━━━━━━━━━━━━━━")
-                    bot.reply_to(message, sako, parse_mode="Markdown")
-                else:
-                    bot.reply_to(message, f"❌ Ban ga plan mai ID `{plan_id}` ba a wannan kofar.")
+                sako = (f"🔍 **Bayanan Farashi (ID: {plan_id})**\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"📶 Network: *{network}*\n"
+                        f"🏷️ Nau'i: *{p_type}*\n"
+                        f"📦 Girma: *{size}*\n"
+                        f"💰 Farashi: *₦{amount}*\n"
+                        f"⏳ Tsawon Lokaci: *{month}*\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ An samo bayanan daga asalin API kofar.")
+                bot.reply_to(message, sako, parse_mode="Markdown")
             else:
-                bot.reply_to(message, "⚠️ Server din ya dawo da 'Empty List'. Gwada sake Reset API Token a Website.")
+                bot.reply_to(message, f"❌ Ban samu plan mai ID `{plan_id}` ba. Tabbatar ID din yana cikin Price List dinka.")
         else:
-            bot.reply_to(message, f"❌ Kuskure: {response.status_code}")
+            bot.reply_to(message, f"❌ Kuskure: API ya ki budewa (Status: {response.status_code})")
             
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Kuskure: {str(e)}")
+        bot.reply_to(message, f"⚠️ Matsala ta faru: {str(e)}")
+
+
 
 @bot.callback_query_handler(func=lambda call: call.data == "d_&_a")
 def open_data_airtime(call):
