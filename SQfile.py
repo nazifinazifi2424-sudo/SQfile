@@ -801,6 +801,10 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 PAYSTACK_BASE = "https://api.paystack.co"
 
+LEGIT_URL = "https://legitdata.com.ng/api/user/"
+
+LEGIT_TOKEN = "ba5e0d85c11376ffa9389b86f58ba2717acbb930"
+
 
 VIP_GROUP_ID = -1003656360408
 
@@ -1708,7 +1712,58 @@ def deliver_items(call):
 
 
 
+# --- [ COMMAND: /price ID ] ---
+@bot.message_handler(commands=['price'])
+def get_price_details(message):
+    # Dauko ID daga sako (misali: 414)
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "❌ Shigar da ID: `/price 414`", parse_mode="Markdown")
+        return
+    
+    plan_id = args[1]
+    # Domin kwaso jerin farashi, muna amfani da /api/data/ ko /api/plans/
+    PRICE_API = "https://legitdata.com.ng/api/data/"
+    
+    headers = {
+        'Authorization': f'Token {LEGIT_TOKEN}',
+        'Content-Type': 'application/json'
+    }
 
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        response = requests.get(PRICE_API, headers=headers)
+        
+        if response.status_code == 200:
+            plans = response.json()
+            # Nemo plan din da yayi daidai da ID din da aka saka
+            target = next((p for p in plans if str(p.get('id')) == plan_id), None)
+            
+            if target:
+                network = target.get('network_name', 'Babu')
+                p_type = target.get('plan_type', 'Babu')
+                size = target.get('plan_size', 'Babu')
+                amount = target.get('plan_amount', '0.00')
+                month = target.get('month_validate', 'Babu')
+                
+                sako = (f"🔍 **Bayanan Farashi (ID: {plan_id})**\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"📶 Network: *{network}*\n"
+                        f"🏷️ Nau'i: *{p_type}*\n"
+                        f"📦 Girma: *{size}*\n"
+                        f"💰 Farashi: *₦{amount}*\n"
+                        f"⏳ Tsawon Lokaci: *{month}*\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ Wannan shi ne farashin da za a zare maka.")
+                
+                bot.reply_to(message, sako, parse_mode="Markdown")
+            else:
+                bot.reply_to(message, f"❌ Ban ga Data mai ID `{plan_id}` ba a yanzu.")
+        else:
+            bot.reply_to(message, "❌ Na kasa kwaso farashin daga LegitData.")
+            
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Kuskure: {str(e)}")
 @bot.callback_query_handler(func=lambda call: call.data == "d_&_a")
 def open_data_airtime(call):
     text = """📶 Data & Airtime  
