@@ -2467,13 +2467,15 @@ Zaɓi plan ɗin da kake so 👇"""
 
 
 import uuid
+import threading
+import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # TEMP STORAGE
 user_data_session = {}
 
 #========================================
-# HANDLE BUY DATA
+# HANDLE BUY DATA (WITH COUNTDOWN)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
@@ -2482,8 +2484,7 @@ def handle_buy_data(call):
         api_id = int(call.data.split("_")[1])
 
         # ===== CLEAR OLD SESSION =====
-        if user_id in user_data_session:
-            del user_data_session[user_id]
+        user_data_session.pop(user_id, None)
 
         # ===== GET PLAN =====
         conn = get_data_conn()
@@ -2543,36 +2544,108 @@ def handle_buy_data(call):
             "plan_type": plan_type,
             "plan_name": plan_name,
             "duration": duration,
-            "amount": price
+            "amount": price,
+            "active": True   # 👈 domin timer ya san yana nan
         }
 
-        # ===== KEYBOARD =====
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("⏪ Reverse", callback_data="data")
-        )
+        chat_id = call.message.chat.id
+        message_id = call.message.message_id
 
-        # ===== EDIT MESSAGE =====
-        bot.edit_message_text(
-            f"""📲 *Shigar da lambar {network} ɗinka*
+        # ===== COUNTDOWN THREAD =====
+        def countdown():
+            for sec in range(60, -1, -1):
 
+                # idan user ya fita (reverse ko an goge memory)
+                if user_id not in user_data_session:
+                    return
+
+                if not user_data_session[user_id].get("active"):
+                    return
+
+                try:
+                    kb = InlineKeyboardMarkup()
+                    kb.add(
+                        InlineKeyboardButton(f"Reverse ({sec})", callback_data="data")
+                    )
+
+                    bot.edit_message_text(
+f"""📲 *Shigar da lambar {network} ɗinka*
 Misali:
 `080xxxxxxxx`
-
 📶 {network}
 📦 {plan_name}
 ⏳ {duration}
 💰 ₦{price/100:.2f}
-""",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
+
+⚠️ Ka turo lamba kafin lokaci ya fita""",
+                        chat_id,
+                        message_id,
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+
+                time.sleep(1)
+
+            # ===== AUTO REVERSE =====
+            if user_id in user_data_session:
+                user_data_session.pop(user_id, None)
+
+                try:
+                    fake_call = call
+                    select_network(fake_call)
+                except:
+                    pass
+
+        threading.Thread(target=countdown).start()
 
     except Exception as e:
         print("BUY DATA ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error", show_alert=True)
+
+
+#========================================
+# SELECT NETWORK (AUTO CLEAR)
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "data")
+def select_network(call):
+    try:
+        user_id = call.from_user.id
+
+        # ===== CLEAR SESSION =====
+        user_data_session.pop(user_id, None)
+
+        text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
+Dan Allah a tabbatar layin da za'a siya data babu bashi."""
+
+        kb = InlineKeyboardMarkup()
+
+        kb.row(
+            InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
+            InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
+        )
+
+        kb.row(
+            InlineKeyboardButton("🛜 Glo", callback_data="glo"),
+            InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
+        )
+
+        kb.add(
+            InlineKeyboardButton("Reverse", callback_data="back_to_d_&_a")
+        )
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("SELECT NETWORK ERROR:", e)
+
+
 
 
 #========================================
