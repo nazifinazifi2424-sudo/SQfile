@@ -2286,50 +2286,49 @@ def nine_mobile_corporate_duration(call):
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
 #========================================
-# MTN SME 1DAY BLOCK (WITH PAGINATION)
+# MTN SME 1DAY (FIXED PAGINATION)
 #========================================
 
 PLANS_PER_PAGE = 4
-
-def get_mtn_sme_1day(page=0):
-    conn = get_data_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-    SELECT api_id, plan_name, price
-    FROM data_plans
-    WHERE network=%s 
-    AND plan_type=%s 
-    AND duration=%s 
-    AND status=1
-    ORDER BY price ASC
-    """, ("MTN", "SME", "1day"))
-
-    plans = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    start = page * PLANS_PER_PAGE
-    end = start + PLANS_PER_PAGE
-    return plans[start:end], len(plans)
-
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("mtnsme_1d"))
 def handle_mtn_sme_1day(call):
     try:
         parts = call.data.split("_")
-        page = int(parts[1]) if len(parts) > 1 else 0
 
-        plans, total = get_mtn_sme_1day(page)
+        # ===== FIX PAGE =====
+        if len(parts) == 2:
+            page = 0
+        else:
+            page = int(parts[2])
+
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT api_id, plan_name, price
+        FROM data_plans
+        WHERE network=%s 
+        AND plan_type=%s 
+        AND duration=%s 
+        AND status=1
+        ORDER BY price ASC
+        """, ("MTN", "SME", "1day"))
+
+        plans = cur.fetchall()
+
+        start = page * PLANS_PER_PAGE
+        end = start + PLANS_PER_PAGE
+        current = plans[start:end]
 
         kb = InlineKeyboardMarkup(row_width=2)
 
-        if plans:
-            for i in range(0, len(plans), 2):
+        if current:
+            for i in range(0, len(current), 2):
                 row = []
                 for j in range(2):
-                    if i + j < len(plans):
-                        api_id, name, price = plans[i + j]
+                    if i + j < len(current):
+                        api_id, name, price = current[i + j]
                         text = f"{name}\n₦{price/100:.2f}"
                         row.append(
                             InlineKeyboardButton(
@@ -2342,22 +2341,21 @@ def handle_mtn_sme_1day(call):
             kb.add(InlineKeyboardButton("❌ Babu data", callback_data="noop"))
 
         # ===== NAVIGATION =====
-        nav_buttons = []
+        nav = []
 
         if page > 0:
-            nav_buttons.append(
+            nav.append(
                 InlineKeyboardButton("⏪ Previous", callback_data=f"mtnsme_1d_{page-1}")
             )
 
-        if (page + 1) * PLANS_PER_PAGE < total:
-            nav_buttons.append(
+        if end < len(plans):
+            nav.append(
                 InlineKeyboardButton("More ▶", callback_data=f"mtnsme_1d_{page+1}")
             )
 
-        if nav_buttons:
-            kb.row(*nav_buttons)
+        if nav:
+            kb.row(*nav)
 
-        # ===== BACK BUTTON =====
         kb.row(
             InlineKeyboardButton("◀ Back", callback_data="mtnsme")
         )
@@ -2371,15 +2369,130 @@ Zaɓi plan ɗin da kake so 👇"""
 
         bot.edit_message_text(
             text,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
+            call.message.chat.id,
+            call.message.message_id,
             reply_markup=kb,
             parse_mode="Markdown"
         )
 
+        cur.close()
+        conn.close()
+
     except Exception as e:
         print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
+
+
+#========================================
+# ADD DATA PLAN (ADMIN COMMAND)
+#========================================
+
+
+@bot.message_handler(commands=['adddata'])
+def add_data_plan(message):
+
+    # ===== ADMIN ONLY (SILENT BLOCK) =====
+    if message.from_user.id != ADMIN_ID:
+        return  # 👈 bot zaiyi shiru gaba daya
+
+    try:
+        text = message.text.replace("/adddata", "").strip()
+
+        if not text:
+            bot.reply_to(message,
+"""❌ Format ba daidai ba
+
+Misali:
+/adddata
+MTN sme
+460mb 1day id13
+price 357
+""")
+            return
+
+        lines = text.split("\n")
+
+        if len(lines) < 3:
+            bot.reply_to(message, "❌ Ka cika duk bayanai (network, plan, price)")
+            return
+
+        # ===== LINE 1 =====
+        first = lines[0].strip().split()
+        if len(first) < 2:
+            bot.reply_to(message, "❌ Ka rubuta network da plan type daidai")
+            return
+
+        network = first[0].upper()
+        plan_type = first[1].upper()
+
+        # ===== LINE 2 =====
+        second = lines[1].lower().split()
+
+        if len(second) < 3:
+            bot.reply_to(message, "❌ Ka rubuta plan info daidai")
+            return
+
+        plan_name = second[0].upper()     # 460MB
+        duration = second[1]              # 1day
+
+        # ===== FIND API ID =====
+        api_id = None
+        for word in second:
+            if word.startswith("id"):
+                try:
+                    api_id = int(word.replace("id", ""))
+                except:
+                    pass
+
+        if not api_id:
+            bot.reply_to(message, "❌ API ID bai samu ba")
+            return
+
+        # ===== LINE 3 =====
+        third = lines[2].lower().split()
+
+        if "price" not in third:
+            bot.reply_to(message, "❌ Ka saka price daidai")
+            return
+
+        price_index = third.index("price")
+
+        try:
+            price_naira = float(third[price_index + 1])
+            price = int(price_naira * 100)  # kobo
+        except:
+            bot.reply_to(message, "❌ Price ba daidai ba")
+            return
+
+        # ===== INSERT INTO DB =====
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        INSERT INTO data_plans 
+        (api_id, network, plan_type, plan_name, duration, price)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (api_id) DO NOTHING
+        """, (api_id, network, plan_type, plan_name, duration, price))
+
+        cur.close()
+        conn.close()
+
+        # ===== SUCCESS =====
+        bot.reply_to(message,
+f"""✅ An saka data cikin DB
+
+📶 Network: {network}
+🏷 Type: {plan_type}
+📦 Plan: {plan_name}
+⏳ Duration: {duration}
+💰 Price: ₦{price_naira:.2f}
+🆔 API ID: {api_id}
+""")
+
+    except Exception as e:
+        print("ADD DATA ERROR:", e)
+        bot.reply_to(message, "⚠️ Error yayin saka data")
 
 
 # ================= ADMIN REMOVE MONEY FROM WALLET =================
