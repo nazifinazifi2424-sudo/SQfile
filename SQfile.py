@@ -2464,7 +2464,6 @@ Zaɓi plan ɗin da kake so 👇"""
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
 
-
 #========================================
 # HANDLE BUY DATA (MEMORY + WALLET + STATUS CHECK)
 #========================================
@@ -2529,11 +2528,11 @@ def handle_buy_data(call):
         w_cur.close()
         w_conn.close()
 
-        # ❌ NOT ENOUGH BALANCE
-        if balance < price:
+        # ❌ NOT ENOUGH BALANCE (FIXED)
+        if (balance * 100) < price:
             bot.answer_callback_query(
                 call.id,
-                f"❌ Baka da isasshen kudi\nBalance: ₦{balance/100:.2f}",
+                f"❌ Baka da isasshen kudi\nBalance: ₦{balance:.2f}",
                 show_alert=True
             )
             return
@@ -2554,11 +2553,11 @@ def handle_buy_data(call):
         }
 
         # =========================
-        # ASK FOR NUMBER
+        # ASK FOR NUMBER (UPDATED)
         # =========================
         bot.send_message(
             call.message.chat.id,
-            f"""📲 *Shigar da lambar da za a tura data*
+            f"""📲 *Shigar da lambar {network} ɗinka*
 
 Misali:
 `080xxxxxxxx`
