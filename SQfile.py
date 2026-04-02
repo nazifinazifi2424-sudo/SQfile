@@ -2285,6 +2285,102 @@ def nine_mobile_corporate_duration(call):
 
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
+#========================================
+# MTN SME 1DAY BLOCK (WITH PAGINATION)
+#========================================
+
+PLANS_PER_PAGE = 4
+
+def get_mtn_sme_1day(page=0):
+    conn = get_data_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT api_id, plan_name, price
+    FROM data_plans
+    WHERE network=%s 
+    AND plan_type=%s 
+    AND duration=%s 
+    AND status=1
+    ORDER BY price ASC
+    """, ("MTN", "SME", "1day"))
+
+    plans = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    start = page * PLANS_PER_PAGE
+    end = start + PLANS_PER_PAGE
+    return plans[start:end], len(plans)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mtnsme_1d"))
+def handle_mtn_sme_1day(call):
+    try:
+        parts = call.data.split("_")
+        page = int(parts[1]) if len(parts) > 1 else 0
+
+        plans, total = get_mtn_sme_1day(page)
+
+        kb = InlineKeyboardMarkup(row_width=2)
+
+        if plans:
+            for i in range(0, len(plans), 2):
+                row = []
+                for j in range(2):
+                    if i + j < len(plans):
+                        api_id, name, price = plans[i + j]
+                        text = f"{name}\n₦{price/100:.2f}"
+                        row.append(
+                            InlineKeyboardButton(
+                                text,
+                                callback_data=f"buydata_{api_id}"
+                            )
+                        )
+                kb.row(*row)
+        else:
+            kb.add(InlineKeyboardButton("❌ Babu data", callback_data="noop"))
+
+        # ===== NAVIGATION =====
+        nav_buttons = []
+
+        if page > 0:
+            nav_buttons.append(
+                InlineKeyboardButton("⏪ Previous", callback_data=f"mtnsme_1d_{page-1}")
+            )
+
+        if (page + 1) * PLANS_PER_PAGE < total:
+            nav_buttons.append(
+                InlineKeyboardButton("More ▶", callback_data=f"mtnsme_1d_{page+1}")
+            )
+
+        if nav_buttons:
+            kb.row(*nav_buttons)
+
+        # ===== BACK BUTTON =====
+        kb.row(
+            InlineKeyboardButton("◀ Back", callback_data="mtnsme")
+        )
+
+        text = """📡 *MTN SME - 1DAY*
+
+Wannan data yana expire cikin awa 24  
+This data is valid for 24 hours  
+
+Zaɓi plan ɗin da kake so 👇"""
+
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        print("ERROR:", e)
+        bot.answer_callback_query(call.id, "⚠️ Error loading data")
+
 
 # ================= ADMIN REMOVE MONEY FROM WALLET =================
 @bot.message_handler(commands=["rage"])
