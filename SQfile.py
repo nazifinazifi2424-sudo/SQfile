@@ -2466,6 +2466,7 @@ Zaɓi plan ɗin da kake so 👇"""
 
 
 
+
 import uuid
 import threading
 import time
@@ -2475,7 +2476,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 user_data_session = {}
 
 #========================================
-# HANDLE BUY DATA (WITH COUNTDOWN)
+# HANDLE BUY DATA (COUNTDOWN + REVERSE)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
@@ -2484,7 +2485,9 @@ def handle_buy_data(call):
         api_id = int(call.data.split("_")[1])
 
         # ===== CLEAR OLD SESSION =====
-        user_data_session.pop(user_id, None)
+        if user_id in user_data_session:
+            user_data_session[user_id]["active"] = False
+            del user_data_session[user_id]
 
         # ===== GET PLAN =====
         conn = get_data_conn()
@@ -2545,7 +2548,7 @@ def handle_buy_data(call):
             "plan_name": plan_name,
             "duration": duration,
             "amount": price,
-            "active": True   # 👈 domin timer ya san yana nan
+            "active": True
         }
 
         chat_id = call.message.chat.id
@@ -2555,11 +2558,10 @@ def handle_buy_data(call):
         def countdown():
             for sec in range(60, -1, -1):
 
-                # idan user ya fita (reverse ko an goge memory)
-                if user_id not in user_data_session:
-                    return
+                session = user_data_session.get(user_id)
 
-                if not user_data_session[user_id].get("active"):
+                # ===== STOP THREAD =====
+                if not session or not session.get("active"):
                     return
 
                 try:
@@ -2589,12 +2591,14 @@ Misali:
                 time.sleep(1)
 
             # ===== AUTO REVERSE =====
-            if user_id in user_data_session:
-                user_data_session.pop(user_id, None)
+            session = user_data_session.get(user_id)
+
+            if session:
+                session["active"] = False
+                del user_data_session[user_id]
 
                 try:
-                    fake_call = call
-                    select_network(fake_call)
+                    select_network(call)
                 except:
                     pass
 
@@ -2606,15 +2610,17 @@ Misali:
 
 
 #========================================
-# SELECT NETWORK (AUTO CLEAR)
+# SELECT NETWORK (BACK NORMAL)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data == "data")
 def select_network(call):
     try:
         user_id = call.from_user.id
 
-        # ===== CLEAR SESSION =====
-        user_data_session.pop(user_id, None)
+        # ===== STOP TIMER =====
+        if user_id in user_data_session:
+            user_data_session[user_id]["active"] = False
+            del user_data_session[user_id]
 
         text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
 Dan Allah a tabbatar layin da za'a siya data babu bashi."""
@@ -2631,8 +2637,9 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
             InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
         )
 
+        # ===== BACK (NOT REVERSE HERE) =====
         kb.add(
-            InlineKeyboardButton("Reverse", callback_data="back_to_d_&_a")
+            InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
         )
 
         bot.edit_message_text(
@@ -2644,6 +2651,8 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
 
     except Exception as e:
         print("SELECT NETWORK ERROR:", e)
+
+
 
 
 
