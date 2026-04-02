@@ -2466,7 +2466,6 @@ Zaɓi plan ɗin da kake so 👇"""
 
 
 
-
 import uuid
 import threading
 import time
@@ -2476,7 +2475,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 user_data_session = {}
 
 #========================================
-# HANDLE BUY DATA (COUNTDOWN + REVERSE)
+# HANDLE BUY DATA (WITH SAFE COUNTDOWN)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
@@ -2485,9 +2484,7 @@ def handle_buy_data(call):
         api_id = int(call.data.split("_")[1])
 
         # ===== CLEAR OLD SESSION =====
-        if user_id in user_data_session:
-            user_data_session[user_id]["active"] = False
-            del user_data_session[user_id]
+        user_data_session.pop(user_id, None)
 
         # ===== GET PLAN =====
         conn = get_data_conn()
@@ -2537,14 +2534,14 @@ def handle_buy_data(call):
             )
             return
 
-        # ===== SAVE SESSION =====
-        order_id = str(uuid.uuid4())
+        # ===== UNIQUE TOKEN (VERY IMPORTANT) =====
+        token = str(uuid.uuid4())
 
+        # ===== SAVE SESSION =====
         user_data_session[user_id] = {
-            "order_id": order_id,
+            "token": token,
             "api_id": api_id,
             "network": network,
-            "plan_type": plan_type,
             "plan_name": plan_name,
             "duration": duration,
             "amount": price,
@@ -2555,13 +2552,17 @@ def handle_buy_data(call):
         message_id = call.message.message_id
 
         # ===== COUNTDOWN THREAD =====
-        def countdown():
+        def countdown(local_token):
             for sec in range(60, -1, -1):
 
                 session = user_data_session.get(user_id)
 
-                # ===== STOP THREAD =====
-                if not session or not session.get("active"):
+                # ❌ STOP CONDITIONS (IMPORTANT FIX)
+                if not session:
+                    return
+                if session.get("token") != local_token:
+                    return
+                if not session.get("active"):
                     return
 
                 try:
@@ -2592,17 +2593,15 @@ Misali:
 
             # ===== AUTO REVERSE =====
             session = user_data_session.get(user_id)
-
-            if session:
-                session["active"] = False
-                del user_data_session[user_id]
+            if session and session.get("token") == local_token:
+                user_data_session.pop(user_id, None)
 
                 try:
                     select_network(call)
                 except:
                     pass
 
-        threading.Thread(target=countdown).start()
+        threading.Thread(target=countdown, args=(token,), daemon=True).start()
 
     except Exception as e:
         print("BUY DATA ERROR:", e)
@@ -2610,17 +2609,19 @@ Misali:
 
 
 #========================================
-# SELECT NETWORK (BACK NORMAL)
+# SELECT NETWORK (AUTO CLEAR + STOP TIMER)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data == "data")
 def select_network(call):
     try:
         user_id = call.from_user.id
 
-        # ===== STOP TIMER =====
-        if user_id in user_data_session:
-            user_data_session[user_id]["active"] = False
-            del user_data_session[user_id]
+        # ===== STOP TIMER + CLEAR SESSION =====
+        session = user_data_session.get(user_id)
+        if session:
+            session["active"] = False
+
+        user_data_session.pop(user_id, None)
 
         text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
 Dan Allah a tabbatar layin da za'a siya data babu bashi."""
@@ -2637,9 +2638,8 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
             InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
         )
 
-        # ===== BACK (NOT REVERSE HERE) =====
         kb.add(
-            InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
+            InlineKeyboardButton("⬅ Back", callback_data="back_to_d_&_a")
         )
 
         bot.edit_message_text(
@@ -2651,9 +2651,6 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
 
     except Exception as e:
         print("SELECT NETWORK ERROR:", e)
-
-
-
 
 
 
