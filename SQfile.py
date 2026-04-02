@@ -59,6 +59,34 @@ wallet_conn.autocommit = True
 wallet_cur = wallet_conn.cursor()
 
 
+# ======================
+# DATA DATABASE CONNECTION
+# ======================
+DATA_DATABASE_URL = os.environ.get("DATA_DATABASE_URL")
+
+if not DATA_DATABASE_URL:
+    raise RuntimeError("DATA_DATABASE_URL is not set")
+
+def get_data_conn():
+    try:
+        c = psycopg2.connect(
+            DATA_DATABASE_URL,
+            connect_timeout=5,
+            sslmode="require"
+        )
+        c.autocommit = True
+        return c
+    except Exception as e:
+        print("❌ DATA DB CONNECT ERROR:", e)
+        return None
+
+
+# GLOBAL (for table creation)
+data_conn = psycopg2.connect(DATA_DATABASE_URL)
+data_conn.autocommit = True
+data_cur = data_conn.cursor()
+
+
 # AUTO DB FIX: ENSURE invite_link COLUMN
 # ==========================================
 def ensure_vip_invite_column():
