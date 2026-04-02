@@ -1949,24 +1949,42 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
         reply_markup=kb
     )
 
-# ===== MTN =====
+
+
+#========================================
+# MTN TYPES (FULL WITH ALL BUTTONS)
+#========================================
 @bot.callback_query_handler(func=lambda call: call.data == "mtn")
 def mtn_types(call):
     text = "🛜 MTN - Zaɓi nau'in data:"
 
     kb = InlineKeyboardMarkup()
 
+    # ===== ROW 1 =====
     kb.row(
         InlineKeyboardButton("SME", callback_data="mtnsme"),
         InlineKeyboardButton("Gifting", callback_data="mtngifting")
     )
 
+    # ===== ROW 2 =====
+    kb.row(
+        InlineKeyboardButton("SME2", callback_data="mtnsme2"),
+        InlineKeyboardButton("Data Share", callback_data="mtndatashare")
+    )
+
+    # ===== ROW 3 =====
     kb.add(
         InlineKeyboardButton("Corporate", callback_data="mtncorporate")
     )
 
+    # ===== ROW 4 =====
     kb.add(
-        InlineKeyboardButton("◀ Back", callback_data="data")
+        InlineKeyboardButton("MTN Awoof", callback_data="mtnawoof")
+    )
+
+    # ===== BACK =====
+    kb.add(
+        InlineKeyboardButton("⬅ Back", callback_data="data")
     )
 
     bot.edit_message_text(
@@ -1975,6 +1993,69 @@ def mtn_types(call):
         call.message.message_id,
         reply_markup=kb
     )
+
+
+#========================================
+# MTN SME2
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "mtnsme2")
+def mtn_sme2_duration(call):
+    text = "🛜 MTN SME2 - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtnsme2_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtnsme2_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtnsme2_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtnsme2_30d")
+    )
+    kb.add(InlineKeyboardButton("⬅ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+#========================================
+# MTN DATA SHARE
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "mtndatashare")
+def mtn_datashare_duration(call):
+    text = "🛜 MTN Data Share - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtndshare_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtndshare_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtndshare_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtndshare_30d")
+    )
+    kb.add(InlineKeyboardButton("⬅ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+#========================================
+# MTN AWOOF
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "mtnawoof")
+def mtn_awoof_duration(call):
+    text = "🛜 MTN Awoof - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtnawoof_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtnawoof_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtnawoof_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtnawoof_30d")
+    )
+    kb.add(InlineKeyboardButton("⬅ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
 
 # ===== AIRTEL =====
