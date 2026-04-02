@@ -456,6 +456,50 @@ ON wallet_withdrawals(user_id)
 
 
 # =========================
+# DATA DATABASE TABLES (PRO VERSION)
+# =========================
+
+data_cur.execute("""
+CREATE TABLE IF NOT EXISTS data_plans (
+    id SERIAL PRIMARY KEY,
+
+    api_id BIGINT UNIQUE,              -- API plan ID
+
+    network VARCHAR(20) NOT NULL,      -- MTN, GLO, AIRTEL, 9MOBILE
+    plan_type VARCHAR(50) NOT NULL,    -- SME, SME2, AWOOF, SPECIAL...
+
+    plan_name VARCHAR(50) NOT NULL,    -- 1GB, 460MB...
+    plan_desc TEXT,                    -- full description (optional)
+
+    duration VARCHAR(50) NOT NULL,     -- 1day, 7days, 30days
+
+    price BIGINT NOT NULL,             -- use kobo (e.g 30000 = ₦300)
+
+    status INTEGER DEFAULT 1,          -- 1 = ON, 0 = OFF
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# ===== INDEX domin saurin query =====
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_data_network 
+ON data_plans(network)
+""")
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_data_type 
+ON data_plans(plan_type)
+""")
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_data_status 
+ON data_plans(status)
+""")
+
+
+# =========================
 # DATABASE TABLES (SAFE)
 # =========================
 
