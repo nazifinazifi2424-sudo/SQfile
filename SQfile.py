@@ -2463,11 +2463,123 @@ Zaɓi plan ɗin da kake so 👇"""
         print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
+
+
+#========================================
+# HANDLE BUY DATA (MEMORY + WALLET + STATUS CHECK)
+#========================================
+
+import uuid
+
+# TEMP STORAGE
+user_data_session = {}
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
+def handle_buy_data(call):
+    try:
+        user_id = call.from_user.id
+        api_id = int(call.data.split("_")[1])
+
+        # =========================
+        # GET PLAN FROM DB (INCLUDING STATUS)
+        # =========================
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT network, plan_type, plan_name, duration, price, status
+        FROM data_plans
+        WHERE api_id=%s
+        """, (api_id,))
+
+        plan = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not plan:
+            bot.answer_callback_query(call.id, "❌ Plan not found", show_alert=True)
+            return
+
+        network, plan_type, plan_name, duration, price, status = plan
+
+        # =========================
+        # ❌ STATUS OFF CHECK
+        # =========================
+        if status == 0:
+            bot.answer_callback_query(
+                call.id,
+                "⚠️ Wannan data akwai matsala yanzu\n\nNot available at the moment",
+                show_alert=True
+            )
+            return
+
+        # =========================
+        # CHECK WALLET
+        # =========================
+        w_conn = get_wallet_conn()
+        w_cur = w_conn.cursor()
+
+        w_cur.execute("""
+        SELECT balance FROM wallet_balance WHERE user_id=%s
+        """, (user_id,))
+
+        result = w_cur.fetchone()
+        balance = result[0] if result else 0
+
+        w_cur.close()
+        w_conn.close()
+
+        # ❌ NOT ENOUGH BALANCE
+        if balance < price:
+            bot.answer_callback_query(
+                call.id,
+                f"❌ Baka da isasshen kudi\nBalance: ₦{balance/100:.2f}",
+                show_alert=True
+            )
+            return
+
+        # =========================
+        # SAVE TO MEMORY ONLY (NO DB YET)
+        # =========================
+        order_id = str(uuid.uuid4())
+
+        user_data_session[user_id] = {
+            "order_id": order_id,
+            "api_id": api_id,
+            "network": network,
+            "plan_type": plan_type,
+            "plan_name": plan_name,
+            "duration": duration,
+            "amount": price
+        }
+
+        # =========================
+        # ASK FOR NUMBER
+        # =========================
+        bot.send_message(
+            call.message.chat.id,
+            f"""📲 *Shigar da lambar da za a tura data*
+
+Misali:
+`080xxxxxxxx`
+
+📶 {network}
+📦 {plan_name}
+⏳ {duration}
+💰 ₦{price/100:.2f}
+""",
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        print("BUY DATA ERROR:", e)
+        bot.answer_callback_query(call.id, "⚠️ Error", show_alert=True)
+
+
 #========================================
 # ADD DATA PLAN (ADMIN COMMAND) - SECURE
 #========================================
 
-ADMIN_ID = 123456789  # SAKA TELEGRAM ID NAKA
 
 @bot.message_handler(commands=['adddata'])
 def add_data_plan(message):
