@@ -2680,7 +2680,107 @@ def customer_pagination(c):
         pass
 
 
+#========================================
+# ADD DATA PLAN (ADMIN COMMAND)
+#========================================
 
+@bot.message_handler(commands=['adddata'])
+def add_data_plan(message):
+    try:
+        text = message.text.replace("/adddata", "").strip()
+
+        if not text:
+            bot.reply_to(message,
+"""❌ Format ba daidai ba
+
+Misali:
+/adddata
+MTN sme
+460mb 1day id13
+price 357
+""")
+            return
+
+        lines = text.split("\n")
+
+        if len(lines) < 3:
+            bot.reply_to(message, "❌ Ka cika duk bayanai (network, plan, price)")
+            return
+
+        # ===== LINE 1 =====
+        first = lines[0].strip().split()
+        if len(first) < 2:
+            bot.reply_to(message, "❌ Ka rubuta network da plan type daidai")
+            return
+
+        network = first[0].upper()
+        plan_type = first[1].upper()
+
+        # ===== LINE 2 =====
+        second = lines[1].lower().split()
+
+        if len(second) < 3:
+            bot.reply_to(message, "❌ Ka rubuta plan info daidai")
+            return
+
+        plan_name = second[0].upper()     # 460MB
+        duration = second[1]              # 1day
+
+        # find api_id
+        api_id = None
+        for word in second:
+            if word.startswith("id"):
+                api_id = int(word.replace("id", ""))
+        
+        if not api_id:
+            bot.reply_to(message, "❌ API ID bai samu ba")
+            return
+
+        # ===== LINE 3 =====
+        third = lines[2].lower().split()
+
+        if "price" not in third:
+            bot.reply_to(message, "❌ Ka saka price daidai")
+            return
+
+        price_index = third.index("price")
+
+        try:
+            price_naira = float(third[price_index + 1])
+            price = int(price_naira * 100)  # convert to kobo
+        except:
+            bot.reply_to(message, "❌ Price ba daidai ba")
+            return
+
+        # ===== INSERT INTO DB =====
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        INSERT INTO data_plans 
+        (api_id, network, plan_type, plan_name, duration, price)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (api_id) DO NOTHING
+        """, (api_id, network, plan_type, plan_name, duration, price))
+
+        cur.close()
+        conn.close()
+
+        # ===== SUCCESS MESSAGE =====
+        bot.reply_to(message,
+f"""✅ An saka data cikin DB
+
+📶 Network: {network}
+🏷 Type: {plan_type}
+📦 Plan: {plan_name}
+⏳ Duration: {duration}
+💰 Price: ₦{price_naira:.2f}
+🆔 API ID: {api_id}
+""")
+
+    except Exception as e:
+        print("ADD DATA ERROR:", e)
+        bot.reply_to(message, "⚠️ Error yayin saka data")
 # ================= ADMIN SALLAH GIFT =================
 @bot.message_handler(commands=["sallah"])
 def send_sallah_gift(msg):
