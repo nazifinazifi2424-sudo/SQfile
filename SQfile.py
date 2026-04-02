@@ -2382,18 +2382,18 @@ Zaɓi plan ɗin da kake so 👇"""
         print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
-
 #========================================
-# ADD DATA PLAN (ADMIN COMMAND)
+# ADD DATA PLAN (ADMIN COMMAND) - SECURE
 #========================================
 
+ADMIN_ID = 123456789  # SAKA TELEGRAM ID NAKA
 
 @bot.message_handler(commands=['adddata'])
 def add_data_plan(message):
 
-    # ===== ADMIN ONLY (SILENT BLOCK) =====
+    # ===== ADMIN ONLY (SILENT) =====
     if message.from_user.id != ADMIN_ID:
-        return  # 👈 bot zaiyi shiru gaba daya
+        return
 
     try:
         text = message.text.replace("/adddata", "").strip()
@@ -2413,27 +2413,32 @@ price 357
         lines = text.split("\n")
 
         if len(lines) < 3:
-            bot.reply_to(message, "❌ Ka cika duk bayanai (network, plan, price)")
+            bot.reply_to(message, "❌ Ka cika duk bayanai")
             return
 
         # ===== LINE 1 =====
         first = lines[0].strip().split()
+
         if len(first) < 2:
-            bot.reply_to(message, "❌ Ka rubuta network da plan type daidai")
+            bot.reply_to(message, "❌ Network da type ba daidai ba")
             return
 
         network = first[0].upper()
         plan_type = first[1].upper()
 
+        # ===== HANDLE SHORT NAME =====
+        if plan_type == "COP":
+            plan_type = "CORPORATE"
+
         # ===== LINE 2 =====
         second = lines[1].lower().split()
 
         if len(second) < 3:
-            bot.reply_to(message, "❌ Ka rubuta plan info daidai")
+            bot.reply_to(message, "❌ Plan info ba daidai ba")
             return
 
-        plan_name = second[0].upper()     # 460MB
-        duration = second[1]              # 1day
+        plan_name = second[0].upper()   # 460MB
+        duration = second[1]            # 1day
 
         # ===== FIND API ID =====
         api_id = None
@@ -2452,27 +2457,54 @@ price 357
         third = lines[2].lower().split()
 
         if "price" not in third:
-            bot.reply_to(message, "❌ Ka saka price daidai")
-            return
-
-        price_index = third.index("price")
-
-        try:
-            price_naira = float(third[price_index + 1])
-            price = int(price_naira * 100)  # kobo
-        except:
             bot.reply_to(message, "❌ Price ba daidai ba")
             return
 
-        # ===== INSERT INTO DB =====
+        try:
+            price_naira = float(third[third.index("price") + 1])
+            price = int(price_naira * 100)
+        except:
+            bot.reply_to(message, "❌ Price error")
+            return
+
+        # ===== DB =====
         conn = get_data_conn()
         cur = conn.cursor()
 
+        # 🔒 CHECK DUPLICATE (SMART)
+        cur.execute("""
+        SELECT plan_name, duration 
+        FROM data_plans
+        WHERE api_id=%s 
+        AND network=%s 
+        AND plan_type=%s
+        """, (api_id, network, plan_type))
+
+        existing = cur.fetchone()
+
+        if existing:
+            old_plan, old_duration = existing
+
+            bot.reply_to(message,
+f"""⚠️ DATA YA RIGA YA WUCE
+
+📶 {network} {plan_type}
+📦 {old_plan}
+⏳ {old_duration}
+🆔 ID: {api_id}
+
+❌ Ba za a sake saka shi ba
+""")
+
+            cur.close()
+            conn.close()
+            return
+
+        # ===== INSERT =====
         cur.execute("""
         INSERT INTO data_plans 
         (api_id, network, plan_type, plan_name, duration, price)
         VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (api_id) DO NOTHING
         """, (api_id, network, plan_type, plan_name, duration, price))
 
         cur.close()
@@ -2480,19 +2512,21 @@ price 357
 
         # ===== SUCCESS =====
         bot.reply_to(message,
-f"""✅ An saka data cikin DB
+f"""✅ AN SAKA DATA
 
-📶 Network: {network}
-🏷 Type: {plan_type}
-📦 Plan: {plan_name}
-⏳ Duration: {duration}
-💰 Price: ₦{price_naira:.2f}
-🆔 API ID: {api_id}
+📶 {network}
+🏷 {plan_type}
+📦 {plan_name}
+⏳ {duration}
+💰 ₦{price_naira:.2f}
+🆔 ID: {api_id}
 """)
 
     except Exception as e:
         print("ADD DATA ERROR:", e)
         bot.reply_to(message, "⚠️ Error yayin saka data")
+
+
 
 
 # ================= ADMIN REMOVE MONEY FROM WALLET =================
