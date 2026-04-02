@@ -834,6 +834,7 @@ import hashlib
 ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
+user_data_session = {}
 # --- Admins configuration ---
 ADMINS = [8537505191]
 
@@ -2464,24 +2465,27 @@ Zaɓi plan ɗin da kake so 👇"""
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
 
-#========================================
-# HANDLE BUY DATA (MEMORY + WALLET + STATUS CHECK)
-#========================================
 
 import uuid
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # TEMP STORAGE
 user_data_session = {}
 
+#========================================
+# HANDLE BUY DATA
+#========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
     try:
         user_id = call.from_user.id
         api_id = int(call.data.split("_")[1])
 
-        # =========================
-        # GET PLAN FROM DB (INCLUDING STATUS)
-        # =========================
+        # ===== CLEAR OLD SESSION =====
+        if user_id in user_data_session:
+            del user_data_session[user_id]
+
+        # ===== GET PLAN =====
         conn = get_data_conn()
         cur = conn.cursor()
 
@@ -2501,34 +2505,26 @@ def handle_buy_data(call):
 
         network, plan_type, plan_name, duration, price, status = plan
 
-        # =========================
-        # ❌ STATUS OFF CHECK
-        # =========================
+        # ===== STATUS CHECK =====
         if status == 0:
             bot.answer_callback_query(
                 call.id,
-                "⚠️ Wannan data akwai matsala yanzu\n\nNot available at the moment",
+                "⚠️ Network busy yanzu\nTry later",
                 show_alert=True
             )
             return
 
-        # =========================
-        # CHECK WALLET
-        # =========================
+        # ===== WALLET CHECK =====
         w_conn = get_wallet_conn()
         w_cur = w_conn.cursor()
 
-        w_cur.execute("""
-        SELECT balance FROM wallet_balance WHERE user_id=%s
-        """, (user_id,))
-
+        w_cur.execute("SELECT balance FROM wallet_balance WHERE user_id=%s", (user_id,))
         result = w_cur.fetchone()
         balance = result[0] if result else 0
 
         w_cur.close()
         w_conn.close()
 
-        # ❌ NOT ENOUGH BALANCE (FIXED)
         if (balance * 100) < price:
             bot.answer_callback_query(
                 call.id,
@@ -2537,9 +2533,7 @@ def handle_buy_data(call):
             )
             return
 
-        # =========================
-        # SAVE TO MEMORY ONLY (NO DB YET)
-        # =========================
+        # ===== SAVE SESSION =====
         order_id = str(uuid.uuid4())
 
         user_data_session[user_id] = {
@@ -2552,11 +2546,14 @@ def handle_buy_data(call):
             "amount": price
         }
 
-        # =========================
-        # ASK FOR NUMBER (UPDATED)
-        # =========================
-        bot.send_message(
-            call.message.chat.id,
+        # ===== KEYBOARD =====
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton("⏪ Reverse", callback_data="data")
+        )
+
+        # ===== EDIT MESSAGE =====
+        bot.edit_message_text(
             f"""📲 *Shigar da lambar {network} ɗinka*
 
 Misali:
@@ -2567,12 +2564,60 @@ Misali:
 ⏳ {duration}
 💰 ₦{price/100:.2f}
 """,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb,
             parse_mode="Markdown"
         )
 
     except Exception as e:
         print("BUY DATA ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error", show_alert=True)
+
+
+#========================================
+# SELECT NETWORK (DATA MENU) - UPDATED
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "data")
+def select_network(call):
+    try:
+        user_id = call.from_user.id
+
+        # ===== CLEAR SESSION =====
+        if user_id in user_data_session:
+            del user_data_session[user_id]
+
+        text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
+
+Dan Allah a tabbatar layin da za'a siya data babu bashi.
+"""
+
+        kb = InlineKeyboardMarkup()
+
+        kb.row(
+            InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
+            InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
+        )
+
+        kb.row(
+            InlineKeyboardButton("🛜 Glo", callback_data="glo"),
+            InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
+        )
+
+        kb.add(
+            InlineKeyboardButton("⏪ Reverse", callback_data="back_to_d_&_a")
+        )
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("SELECT NETWORK ERROR:", e)
+
 
 
 #========================================
