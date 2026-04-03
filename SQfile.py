@@ -2464,6 +2464,7 @@ Zaɓi plan ɗin da kake so 👇"""
         print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
+
 import uuid
 import threading
 import time
@@ -2473,7 +2474,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 user_data_session = {}
 
 #========================================
-# HANDLE BUY DATA (COUNTDOWN ONLY)
+# HANDLE BUY DATA (START STAGE)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
@@ -2481,10 +2482,10 @@ def handle_buy_data(call):
         user_id = call.from_user.id
         api_id = int(call.data.split("_")[1])
 
-        # ===== CLEAR OLD SESSION =====
+        # CLEAR OLD SESSION
         user_data_session.pop(user_id, None)
 
-        # ===== GET PLAN =====
+        # GET PLAN
         conn = get_data_conn()
         cur = conn.cursor()
 
@@ -2504,23 +2505,16 @@ def handle_buy_data(call):
 
         network, plan_type, plan_name, duration, price, status = plan
 
-        # ===== STATUS CHECK =====
         if status == 0:
-            bot.answer_callback_query(
-                call.id,
-                "⚠️ Network busy yanzu\nTry later",
-                show_alert=True
-            )
+            bot.answer_callback_query(call.id, "⚠️ Network busy yanzu\nTry later", show_alert=True)
             return
 
-        # ===== WALLET CHECK =====
+        # WALLET CHECK
         w_conn = get_wallet_conn()
         w_cur = w_conn.cursor()
-
         w_cur.execute("SELECT balance FROM wallet_balance WHERE user_id=%s", (user_id,))
         result = w_cur.fetchone()
         balance = result[0] if result else 0
-
         w_cur.close()
         w_conn.close()
 
@@ -2532,7 +2526,7 @@ def handle_buy_data(call):
             )
             return
 
-        # ===== SAVE SESSION =====
+        # SAVE SESSION
         order_id = str(uuid.uuid4())
 
         user_data_session[user_id] = {
@@ -2548,14 +2542,11 @@ def handle_buy_data(call):
         chat_id = call.message.chat.id
         message_id = call.message.message_id
 
-        # ===== COUNTDOWN =====
+        # COUNTDOWN
         def countdown():
             for sec in range(60, -1, -1):
 
                 if user_id not in user_data_session:
-                    return
-
-                if not user_data_session[user_id].get("active"):
                     return
 
                 try:
@@ -2572,6 +2563,7 @@ Misali:
 📦 {plan_name}
 ⏳ {duration}
 💰 ₦{price/100:.2f}
+
 ⚠️ Ka turo lamba kafin lokaci ya fita""",
                         chat_id,
                         message_id,
@@ -2583,7 +2575,7 @@ Misali:
 
                 time.sleep(1)
 
-            # ===== AUTO REVERSE =====
+            # AUTO REVERSE
             if user_id in user_data_session:
                 user_data_session.pop(user_id, None)
                 try:
@@ -2595,61 +2587,69 @@ Misali:
 
     except Exception as e:
         print("BUY DATA ERROR:", e)
-        bot.answer_callback_query(call.id, "⚠️ Error", show_alert=True)
 
 
 #========================================
-# RECEIVE NUMBER
+# HANDLE NUMBER INPUT
 #========================================
 @bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
-def receive_number(message):
+def handle_number(message):
     try:
         user_id = message.from_user.id
-        number = message.text.strip()
+        text = message.text.strip()
 
-        session = user_data_session.get(user_id)
+        data = user_data_session.get(user_id)
 
-        if not session:
+        if not data:
             return
 
-        # ===== STOP TIMER =====
-        session["active"] = False
+        # REMOVE SPACES
+        number = text.replace(" ", "")
 
-        # ===== SAVE NUMBER =====
-        session["number"] = number
+        # VALIDATE DIGITS
+        if not number.isdigit():
+            bot.send_message(message.chat.id, "❌ Lambar ba daidai ba")
+            return
 
-        # ===== EDIT OLD MESSAGE =====
-        try:
-            bot.edit_message_text(
-                "Madallah ✅",
+        length = len(number)
+
+        if length != 11:
+            bot.send_message(
                 message.chat.id,
-                message.message_id - 1
+                f"❌ Lambar ka ba daidai ba\nAdadin lambobi: {length}\nAna bukatar 11"
             )
-        except:
-            pass
+            return
 
-        # ===== CONFIRM UI =====
+        # SAVE NUMBER
+        data["phone"] = number
+
+        # STOP COUNTDOWN
+        data["active"] = False
+
+        # ===== MADALLAH =====
+        bot.send_message(message.chat.id, "Madallah ✅")
+
+        # ===== CONFIRMATION =====
         kb = InlineKeyboardMarkup()
-        kb.add(
+        kb.row(
             InlineKeyboardButton("✅ Confirm", callback_data="confirm_data"),
-            InlineKeyboardButton("✏️ Edit Number", callback_data="edit_number")
+            InlineKeyboardButton("✏ Edit Number", callback_data="edit_number")
         )
         kb.add(
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_data")
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")
         )
 
         bot.send_message(
             message.chat.id,
-f"""📌 *Ka tabbatar wannan lambar ce?*
+f"""Ka tabbatar wannan lambar ce babu kuskure?
 Are you sure this is correct number?
 
 📱 Number: {number}
-📦 Plan: {session['plan_name']}
-⏳ Expire: {session['duration']}
-💰 Amount: ₦{session['amount']/100:.2f}
+📦 Plan: {data['plan_name']}
+⏳ Expire: {data['duration']}
+💰 Amount: ₦{data['amount']/100:.2f}
 """,
-            reply_markup=kb,
-            parse_mode="Markdown"
+            reply_markup=kb
         )
 
     except Exception as e:
@@ -2657,36 +2657,36 @@ Are you sure this is correct number?
 
 
 #========================================
-# CONFIRM DATA
+# CONFIRM ORDER
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data == "confirm_data")
 def confirm_data(call):
     try:
         user_id = call.from_user.id
-        session = user_data_session.get(user_id)
+        data = user_data_session.get(user_id)
 
-        if not session:
+        if not data:
             return
 
-        # ===== INSERT INTO DB =====
         conn = get_data_conn()
         cur = conn.cursor()
 
         cur.execute("""
         INSERT INTO data_orders (
-            order_id, user_id, api_id, network,
-            plan_name, duration, amount, phone, status
+            order_id, user_id, api_id,
+            network, plan_name, duration,
+            phone, amount, status
         )
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending')
         """, (
-            session["order_id"],
+            data["order_id"],
             user_id,
-            session["api_id"],
-            session["network"],
-            session["plan_name"],
-            session["duration"],
-            session["amount"],
-            session["number"]
+            data["api_id"],
+            data["network"],
+            data["plan_name"],
+            data["duration"],
+            data["phone"],
+            data["amount"]
         ))
 
         conn.commit()
@@ -2694,12 +2694,10 @@ def confirm_data(call):
         conn.close()
 
         bot.edit_message_text(
-            "⏳ Ana aikawa... (Processing)",
+            "✅ An karɓi order ɗinka...",
             call.message.chat.id,
             call.message.message_id
         )
-
-        # 👉 nan gaba zaka saka API call
 
         user_data_session.pop(user_id, None)
 
@@ -2712,38 +2710,20 @@ def confirm_data(call):
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data == "edit_number")
 def edit_number(call):
-    try:
-        user_id = call.from_user.id
-        session = user_data_session.get(user_id)
-
-        if not session:
-            return
-
-        session["active"] = True
-
-        bot.edit_message_text(
-            "📲 Sake shigar da sabuwar lamba:",
-            call.message.chat.id,
-            call.message.message_id
-        )
-
-    except Exception as e:
-        print("EDIT ERROR:", e)
+    bot.answer_callback_query(call.id, "✏ Sake turo lamba")
 
 
 #========================================
 # CANCEL ORDER
 #========================================
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_data")
-def cancel_data(call):
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_order")
+def cancel_order(call):
     try:
         user_id = call.from_user.id
         user_data_session.pop(user_id, None)
-
         select_network(call)
-
-    except Exception as e:
-        print("CANCEL ERROR:", e)
+    except:
+        pass
 
 
 #========================================
@@ -2764,22 +2744,19 @@ def select_network(call):
         user_data_session.pop(user_id, None)
 
         text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
-Dan Allah a tabbatar layin da za'a siya data babu bashi."""
+Dan Allah a tabbatar layin babu bashi."""
 
         kb = InlineKeyboardMarkup()
-
         kb.row(
             InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
             InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
         )
-
         kb.row(
             InlineKeyboardButton("🛜 Glo", callback_data="glo"),
             InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
         )
-
         kb.add(
-            InlineKeyboardButton("Reverse", callback_data="back_to_d_&_a")
+            InlineKeyboardButton("◀Back", callback_data="back_to_d_&_a")
         )
 
         bot.edit_message_text(
@@ -2791,6 +2768,9 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
 
     except Exception as e:
         print("SELECT NETWORK ERROR:", e)
+
+
+
 
 
 
