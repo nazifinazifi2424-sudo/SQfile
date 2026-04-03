@@ -2464,6 +2464,8 @@ Zaɓi plan ɗin da kake so 👇"""
         print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
+
+
 import uuid
 import threading
 import time
@@ -2523,16 +2525,16 @@ def handle_buy_data(call):
 
         # ===== TOKEN =====
         token = str(uuid.uuid4())
-
-        user_data_session[user_id] = {
-            "token": token,
-            "active": True
-        }
-
         chat_id = call.message.chat.id
         msg_id = call.message.message_id
 
-        # ===== FIRST MESSAGE (TEXT ONLY ONCE) =====
+        user_data_session[user_id] = {
+            "token": token,
+            "active": True,
+            "msg_id": msg_id   # 🔥 VERY IMPORTANT
+        }
+
+        # ===== FIRST TEXT =====
         bot.edit_message_text(
 f"""📲 Shigar da lambar {network} ɗinka
 Misali:
@@ -2546,18 +2548,21 @@ Misali:
             msg_id
         )
 
-        # ===== COUNTDOWN (ONLY BUTTON EDIT) =====
-        def countdown(local_token):
+        # ===== COUNTDOWN =====
+        def countdown(local_token, local_msg_id):
             for sec in range(60, -1, -1):
 
                 session = user_data_session.get(user_id)
 
+                # 🔥 ALL STOP CONDITIONS
                 if not session:
                     return
                 if session["token"] != local_token:
                     return
                 if not session["active"]:
                     return
+                if session["msg_id"] != local_msg_id:
+                    return   # 🔥 THIS FIXES YOUR BUG
 
                 try:
                     kb = InlineKeyboardMarkup()
@@ -2567,11 +2572,11 @@ Misali:
 
                     bot.edit_message_reply_markup(
                         chat_id,
-                        msg_id,
+                        local_msg_id,
                         reply_markup=kb
                     )
                 except:
-                    pass
+                    return  # 🔥 STOP IF ERROR
 
                 time.sleep(1)
 
@@ -2584,7 +2589,11 @@ Misali:
                 except:
                     pass
 
-        threading.Thread(target=countdown, args=(token,), daemon=True).start()
+        threading.Thread(
+            target=countdown,
+            args=(token, msg_id),
+            daemon=True
+        ).start()
 
     except Exception as e:
         print(e)
@@ -2598,7 +2607,7 @@ def select_network(call):
     try:
         user_id = call.from_user.id
 
-        # STOP TIMER
+        # STOP TIMER COMPLETELY
         session = user_data_session.get(user_id)
         if session:
             session["active"] = False
@@ -2632,49 +2641,6 @@ Tabbatar babu bashi kafin siya"""
         print(e)
 
 
-
-#========================================
-# SELECT NETWORK (DATA MENU) - UPDATED
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data == "data")
-def select_network(call):
-    try:
-        user_id = call.from_user.id
-
-        # ===== CLEAR SESSION =====
-        if user_id in user_data_session:
-            del user_data_session[user_id]
-
-        text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
-
-Dan Allah a tabbatar layin da za'a siya data babu bashi.
-"""
-
-        kb = InlineKeyboardMarkup()
-
-        kb.row(
-            InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
-            InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
-        )
-
-        kb.row(
-            InlineKeyboardButton("🛜 Glo", callback_data="glo"),
-            InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
-        )
-
-        kb.add(
-            InlineKeyboardButton("⏪ Reverse", callback_data="back_to_d_&_a")
-        )
-
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb
-        )
-
-    except Exception as e:
-        print("SELECT NETWORK ERROR:", e)
 
 
 
