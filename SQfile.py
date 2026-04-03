@@ -2796,7 +2796,8 @@ def select_network(call):
         user_data_session.pop(user_id, None)
 
         text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
-Dan Allah a tabbatar layin babu bashi."""
+
+Dan Allah a tabbatar layin da za'a siya data babu bashi."""
 
         kb = InlineKeyboardMarkup()
         kb.row(
@@ -2808,7 +2809,7 @@ Dan Allah a tabbatar layin babu bashi."""
             InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
         )
         kb.add(
-            InlineKeyboardButton("Reverse", callback_data="back_to_d_&_a")
+            InlineKeyboardButton("⬅ Back", callback_data="back_to_d_&_a")
         )
 
         bot.edit_message_text(
@@ -2820,7 +2821,6 @@ Dan Allah a tabbatar layin babu bashi."""
 
     except Exception as e:
         print("SELECT NETWORK ERROR:", e)
-
 
 
 
