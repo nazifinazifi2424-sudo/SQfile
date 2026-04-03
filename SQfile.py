@@ -2617,10 +2617,6 @@ Amount: ₦{data['amount']/100:.2f}
 
     threading.Thread(target=run).start()
 
-
-#========================================
-# HANDLE NUMBER INPUT
-#========================================
 @bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
 def handle_number(message):
     try:
@@ -2633,42 +2629,62 @@ def handle_number(message):
 
         number = text.replace(" ", "")
 
-        # STOP OLD COUNTDOWN
+        # ⛔ STOP OLD COUNTDOWN
         data["active"] = False
 
+        # =========================
+        # ❌ NOT DIGIT
+        # =========================
         if not number.isdigit():
-            bot.send_message(message.chat.id, "❌ Lambar ba daidai ba")
+            msg = bot.send_message(message.chat.id, "❌ An samu kuskure a lambar")
+            
+            # 🔥 START NEW COUNTDOWN ON THIS MESSAGE
             data["active"] = True
+            data["message_id"] = msg.message_id
             start_countdown(user_id)
             return
 
         length = len(number)
 
+        # =========================
+        # ❌ TOO SHORT
+        # =========================
         if length < 11:
-            bot.send_message(
+            msg = bot.send_message(
                 message.chat.id,
-                f"""❌ Karma duba lambarka da kyau
+                f"""❌ An samu kuskure
+Karma duba lambarka da kyau
 Guda {length} ka bayar
 Bata cika ba, ana jiranka ka cikakkiya"""
             )
+
             data["active"] = True
+            data["message_id"] = msg.message_id
             start_countdown(user_id)
             return
 
+        # =========================
+        # ❌ TOO LONG
+        # =========================
         if length > 11:
-            bot.send_message(
+            msg = bot.send_message(
                 message.chat.id,
-                f"""❌ Ka binciki lambar da ka bayar
+                f"""❌ An samu kuskure
+Ka binciki lambar da ka bayar
 Ta wuce adadin 11
 
 Misali:
 090xxxxxx79"""
             )
+
             data["active"] = True
+            data["message_id"] = msg.message_id
             start_countdown(user_id)
             return
 
-        # VALID
+        # =========================
+        # ✅ VALID NUMBER
+        # =========================
         data["phone"] = number
 
         bot.send_message(message.chat.id, "Madallah ✅")
@@ -2698,7 +2714,6 @@ Amount: ₦{data['amount']/100:.2f}
 
     except Exception as e:
         print("NUMBER ERROR:", e)
-
 
 #========================================
 # CONFIRM ORDER
@@ -2749,12 +2764,26 @@ def confirm_data(call):
         print("CONFIRM ERROR:", e)
 
 
-#========================================
-# EDIT NUMBER
-#========================================
 @bot.callback_query_handler(func=lambda call: call.data == "edit_number")
 def edit_number(call):
-    bot.answer_callback_query(call.id, "✏ Sake turo lamba")
+    try:
+        user_id = call.from_user.id
+        data = user_data_session.get(user_id)
+
+        if not data:
+            return
+
+        bot.answer_callback_query(call.id, "✏ Sake turo lamba")
+
+        # 🔥 RESET COUNTDOWN
+        data["active"] = True
+        data["message_id"] = call.message.message_id
+
+        start_countdown(user_id)
+
+    except Exception as e:
+        print("EDIT ERROR:", e)
+
 
 
 #========================================
