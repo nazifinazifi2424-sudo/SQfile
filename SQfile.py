@@ -2055,11 +2055,6 @@ def dynamic_network_buttons(call):
         print("TYPE ERROR:", e)
 
 # =========================  
-# ADMIN CONFIG  
-# =========================  
-ADMIN_ID = 123456789  # saka naka  
-  
-# =========================  
 # ADD BUTTON (FINAL SECURE SYSTEM)  
 # =========================  
 @bot.message_handler(commands=['addbutton'])  
