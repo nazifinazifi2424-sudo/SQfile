@@ -499,21 +499,22 @@ ON data_plans(status)
 """)
 
 # =========================
-# BUTTONS CONTROL TABLE (SAFE + PRO)
+# BUTTON TABLE (NEW CLEAN SYSTEM)
 # =========================
 
 data_cur.execute("""
-CREATE TABLE IF NOT EXISTS data_buttons (
+CREATE TABLE IF NOT EXISTS button_table (
     id SERIAL PRIMARY KEY,
 
-    name TEXT NOT NULL,              -- SME, CORPORATE, GIFTING (no limit)
-    network TEXT NOT NULL,           -- MTN, GLO, AIRTEL, 9MOBILE
+    name TEXT NOT NULL,          -- SME, 1Day, Corporate
+    network TEXT NOT NULL,       -- MTN, GLO, AIRTEL, 9MOBILE
 
-    callback TEXT NOT NULL,          -- sme, corporate, gifting
+    callback TEXT NOT NULL,      -- sme, 1d, cor
 
-    position INTEGER DEFAULT 1,      -- sorting
+    category TEXT NOT NULL,      -- type / expire
 
-    status INTEGER DEFAULT 1,        -- 1 = show, 0 = hidden
+    position INTEGER DEFAULT 1,
+    status INTEGER DEFAULT 1,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -521,14 +522,22 @@ CREATE TABLE IF NOT EXISTS data_buttons (
 
 # ===== INDEX =====
 data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_network 
-ON data_buttons(network)
+CREATE INDEX IF NOT EXISTS idx_btn_table_network 
+ON button_table(network)
 """)
 
 data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_status 
-ON data_buttons(status)
+CREATE INDEX IF NOT EXISTS idx_btn_table_category 
+ON button_table(category)
 """)
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_btn_table_status 
+ON button_table(status)
+""")
+
+
+
 # =========================
 # DATABASE TABLES (SAFE)
 # =========================
@@ -1981,8 +1990,79 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
     )
 
 
+
+
+
+
+#========================================
+# DYNAMIC NETWORK → SHOW TYPE BUTTONS
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data in ["mtn", "glo", "airtel", "9mobile"])
+def dynamic_network_buttons(call):
+    try:
+        network = call.data.upper()   # MTN, GLO...
+
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        # ===== GET TYPE BUTTONS =====
+        cur.execute("""
+        SELECT name, callback FROM button_table
+        WHERE LOWER(network)=LOWER(%s)
+        AND category='type'
+        AND status=1
+        ORDER BY position ASC
+        """, (network,))
+
+        buttons = cur.fetchall()
+
+        kb = InlineKeyboardMarkup(row_width=2)
+
+        if buttons:
+            for i in range(0, len(buttons), 2):
+                row = []
+                for j in range(2):
+                    if i + j < len(buttons):
+                        name, callback = buttons[i + j]
+
+                        # 🔥 IMPORTANT: encode network + callback
+                        cb = f"type_{network}_{callback}"
+
+                        row.append(
+                            InlineKeyboardButton(name, callback_data=cb)
+                        )
+                kb.row(*row)
+        else:
+            kb.add(InlineKeyboardButton("❌ Babu nau'i", callback_data="noop"))
+
+        kb.add(
+            InlineKeyboardButton("⬅ Back", callback_data="data")
+        )
+
+        text = f"🛜 {network} - Zaɓi nau'in data:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print("TYPE ERROR:", e)
+
+
+
+
+
 # =========================
-# ADD BUTTON (MULTI INSERT + PROTECT)
+# ADMIN CONFIG
+# =========================
+# =========================
+# ADD BUTTON (FINAL SYSTEM)
 # =========================
 @bot.message_handler(commands=['addbutton'])
 def add_button_handler(message):
@@ -1999,27 +2079,43 @@ def add_button_handler(message):
 
         lines = text.split("\n")
 
-        conn = get_data_conn()
-        cur = conn.cursor()
-
+        category = None
         added = []
         skipped = []
 
-        for line in lines:
-            parts = line.strip().split()
+        conn = get_data_conn()
+        cur = conn.cursor()
 
-            # ❌ INVALID FORMAT
+        for line in lines:
+            line = line.strip()
+
+            # ===== DETECT CATEGORY =====
+            if line.lower() == "+nau'i":
+                category = "type"
+                continue
+
+            elif line.lower() == "+expire":
+                category = "expire"
+                continue
+
+            # ❌ idan ba'a saka category ba
+            if not category:
+                skipped.append(f"❌ {line} (ba'a saka +nau'i ko +expire ba)")
+                continue
+
+            parts = line.split()
+
             if len(parts) < 3:
                 skipped.append(f"❌ {line} (format error)")
                 continue
 
-            name = parts[0]        # SME
-            network = parts[1].upper()   # MTN
-            callback = parts[2]   # sme
+            name = parts[0]                     # SME
+            network = parts[1].upper()          # MTN
+            callback = parts[2]                 # sme
 
-            # ===== CHECK DUPLICATE (name + network) =====
+            # ===== CHECK DUPLICATE =====
             cur.execute("""
-            SELECT id FROM data_buttons
+            SELECT id FROM button_table
             WHERE LOWER(name)=LOWER(%s)
             AND LOWER(network)=LOWER(%s)
             """, (name, network))
@@ -2032,9 +2128,9 @@ def add_button_handler(message):
 
             # ===== INSERT =====
             cur.execute("""
-            INSERT INTO data_buttons (name, network, callback)
-            VALUES (%s, %s, %s)
-            """, (name, network, callback))
+            INSERT INTO button_table (name, network, callback, category)
+            VALUES (%s, %s, %s, %s)
+            """, (name, network, callback, category))
 
             added.append(f"✅ {name} ({network})")
 
