@@ -2155,35 +2155,43 @@ def add_button_handler(message):
     except Exception as e:
         print("ADD BUTTON ERROR:", e)
 
+
+
 #========================================
-# MTN SME 1DAY (FIXED PAGINATION)
+# UNIVERSAL DATA PLANS (ALL NETWORKS)
 #========================================
 
 PLANS_PER_PAGE = 4
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("mtnsme_1d"))
-def handle_mtn_sme_1day(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("exp_"))
+def handle_all_data_plans(call):
     try:
         parts = call.data.split("_")
 
-        # ===== FIX PAGE =====
-        if len(parts) == 2:
+        # exp_MTN_sme_1d
+        network = parts[1]              # MTN
+        plan_type = parts[2]            # sme
+        duration = parts[3]             # 1d
+
+        # ===== PAGE FIX =====
+        if len(parts) == 4:
             page = 0
         else:
-            page = int(parts[2])
+            page = int(parts[4])
 
         conn = get_data_conn()
         cur = conn.cursor()
 
+        # 🔥 IMPORTANT: match DB format
         cur.execute("""
         SELECT api_id, plan_name, price
         FROM data_plans
-        WHERE network=%s 
-        AND plan_type=%s 
-        AND duration=%s 
+        WHERE LOWER(network)=LOWER(%s)
+        AND LOWER(plan_type)=LOWER(%s)
+        AND LOWER(duration)=LOWER(%s)
         AND status=1
         ORDER BY price ASC
-        """, ("MTN", "SME", "1day"))
+        """, (network, plan_type, duration))
 
         plans = cur.fetchall()
 
@@ -2193,13 +2201,16 @@ def handle_mtn_sme_1day(call):
 
         kb = InlineKeyboardMarkup(row_width=2)
 
+        # ===== BUTTONS =====
         if current:
             for i in range(0, len(current), 2):
                 row = []
                 for j in range(2):
                     if i + j < len(current):
                         api_id, name, price = current[i + j]
+
                         text = f"{name}\n₦{price/100:.2f}"
+
                         row.append(
                             InlineKeyboardButton(
                                 text,
@@ -2215,25 +2226,33 @@ def handle_mtn_sme_1day(call):
 
         if page > 0:
             nav.append(
-                InlineKeyboardButton("⏪ Previous", callback_data=f"mtnsme_1d_{page-1}")
+                InlineKeyboardButton(
+                    "⏪ Previous",
+                    callback_data=f"exp_{network}_{plan_type}_{duration}_{page-1}"
+                )
             )
 
         if end < len(plans):
             nav.append(
-                InlineKeyboardButton("More ▶", callback_data=f"mtnsme_1d_{page+1}")
+                InlineKeyboardButton(
+                    "More ▶",
+                    callback_data=f"exp_{network}_{plan_type}_{duration}_{page+1}"
+                )
             )
 
         if nav:
             kb.row(*nav)
 
+        # ===== BACK =====
         kb.row(
-            InlineKeyboardButton("◀ Back", callback_data="mtnsme")
+            InlineKeyboardButton(
+                "◀ Back",
+                callback_data=f"type_{network}_{plan_type}"
+            )
         )
 
-        text = """📡 *MTN SME - 1DAY*
-
-Wannan data yana expire cikin awa 24  
-This data is valid for 24 hours  
+        # ===== TEXT =====
+        text = f"""📡 *{network} {plan_type.upper()} - {duration.upper()}*
 
 Zaɓi plan ɗin da kake so 👇"""
 
@@ -2249,8 +2268,9 @@ Zaɓi plan ɗin da kake so 👇"""
         conn.close()
 
     except Exception as e:
-        print("ERROR:", e)
+        print("UNIVERSAL PLAN ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
+
 
 
 
