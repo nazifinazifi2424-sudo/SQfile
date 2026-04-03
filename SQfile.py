@@ -2465,6 +2465,10 @@ Zaɓi plan ɗin da kake so 👇"""
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
 
+
+
+
+
 import uuid
 import threading
 import time
@@ -2482,10 +2486,8 @@ def handle_buy_data(call):
         user_id = call.from_user.id
         api_id = int(call.data.split("_")[1])
 
-        # CLEAR OLD SESSION
         user_data_session.pop(user_id, None)
 
-        # GET PLAN
         conn = get_data_conn()
         cur = conn.cursor()
 
@@ -2526,7 +2528,6 @@ def handle_buy_data(call):
             )
             return
 
-        # SAVE SESSION
         order_id = str(uuid.uuid4())
 
         user_data_session[user_id] = {
@@ -2536,57 +2537,85 @@ def handle_buy_data(call):
             "plan_name": plan_name,
             "duration": duration,
             "amount": price,
-            "active": True
+            "active": True,
+            "chat_id": call.message.chat.id,
+            "message_id": call.message.message_id
         }
 
-        chat_id = call.message.chat.id
-        message_id = call.message.message_id
-
-        # COUNTDOWN
-        def countdown():
-            for sec in range(60, -1, -1):
-
-                if user_id not in user_data_session:
-                    return
-
-                try:
-                    kb = InlineKeyboardMarkup()
-                    kb.add(
-                        InlineKeyboardButton(f"Reverse ({sec})", callback_data="noop")
-                    )
-
-                    bot.edit_message_text(
-f"""📲 *Shigar da lambar {network} ɗinka*
-Misali:
-`080xxxxxxxx`
-📶 {network}
-📦 {plan_name}
-⏳ {duration}
-💰 ₦{price/100:.2f}
-
-⚠️ Ka turo lamba kafin lokaci ya fita""",
-                        chat_id,
-                        message_id,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-                time.sleep(1)
-
-            # AUTO REVERSE
-            if user_id in user_data_session:
-                user_data_session.pop(user_id, None)
-                try:
-                    select_network(call)
-                except:
-                    pass
-
-        threading.Thread(target=countdown).start()
+        start_countdown(user_id)
 
     except Exception as e:
         print("BUY DATA ERROR:", e)
+
+
+#========================================
+# COUNTDOWN FUNCTION (FIXED)
+#========================================
+def start_countdown(user_id):
+    def run():
+        for sec in range(60, -1, -1):
+
+            if user_id not in user_data_session:
+                return
+
+            data = user_data_session[user_id]
+
+            if not data.get("active"):
+                return
+
+            chat_id = data["chat_id"]
+            message_id = data["message_id"]
+
+            try:
+                kb = InlineKeyboardMarkup()
+                kb.add(
+                    InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
+                )
+
+                bot.edit_message_text(
+f"""📲 *Shigar da lambar {data['network']} ɗinka*
+Misali:
+`080xxxxxxxx`
+Network: {data['network']}
+Plan: {data['plan_name']}
+Expire: {data['duration']}
+Amount: ₦{data['amount']/100:.2f}
+
+⚠️ Ka turo lamba kafin lokaci ya fita""",
+                    chat_id,
+                    message_id,
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+
+            time.sleep(1)
+
+        # AUTO BACK TO DATA MENU ✅
+        if user_id in user_data_session:
+            chat_id = user_data_session[user_id]["chat_id"]
+            message_id = user_data_session[user_id]["message_id"]
+
+            user_data_session.pop(user_id, None)
+
+            try:
+                # FAKE CALL OBJECT
+                class FakeCall:
+                    pass
+
+                fake = FakeCall()
+                fake.from_user = type('', (), {'id': user_id})()
+                fake.message = type('', (), {
+                    'chat': type('', (), {'id': chat_id})(),
+                    'message_id': message_id
+                })()
+
+                select_network(fake)
+            except Exception as e:
+                print("AUTO BACK ERROR:", e)
+
+    threading.Thread(target=run).start()
 
 
 #========================================
@@ -2599,37 +2628,51 @@ def handle_number(message):
         text = message.text.strip()
 
         data = user_data_session.get(user_id)
-
         if not data:
             return
 
-        # REMOVE SPACES
         number = text.replace(" ", "")
 
-        # VALIDATE DIGITS
+        # STOP OLD COUNTDOWN
+        data["active"] = False
+
         if not number.isdigit():
             bot.send_message(message.chat.id, "❌ Lambar ba daidai ba")
+            data["active"] = True
+            start_countdown(user_id)
             return
 
         length = len(number)
 
-        if length != 11:
+        if length < 11:
             bot.send_message(
                 message.chat.id,
-                f"❌ Lambar ka ba daidai ba\nAdadin lambobi: {length}\nAna bukatar 11"
+                f"""❌ Karma duba lambarka da kyau
+Guda {length} ka bayar
+Bata cika ba, ana jiranka ka cikakkiya"""
             )
+            data["active"] = True
+            start_countdown(user_id)
             return
 
-        # SAVE NUMBER
+        if length > 11:
+            bot.send_message(
+                message.chat.id,
+                f"""❌ Ka binciki lambar da ka bayar
+Ta wuce adadin 11
+
+Misali:
+090xxxxxx79"""
+            )
+            data["active"] = True
+            start_countdown(user_id)
+            return
+
+        # VALID
         data["phone"] = number
 
-        # STOP COUNTDOWN
-        data["active"] = False
-
-        # ===== MADALLAH =====
         bot.send_message(message.chat.id, "Madallah ✅")
 
-        # ===== CONFIRMATION =====
         kb = InlineKeyboardMarkup()
         kb.row(
             InlineKeyboardButton("✅ Confirm", callback_data="confirm_data"),
@@ -2644,10 +2687,11 @@ def handle_number(message):
 f"""Ka tabbatar wannan lambar ce babu kuskure?
 Are you sure this is correct number?
 
-📱 Number: {number}
-📦 Plan: {data['plan_name']}
-⏳ Expire: {data['duration']}
-💰 Amount: ₦{data['amount']/100:.2f}
+Number: {number}
+Network: {data['network']}
+Plan: {data['plan_name']}
+Expire: {data['duration']}
+Amount: ₦{data['amount']/100:.2f}
 """,
             reply_markup=kb
         )
@@ -2727,7 +2771,7 @@ def cancel_order(call):
 
 
 #========================================
-# NOOP BUTTON
+# NOOP
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data == "noop")
 def noop(call):
@@ -2756,7 +2800,7 @@ Dan Allah a tabbatar layin babu bashi."""
             InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
         )
         kb.add(
-            InlineKeyboardButton("◀Back", callback_data="back_to_d_&_a")
+            InlineKeyboardButton("Reverse", callback_data="back_to_d_&_a")
         )
 
         bot.edit_message_text(
