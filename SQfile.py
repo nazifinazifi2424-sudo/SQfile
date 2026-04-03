@@ -2583,8 +2583,69 @@ Amount: ₦{data['amount']/100:.2f}
 
     threading.Thread(target=run).start()
 
+
 #========================================
-# HANDLE NUMBER INPUT
+# COUNTDOWN FUNCTION (FINAL FIX)
+#========================================
+def start_countdown(user_id):
+    def run():
+        if user_id not in user_data_session:
+            return
+
+        data = user_data_session[user_id]
+        current_msg_id = data["message_id"]
+
+        for sec in range(60, -1, -1):
+
+            if user_id not in user_data_session:
+                return
+
+            data = user_data_session[user_id]
+
+            # ⛔ STOP if new message replaced old one
+            if data["message_id"] != current_msg_id:
+                return
+
+            if not data.get("active"):
+                return
+
+            try:
+                kb = InlineKeyboardMarkup()
+                kb.add(
+                    InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
+                )
+
+                bot.edit_message_text(
+                    data.get("countdown_text", "⏳ Waiting..."),
+                    data["chat_id"],
+                    data["message_id"],
+                    reply_markup=kb
+                )
+            except:
+                pass
+
+            time.sleep(1)
+
+        # TIMEOUT
+        if user_id in user_data_session:
+            data = user_data_session[user_id]
+
+            try:
+                bot.edit_message_text(
+                    "❌ An fita daga wannan stage",
+                    data["chat_id"],
+                    data["message_id"]
+                )
+            except:
+                pass
+
+            user_data_session.pop(user_id, None)
+
+    threading.Thread(target=run).start()
+
+
+#========================================
+# HANDLE NUMBER INPUT (FINAL FIX)
 #========================================
 @bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
 def handle_number(message):
@@ -2597,33 +2658,38 @@ def handle_number(message):
 
         number = message.text.strip().replace(" ", "")
 
-        # STOP OLD COUNTDOWN
-        data["active"] = False
-
         chat_id = data["chat_id"]
         old_msg_id = data["message_id"]
 
-        #=========================
-        # ❌ INVALID (NOT DIGIT)
-        #=========================
+        # STOP OLD COUNTDOWN
+        data["active"] = False
+
+        # =========================
+        # ❌ NOT DIGIT
+        # =========================
         if not number.isdigit():
             try:
                 bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
             except:
                 pass
 
-            msg = bot.send_message(chat_id, "❌ Lambar ba daidai ba\n\nWaiting... 60s")
+            msg = bot.send_message(chat_id, "❌ Lambar ba daidai ba")
 
-            data["active"] = True
-            data["message_id"] = msg.message_id
+            user_data_session[user_id] = {
+                **data,
+                "active": True,
+                "message_id": msg.message_id,
+                "countdown_text": "❌ Lambar ba daidai ba\n\nDa fatan a sake turo daidai"
+            }
+
             start_countdown(user_id)
             return
 
         length = len(number)
 
-        #=========================
+        # =========================
         # ❌ TOO SHORT
-        #=========================
+        # =========================
         if length < 11:
             try:
                 bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
@@ -2634,19 +2700,24 @@ def handle_number(message):
                 chat_id,
 f"""❌ Karma duba lambarka da kyau
 Guda {length} ka bayar
-Bata cika ba, ana jiranka ka cikakkiya
-
-Waiting... 60s"""
+Bata cika ba, ana jiranka ka cikakkiya"""
             )
 
-            data["active"] = True
-            data["message_id"] = msg.message_id
+            user_data_session[user_id] = {
+                **data,
+                "active": True,
+                "message_id": msg.message_id,
+                "countdown_text": f"""❌ Karma duba lambarka da kyau
+Guda {length} ka bayar
+Bata cika ba, ana jiranka ka cikakkiya"""
+            }
+
             start_countdown(user_id)
             return
 
-        #=========================
+        # =========================
         # ❌ TOO LONG
-        #=========================
+        # =========================
         if length > 11:
             try:
                 bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
@@ -2659,19 +2730,26 @@ Waiting... 60s"""
 Ta wuce adadin 11
 
 Misali:
-090xxxxxx79
-
-Waiting... 60s"""
+090xxxxxx79"""
             )
 
-            data["active"] = True
-            data["message_id"] = msg.message_id
+            user_data_session[user_id] = {
+                **data,
+                "active": True,
+                "message_id": msg.message_id,
+                "countdown_text": """❌ Ka binciki lambar da ka bayar
+Ta wuce adadin 11
+
+Misali:
+090xxxxxx79"""
+            }
+
             start_countdown(user_id)
             return
 
-        #=========================
-        # ✅ VALID
-        #=========================
+        # =========================
+        # ✅ VALID NUMBER
+        # =========================
         data["phone"] = number
 
         try:
@@ -2684,7 +2762,9 @@ Waiting... 60s"""
             InlineKeyboardButton("✅ Confirm", callback_data="confirm_data"),
             InlineKeyboardButton("✏ Edit Number", callback_data="edit_number")
         )
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_order"))
+        kb.add(
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")
+        )
 
         bot.send_message(
             chat_id,
@@ -2701,7 +2781,8 @@ Amount: ₦{data['amount']/100:.2f}
         )
 
     except Exception as e:
-        print(e)
+        print("NUMBER ERROR:", e)
+
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "edit_number")
