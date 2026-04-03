@@ -2466,9 +2466,6 @@ Zaɓi plan ɗin da kake so 👇"""
 
 
 
-
-
-
 import uuid
 import threading
 import time
@@ -2478,7 +2475,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 user_data_session = {}
 
 #========================================
-# HANDLE BUY DATA (START STAGE)
+# HANDLE BUY DATA
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
@@ -2492,7 +2489,7 @@ def handle_buy_data(call):
         cur = conn.cursor()
 
         cur.execute("""
-        SELECT network, plan_type, plan_name, duration, price, status
+        SELECT network, plan_name, duration, price, status
         FROM data_plans
         WHERE api_id=%s
         """, (api_id,))
@@ -2502,30 +2499,12 @@ def handle_buy_data(call):
         conn.close()
 
         if not plan:
-            bot.answer_callback_query(call.id, "❌ Plan not found", show_alert=True)
             return
 
-        network, plan_type, plan_name, duration, price, status = plan
+        network, plan_name, duration, price, status = plan
 
         if status == 0:
-            bot.answer_callback_query(call.id, "⚠️ Network busy yanzu\nTry later", show_alert=True)
-            return
-
-        # WALLET CHECK
-        w_conn = get_wallet_conn()
-        w_cur = w_conn.cursor()
-        w_cur.execute("SELECT balance FROM wallet_balance WHERE user_id=%s", (user_id,))
-        result = w_cur.fetchone()
-        balance = result[0] if result else 0
-        w_cur.close()
-        w_conn.close()
-
-        if (balance * 100) < price:
-            bot.answer_callback_query(
-                call.id,
-                f"❌ Baka da isasshen kudi\nBalance: ₦{balance:.2f}",
-                show_alert=True
-            )
+            bot.answer_callback_query(call.id, "⚠️ Network busy", show_alert=True)
             return
 
         order_id = str(uuid.uuid4())
@@ -2545,11 +2524,10 @@ def handle_buy_data(call):
         start_countdown(user_id)
 
     except Exception as e:
-        print("BUY DATA ERROR:", e)
-
+        print(e)
 
 #========================================
-# COUNTDOWN FUNCTION (FIXED)
+# COUNTDOWN FUNCTION
 #========================================
 def start_countdown(user_id):
     def run():
@@ -2563,14 +2541,9 @@ def start_countdown(user_id):
             if not data.get("active"):
                 return
 
-            chat_id = data["chat_id"]
-            message_id = data["message_id"]
-
             try:
                 kb = InlineKeyboardMarkup()
-                kb.add(
-                    InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
-                )
+                kb.add(InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop"))
 
                 bot.edit_message_text(
 f"""📲 *Shigar da lambar {data['network']} ɗinka*
@@ -2582,8 +2555,8 @@ Expire: {data['duration']}
 Amount: ₦{data['amount']/100:.2f}
 
 ⚠️ Ka turo lamba kafin lokaci ya fita""",
-                    chat_id,
-                    message_id,
+                    data["chat_id"],
+                    data["message_id"],
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
@@ -2592,53 +2565,55 @@ Amount: ₦{data['amount']/100:.2f}
 
             time.sleep(1)
 
-        # AUTO BACK TO DATA MENU ✅
+        # TIMEOUT
         if user_id in user_data_session:
             chat_id = user_data_session[user_id]["chat_id"]
-            message_id = user_data_session[user_id]["message_id"]
+            msg_id = user_data_session[user_id]["message_id"]
 
             user_data_session.pop(user_id, None)
 
             try:
-                # FAKE CALL OBJECT
-                class FakeCall:
-                    pass
-
-                fake = FakeCall()
-                fake.from_user = type('', (), {'id': user_id})()
-                fake.message = type('', (), {
-                    'chat': type('', (), {'id': chat_id})(),
-                    'message_id': message_id
-                })()
-
-                select_network(fake)
-            except Exception as e:
-                print("AUTO BACK ERROR:", e)
+                bot.edit_message_text(
+                    "❌ An fita daga wannan stage",
+                    chat_id,
+                    msg_id
+                )
+            except:
+                pass
 
     threading.Thread(target=run).start()
 
+#========================================
+# HANDLE NUMBER INPUT
+#========================================
 @bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
 def handle_number(message):
     try:
         user_id = message.from_user.id
-        text = message.text.strip()
-
         data = user_data_session.get(user_id)
+
         if not data:
             return
 
-        number = text.replace(" ", "")
+        number = message.text.strip().replace(" ", "")
 
-        # ⛔ STOP OLD COUNTDOWN
+        # STOP OLD COUNTDOWN
         data["active"] = False
 
-        # =========================
-        # ❌ NOT DIGIT
-        # =========================
+        chat_id = data["chat_id"]
+        old_msg_id = data["message_id"]
+
+        #=========================
+        # ❌ INVALID (NOT DIGIT)
+        #=========================
         if not number.isdigit():
-            msg = bot.send_message(message.chat.id, "❌ An samu kuskure a lambar")
-            
-            # 🔥 START NEW COUNTDOWN ON THIS MESSAGE
+            try:
+                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
+            except:
+                pass
+
+            msg = bot.send_message(chat_id, "❌ Lambar ba daidai ba\n\nWaiting... 60s")
+
             data["active"] = True
             data["message_id"] = msg.message_id
             start_countdown(user_id)
@@ -2646,16 +2621,22 @@ def handle_number(message):
 
         length = len(number)
 
-        # =========================
+        #=========================
         # ❌ TOO SHORT
-        # =========================
+        #=========================
         if length < 11:
+            try:
+                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
+            except:
+                pass
+
             msg = bot.send_message(
-                message.chat.id,
-                f"""❌ An samu kuskure
-Karma duba lambarka da kyau
+                chat_id,
+f"""❌ Karma duba lambarka da kyau
 Guda {length} ka bayar
-Bata cika ba, ana jiranka ka cikakkiya"""
+Bata cika ba, ana jiranka ka cikakkiya
+
+Waiting... 60s"""
             )
 
             data["active"] = True
@@ -2663,18 +2644,24 @@ Bata cika ba, ana jiranka ka cikakkiya"""
             start_countdown(user_id)
             return
 
-        # =========================
+        #=========================
         # ❌ TOO LONG
-        # =========================
+        #=========================
         if length > 11:
+            try:
+                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
+            except:
+                pass
+
             msg = bot.send_message(
-                message.chat.id,
-                f"""❌ An samu kuskure
-Ka binciki lambar da ka bayar
+                chat_id,
+"""❌ Ka binciki lambar da ka bayar
 Ta wuce adadin 11
 
 Misali:
-090xxxxxx79"""
+090xxxxxx79
+
+Waiting... 60s"""
             )
 
             data["active"] = True
@@ -2682,24 +2669,25 @@ Misali:
             start_countdown(user_id)
             return
 
-        # =========================
-        # ✅ VALID NUMBER
-        # =========================
+        #=========================
+        # ✅ VALID
+        #=========================
         data["phone"] = number
 
-        bot.send_message(message.chat.id, "Madallah ✅")
+        try:
+            bot.edit_message_text("Madallah ✅", chat_id, old_msg_id)
+        except:
+            pass
 
         kb = InlineKeyboardMarkup()
         kb.row(
             InlineKeyboardButton("✅ Confirm", callback_data="confirm_data"),
             InlineKeyboardButton("✏ Edit Number", callback_data="edit_number")
         )
-        kb.add(
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")
-        )
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_order"))
 
         bot.send_message(
-            message.chat.id,
+            chat_id,
 f"""Ka tabbatar wannan lambar ce babu kuskure?
 Are you sure this is correct number?
 
@@ -2713,55 +2701,7 @@ Amount: ₦{data['amount']/100:.2f}
         )
 
     except Exception as e:
-        print("NUMBER ERROR:", e)
-
-#========================================
-# CONFIRM ORDER
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_data")
-def confirm_data(call):
-    try:
-        user_id = call.from_user.id
-        data = user_data_session.get(user_id)
-
-        if not data:
-            return
-
-        conn = get_data_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-        INSERT INTO data_orders (
-            order_id, user_id, api_id,
-            network, plan_name, duration,
-            phone, amount, status
-        )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending')
-        """, (
-            data["order_id"],
-            user_id,
-            data["api_id"],
-            data["network"],
-            data["plan_name"],
-            data["duration"],
-            data["phone"],
-            data["amount"]
-        ))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        bot.edit_message_text(
-            "✅ An karɓi order ɗinka...",
-            call.message.chat.id,
-            call.message.message_id
-        )
-
-        user_data_session.pop(user_id, None)
-
-    except Exception as e:
-        print("CONFIRM ERROR:", e)
+        print(e)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "edit_number")
