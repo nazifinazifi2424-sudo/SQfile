@@ -498,7 +498,37 @@ CREATE INDEX IF NOT EXISTS idx_data_status
 ON data_plans(status)
 """)
 
+# =========================
+# BUTTONS CONTROL TABLE (SAFE + PRO)
+# =========================
 
+data_cur.execute("""
+CREATE TABLE IF NOT EXISTS data_buttons (
+    id SERIAL PRIMARY KEY,
+
+    name TEXT NOT NULL,              -- SME, CORPORATE, GIFTING (no limit)
+    network TEXT NOT NULL,           -- MTN, GLO, AIRTEL, 9MOBILE
+
+    callback TEXT NOT NULL,          -- sme, corporate, gifting
+
+    position INTEGER DEFAULT 1,      -- sorting
+
+    status INTEGER DEFAULT 1,        -- 1 = show, 0 = hidden
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# ===== INDEX =====
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_btn_network 
+ON data_buttons(network)
+""")
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_btn_status 
+ON data_buttons(status)
+""")
 # =========================
 # DATABASE TABLES (SAFE)
 # =========================
