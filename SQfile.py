@@ -1981,7 +1981,83 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
     )
 
 
+# =========================
+# ADD BUTTON (MULTI INSERT + PROTECT)
+# =========================
+@bot.message_handler(commands=['addbutton'])
+def add_button_handler(message):
+    try:
+        # ❌ ONLY ADMIN
+        if message.from_user.id != ADMIN_ID:
+            return
 
+        text = message.text.replace("/addbutton", "").strip()
+
+        if not text:
+            bot.send_message(message.chat.id, "❌ Ka turo data bayan command")
+            return
+
+        lines = text.split("\n")
+
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        added = []
+        skipped = []
+
+        for line in lines:
+            parts = line.strip().split()
+
+            # ❌ INVALID FORMAT
+            if len(parts) < 3:
+                skipped.append(f"❌ {line} (format error)")
+                continue
+
+            name = parts[0]        # SME
+            network = parts[1].upper()   # MTN
+            callback = parts[2]   # sme
+
+            # ===== CHECK DUPLICATE (name + network) =====
+            cur.execute("""
+            SELECT id FROM data_buttons
+            WHERE LOWER(name)=LOWER(%s)
+            AND LOWER(network)=LOWER(%s)
+            """, (name, network))
+
+            exists = cur.fetchone()
+
+            if exists:
+                skipped.append(f"⚠️ {name} ({network}) already exists")
+                continue
+
+            # ===== INSERT =====
+            cur.execute("""
+            INSERT INTO data_buttons (name, network, callback)
+            VALUES (%s, %s, %s)
+            """, (name, network, callback))
+
+            added.append(f"✅ {name} ({network})")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # ===== RESULT =====
+        msg = ""
+
+        if added:
+            msg += "✅ An kara:\n" + "\n".join(added) + "\n\n"
+
+        if skipped:
+            msg += "⚠️ An tsallake:\n" + "\n".join(skipped)
+
+        if not msg:
+            msg = "❌ Babu abin da aka saka"
+
+        bot.send_message(message.chat.id, msg)
+
+    except Exception as e:
+        print("ADD BUTTON ERROR:", e)
 
 #========================================
 # MTN SME 1DAY (FIXED PAGINATION)
