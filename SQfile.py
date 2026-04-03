@@ -2054,108 +2054,170 @@ def dynamic_network_buttons(call):
     except Exception as e:
         print("TYPE ERROR:", e)
 
-
-
+# =========================  
+# ADMIN CONFIG  
+# =========================  
+ADMIN_ID = 123456789  # saka naka  
+  
+# =========================  
+# ADD BUTTON (FINAL SECURE SYSTEM)  
+# =========================  
+@bot.message_handler(commands=['addbutton'])  
+def add_button_handler(message):  
+    try:  
+        # ❌ ONLY ADMIN  
+        if message.from_user.id != ADMIN_ID:  
+            return  
+  
+        text = message.text.replace("/addbutton", "").strip()  
+  
+        if not text:  
+            bot.send_message(message.chat.id, "❌ Ka turo data bayan command")  
+            return  
+  
+        lines = text.split("\n")  
+  
+        category = None  
+        added = []  
+        skipped = []  
+  
+        conn = get_data_conn()  
+        cur = conn.cursor()  
+  
+        for line in lines:  
+            line = line.strip()  
+  
+            # ===== DETECT CATEGORY =====  
+            if line.lower() == "+nau'i":  
+                category = "type"  
+                continue  
+  
+            elif line.lower() == "+expire":  
+                category = "expire"  
+                continue  
+  
+            # ❌ idan ba'a saka category ba  
+            if not category:  
+                skipped.append(f"❌ {line} (ba'a saka +nau'i ko +expire ba)")  
+                continue  
+  
+            parts = line.split()  
+  
+            if len(parts) < 3:  
+                skipped.append(f"❌ {line} (format error)")  
+                continue  
+  
+            name = parts[0]                     # SME  
+            network = parts[1].upper()          # MTN  
+            callback = parts[2]                 # sme  
+  
+            # ===== CHECK DUPLICATE NAME =====  
+            cur.execute("""  
+            SELECT callback FROM button_table  
+            WHERE LOWER(name)=LOWER(%s)  
+            AND LOWER(network)=LOWER(%s)  
+            """, (name, network))  
+  
+            name_exist = cur.fetchone()  
+  
+            if name_exist:  
+                skipped.append(
+f"""⚠️ Duplicate NAME
+{name} ({network})
+Callback: {name_exist[0]}"""
+                )  
+                continue  
+  
+            # ===== CHECK DUPLICATE CALLBACK =====  
+            cur.execute("""  
+            SELECT name FROM button_table  
+            WHERE LOWER(callback)=LOWER(%s)  
+            AND LOWER(network)=LOWER(%s)  
+            """, (callback, network))  
+  
+            callback_exist = cur.fetchone()  
+  
+            if callback_exist:  
+                skipped.append(
+f"""⚠️ Duplicate CALLBACK
+{callback} ({network})
+Name: {callback_exist[0]}"""
+                )  
+                continue  
+  
+            # ===== INSERT =====  
+            cur.execute("""  
+            INSERT INTO button_table (name, network, callback, category)  
+            VALUES (%s, %s, %s, %s)  
+            """, (name, network, callback, category))  
+  
+            added.append(
+f"""✅ {name} ({network})
+Callback: {callback}
+Category: {category}"""
+            )  
+  
+        conn.commit()  
+        cur.close()  
+        conn.close()  
+  
+        # ===== RESULT =====  
+        msg = ""  
+  
+        if added:  
+            msg += "✅ AN SAKA BUTTON:\n\n" + "\n\n".join(added) + "\n\n"  
+  
+        if skipped:  
+            msg += "⚠️ AN TSALLAKE:\n\n" + "\n\n".join(skipped)  
+  
+        if not msg:  
+            msg = "❌ Babu abin da aka saka"  
+  
+        bot.send_message(message.chat.id, msg)  
+  
+    except Exception as e:  
+        print("ADD BUTTON ERROR:", e)
 
 
 # =========================
-# ADMIN CONFIG
+# DELETE ALL BUTTONS (ADMIN ONLY)
 # =========================
-# =========================
-# ADD BUTTON (FINAL SYSTEM)
-# =========================
-@bot.message_handler(commands=['addbutton'])
-def add_button_handler(message):
+@bot.message_handler(commands=['delete'])
+def delete_all_buttons(message):
     try:
         # ❌ ONLY ADMIN
         if message.from_user.id != ADMIN_ID:
             return
 
-        text = message.text.replace("/addbutton", "").strip()
-
-        if not text:
-            bot.send_message(message.chat.id, "❌ Ka turo data bayan command")
-            return
-
-        lines = text.split("\n")
-
-        category = None
-        added = []
-        skipped = []
-
         conn = get_data_conn()
         cur = conn.cursor()
 
-        for line in lines:
-            line = line.strip()
+        # ===== COUNT BEFORE DELETE =====
+        cur.execute("SELECT COUNT(*) FROM button_table")
+        total = cur.fetchone()[0]
 
-            # ===== DETECT CATEGORY =====
-            if line.lower() == "+nau'i":
-                category = "type"
-                continue
-
-            elif line.lower() == "+expire":
-                category = "expire"
-                continue
-
-            # ❌ idan ba'a saka category ba
-            if not category:
-                skipped.append(f"❌ {line} (ba'a saka +nau'i ko +expire ba)")
-                continue
-
-            parts = line.split()
-
-            if len(parts) < 3:
-                skipped.append(f"❌ {line} (format error)")
-                continue
-
-            name = parts[0]                     # SME
-            network = parts[1].upper()          # MTN
-            callback = parts[2]                 # sme
-
-            # ===== CHECK DUPLICATE =====
-            cur.execute("""
-            SELECT id FROM button_table
-            WHERE LOWER(name)=LOWER(%s)
-            AND LOWER(network)=LOWER(%s)
-            """, (name, network))
-
-            exists = cur.fetchone()
-
-            if exists:
-                skipped.append(f"⚠️ {name} ({network}) already exists")
-                continue
-
-            # ===== INSERT =====
-            cur.execute("""
-            INSERT INTO button_table (name, network, callback, category)
-            VALUES (%s, %s, %s, %s)
-            """, (name, network, callback, category))
-
-            added.append(f"✅ {name} ({network})")
+        # ===== DELETE ALL =====
+        cur.execute("DELETE FROM button_table")
 
         conn.commit()
         cur.close()
         conn.close()
 
-        # ===== RESULT =====
-        msg = ""
+        # ===== RESPONSE =====
+        bot.send_message(
+            message.chat.id,
+            f"""🗑 AN GOGE DUK BUTTONS
 
-        if added:
-            msg += "✅ An kara:\n" + "\n".join(added) + "\n\n"
+Jimilla: {total}
 
-        if skipped:
-            msg += "⚠️ An tsallake:\n" + "\n".join(skipped)
-
-        if not msg:
-            msg = "❌ Babu abin da aka saka"
-
-        bot.send_message(message.chat.id, msg)
+✅ Table ya zama empty"""
+        )
 
     except Exception as e:
-        print("ADD BUTTON ERROR:", e)
-
-
+        print("DELETE ERROR:", e)
+# =========================
+# ADMIN CONFIG
+# =========================
 
 #========================================
 # UNIVERSAL DATA PLANS (ALL NETWORKS)
