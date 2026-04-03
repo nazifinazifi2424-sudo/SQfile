@@ -2562,9 +2562,9 @@ def start_countdown(user_id):
 
 ⏳ Waiting... {sec}s"""
                 else:
-                    text = f"""📲 *Shigar da lambar {data['network']} ɗinka*
+                    text = f"""📲 *Shigar da lambar {data['network']} ɗinka, Lamba kawai zaka turo*
 Misali:
-`080xxxxxxxx`
+`080xxxxxxxx Wannan shine datanda zaka siya👇`
 Network: {data['network']}
 Plan: {data['plan_name']}
 Expire: {data['duration']}
