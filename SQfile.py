@@ -2465,7 +2465,6 @@ Zaɓi plan ɗin da kake so 👇"""
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
 
-
 import uuid
 import threading
 import time
@@ -2527,65 +2526,7 @@ def handle_buy_data(call):
         print(e)
 
 #========================================
-# COUNTDOWN FUNCTION
-#========================================
-def start_countdown(user_id):
-    def run():
-        for sec in range(60, -1, -1):
-
-            if user_id not in user_data_session:
-                return
-
-            data = user_data_session[user_id]
-
-            if not data.get("active"):
-                return
-
-            try:
-                kb = InlineKeyboardMarkup()
-                kb.add(InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop"))
-
-                bot.edit_message_text(
-f"""📲 *Shigar da lambar {data['network']} ɗinka*
-Misali:
-`080xxxxxxxx`
-Network: {data['network']}
-Plan: {data['plan_name']}
-Expire: {data['duration']}
-Amount: ₦{data['amount']/100:.2f}
-
-⚠️ Ka turo lamba kafin lokaci ya fita""",
-                    data["chat_id"],
-                    data["message_id"],
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-
-            time.sleep(1)
-
-        # TIMEOUT
-        if user_id in user_data_session:
-            chat_id = user_data_session[user_id]["chat_id"]
-            msg_id = user_data_session[user_id]["message_id"]
-
-            user_data_session.pop(user_id, None)
-
-            try:
-                bot.edit_message_text(
-                    "❌ An fita daga wannan stage",
-                    chat_id,
-                    msg_id
-                )
-            except:
-                pass
-
-    threading.Thread(target=run).start()
-
-
-#========================================
-# COUNTDOWN FUNCTION (FINAL FIX)
+# COUNTDOWN FUNCTION (FIXED 100%)
 #========================================
 def start_countdown(user_id):
     def run():
@@ -2602,7 +2543,7 @@ def start_countdown(user_id):
 
             data = user_data_session[user_id]
 
-            # ⛔ STOP if new message replaced old one
+            # STOP if new message replaced old one
             if data["message_id"] != current_msg_id:
                 return
 
@@ -2615,11 +2556,28 @@ def start_countdown(user_id):
                     InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
                 )
 
+                # ✅ ORIGINAL FORMAT (DON'T TOUCH)
+                if "countdown_text" in data:
+                    text = f"""{data['countdown_text']}
+
+⏳ Waiting... {sec}s"""
+                else:
+                    text = f"""📲 *Shigar da lambar {data['network']} ɗinka*
+Misali:
+`080xxxxxxxx`
+Network: {data['network']}
+Plan: {data['plan_name']}
+Expire: {data['duration']}
+Amount: ₦{data['amount']/100:.2f}
+
+⚠️ Ka turo lamba kafin lokaci ya fita"""
+
                 bot.edit_message_text(
-                    data.get("countdown_text", "⏳ Waiting..."),
+                    text,
                     data["chat_id"],
                     data["message_id"],
-                    reply_markup=kb
+                    reply_markup=kb,
+                    parse_mode="Markdown"
                 )
             except:
                 pass
@@ -2643,9 +2601,8 @@ def start_countdown(user_id):
 
     threading.Thread(target=run).start()
 
-
 #========================================
-# HANDLE NUMBER INPUT (FINAL FIX)
+# HANDLE NUMBER INPUT (FINAL PERFECT)
 #========================================
 @bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
 def handle_number(message):
@@ -2675,12 +2632,11 @@ def handle_number(message):
 
             msg = bot.send_message(chat_id, "❌ Lambar ba daidai ba")
 
-            user_data_session[user_id] = {
-                **data,
+            data.update({
                 "active": True,
                 "message_id": msg.message_id,
                 "countdown_text": "❌ Lambar ba daidai ba\n\nDa fatan a sake turo daidai"
-            }
+            })
 
             start_countdown(user_id)
             return
@@ -2703,14 +2659,13 @@ Guda {length} ka bayar
 Bata cika ba, ana jiranka ka cikakkiya"""
             )
 
-            user_data_session[user_id] = {
-                **data,
+            data.update({
                 "active": True,
                 "message_id": msg.message_id,
                 "countdown_text": f"""❌ Karma duba lambarka da kyau
 Guda {length} ka bayar
 Bata cika ba, ana jiranka ka cikakkiya"""
-            }
+            })
 
             start_countdown(user_id)
             return
@@ -2733,8 +2688,7 @@ Misali:
 090xxxxxx79"""
             )
 
-            user_data_session[user_id] = {
-                **data,
+            data.update({
                 "active": True,
                 "message_id": msg.message_id,
                 "countdown_text": """❌ Ka binciki lambar da ka bayar
@@ -2742,7 +2696,7 @@ Ta wuce adadin 11
 
 Misali:
 090xxxxxx79"""
-            }
+            })
 
             start_countdown(user_id)
             return
@@ -2782,6 +2736,10 @@ Amount: ₦{data['amount']/100:.2f}
 
     except Exception as e:
         print("NUMBER ERROR:", e)
+
+
+
+
 
 
 
