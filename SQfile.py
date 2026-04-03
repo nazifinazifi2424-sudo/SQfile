@@ -2464,18 +2464,15 @@ Zaɓi plan ɗin da kake so 👇"""
         print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
-
-
 import uuid
 import threading
 import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# TEMP STORAGE
 user_data_session = {}
 
 #========================================
-# HANDLE BUY DATA (WITH SAFE COUNTDOWN)
+# HANDLE BUY DATA
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
 def handle_buy_data(call):
@@ -2483,19 +2480,16 @@ def handle_buy_data(call):
         user_id = call.from_user.id
         api_id = int(call.data.split("_")[1])
 
-        # ===== CLEAR OLD SESSION =====
+        # CLEAR SESSION
         user_data_session.pop(user_id, None)
 
         # ===== GET PLAN =====
         conn = get_data_conn()
         cur = conn.cursor()
-
         cur.execute("""
-        SELECT network, plan_type, plan_name, duration, price, status
-        FROM data_plans
-        WHERE api_id=%s
+        SELECT network, plan_name, duration, price, status
+        FROM data_plans WHERE api_id=%s
         """, (api_id,))
-
         plan = cur.fetchone()
         cur.close()
         conn.close()
@@ -2504,25 +2498,18 @@ def handle_buy_data(call):
             bot.answer_callback_query(call.id, "❌ Plan not found", show_alert=True)
             return
 
-        network, plan_type, plan_name, duration, price, status = plan
+        network, plan_name, duration, price, status = plan
 
-        # ===== STATUS CHECK =====
         if status == 0:
-            bot.answer_callback_query(
-                call.id,
-                "⚠️ Network busy yanzu\nTry later",
-                show_alert=True
-            )
+            bot.answer_callback_query(call.id, "⚠️ Not available yanzu", show_alert=True)
             return
 
-        # ===== WALLET CHECK =====
+        # ===== WALLET =====
         w_conn = get_wallet_conn()
         w_cur = w_conn.cursor()
-
         w_cur.execute("SELECT balance FROM wallet_balance WHERE user_id=%s", (user_id,))
-        result = w_cur.fetchone()
-        balance = result[0] if result else 0
-
+        bal = w_cur.fetchone()
+        balance = bal[0] if bal else 0
         w_cur.close()
         w_conn.close()
 
@@ -2534,35 +2521,42 @@ def handle_buy_data(call):
             )
             return
 
-        # ===== UNIQUE TOKEN (VERY IMPORTANT) =====
+        # ===== TOKEN =====
         token = str(uuid.uuid4())
 
-        # ===== SAVE SESSION =====
         user_data_session[user_id] = {
             "token": token,
-            "api_id": api_id,
-            "network": network,
-            "plan_name": plan_name,
-            "duration": duration,
-            "amount": price,
             "active": True
         }
 
         chat_id = call.message.chat.id
-        message_id = call.message.message_id
+        msg_id = call.message.message_id
 
-        # ===== COUNTDOWN THREAD =====
+        # ===== FIRST MESSAGE (TEXT ONLY ONCE) =====
+        bot.edit_message_text(
+f"""📲 Shigar da lambar {network} ɗinka
+Misali:
+080xxxxxxxx
+📦 {plan_name}
+⏳ {duration}
+💰 ₦{price/100:.2f}
+
+⚠️ Ka turo lamba kafin lokaci ya fita""",
+            chat_id,
+            msg_id
+        )
+
+        # ===== COUNTDOWN (ONLY BUTTON EDIT) =====
         def countdown(local_token):
             for sec in range(60, -1, -1):
 
                 session = user_data_session.get(user_id)
 
-                # ❌ STOP CONDITIONS (IMPORTANT FIX)
                 if not session:
                     return
-                if session.get("token") != local_token:
+                if session["token"] != local_token:
                     return
-                if not session.get("active"):
+                if not session["active"]:
                     return
 
                 try:
@@ -2571,31 +2565,20 @@ def handle_buy_data(call):
                         InlineKeyboardButton(f"Reverse ({sec})", callback_data="data")
                     )
 
-                    bot.edit_message_text(
-f"""📲 *Shigar da lambar {network} ɗinka*
-Misali:
-`080xxxxxxxx`
-📶 {network}
-📦 {plan_name}
-⏳ {duration}
-💰 ₦{price/100:.2f}
-
-⚠️ Ka turo lamba kafin lokaci ya fita""",
+                    bot.edit_message_reply_markup(
                         chat_id,
-                        message_id,
-                        reply_markup=kb,
-                        parse_mode="Markdown"
+                        msg_id,
+                        reply_markup=kb
                     )
                 except:
                     pass
 
                 time.sleep(1)
 
-            # ===== AUTO REVERSE =====
+            # AUTO REVERSE
             session = user_data_session.get(user_id)
-            if session and session.get("token") == local_token:
+            if session and session["token"] == local_token:
                 user_data_session.pop(user_id, None)
-
                 try:
                     select_network(call)
                 except:
@@ -2604,40 +2587,36 @@ Misali:
         threading.Thread(target=countdown, args=(token,), daemon=True).start()
 
     except Exception as e:
-        print("BUY DATA ERROR:", e)
-        bot.answer_callback_query(call.id, "⚠️ Error", show_alert=True)
+        print(e)
 
 
 #========================================
-# SELECT NETWORK (AUTO CLEAR + STOP TIMER)
+# SELECT NETWORK
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data == "data")
 def select_network(call):
     try:
         user_id = call.from_user.id
 
-        # ===== STOP TIMER + CLEAR SESSION =====
+        # STOP TIMER
         session = user_data_session.get(user_id)
         if session:
             session["active"] = False
 
         user_data_session.pop(user_id, None)
 
-        text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
-Dan Allah a tabbatar layin da za'a siya data babu bashi."""
+        text = """⚠️ Kar ku tura data yayin bashi  
+Tabbatar babu bashi kafin siya"""
 
         kb = InlineKeyboardMarkup()
-
         kb.row(
-            InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
-            InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
+            InlineKeyboardButton("MTN", callback_data="mtn"),
+            InlineKeyboardButton("Airtel", callback_data="airtel")
         )
-
         kb.row(
-            InlineKeyboardButton("🛜 Glo", callback_data="glo"),
-            InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
+            InlineKeyboardButton("Glo", callback_data="glo"),
+            InlineKeyboardButton("9mobile", callback_data="9mobile")
         )
-
         kb.add(
             InlineKeyboardButton("⬅ Back", callback_data="back_to_d_&_a")
         )
@@ -2650,7 +2629,7 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
         )
 
     except Exception as e:
-        print("SELECT NETWORK ERROR:", e)
+        print(e)
 
 
 
