@@ -2465,6 +2465,8 @@ Zaɓi plan ɗin da kake so 👇"""
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
 
 
+
+
 import uuid
 import threading
 import time
@@ -2543,7 +2545,6 @@ def start_countdown(user_id):
 
             data = user_data_session[user_id]
 
-            # STOP if new message replaced old one
             if data["message_id"] != current_msg_id:
                 return
 
@@ -2556,7 +2557,6 @@ def start_countdown(user_id):
                     InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
                 )
 
-                # ✅ ORIGINAL FORMAT (DON'T TOUCH)
                 if "countdown_text" in data:
                     text = f"""{data['countdown_text']}
 
@@ -2584,20 +2584,29 @@ Amount: ₦{data['amount']/100:.2f}
 
             time.sleep(1)
 
-        # TIMEOUT
+        # TIMEOUT (FIXED 👉 yanzu yana kiran select_network)
         if user_id in user_data_session:
             data = user_data_session[user_id]
 
-            try:
-                bot.edit_message_text(
-                    "❌ An fita daga wannan stage",
-                    data["chat_id"],
-                    data["message_id"]
-                )
-            except:
-                pass
+            chat_id = data["chat_id"]
+            msg_id = data["message_id"]
 
             user_data_session.pop(user_id, None)
+
+            try:
+                class FakeCall:
+                    pass
+
+                fake = FakeCall()
+                fake.from_user = type('', (), {'id': user_id})()
+                fake.message = type('', (), {
+                    'chat': type('', (), {'id': chat_id})(),
+                    'message_id': msg_id
+                })()
+
+                select_network(fake)
+            except:
+                pass
 
     threading.Thread(target=run).start()
 
@@ -2618,12 +2627,8 @@ def handle_number(message):
         chat_id = data["chat_id"]
         old_msg_id = data["message_id"]
 
-        # STOP OLD COUNTDOWN
         data["active"] = False
 
-        # =========================
-        # ❌ NOT DIGIT
-        # =========================
         if not number.isdigit():
             try:
                 bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
@@ -2643,9 +2648,6 @@ def handle_number(message):
 
         length = len(number)
 
-        # =========================
-        # ❌ TOO SHORT
-        # =========================
         if length < 11:
             try:
                 bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
@@ -2670,9 +2672,6 @@ Bata cika ba, ana jiranka ka cikakkiya"""
             start_countdown(user_id)
             return
 
-        # =========================
-        # ❌ TOO LONG
-        # =========================
         if length > 11:
             try:
                 bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
@@ -2701,9 +2700,6 @@ Misali:
             start_countdown(user_id)
             return
 
-        # =========================
-        # ✅ VALID NUMBER
-        # =========================
         data["phone"] = number
 
         try:
@@ -2736,6 +2732,10 @@ Amount: ₦{data['amount']/100:.2f}
 
     except Exception as e:
         print("NUMBER ERROR:", e)
+
+
+
+
 
 
 
