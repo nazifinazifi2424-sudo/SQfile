@@ -2265,7 +2265,7 @@ def handle_mtn_sme_1day(call):
             kb.row(*nav)
 
         kb.row(
-            InlineKeyboardButton("◀ Back", callback_data="mtnsme")
+            InlineKeyboardButton("◀ Back", callback_data="type_mtn_")
         )
 
         text = """📡 *MTN SME - 1DAY*
