@@ -1,7 +1,6 @@
 
 
 
-
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -499,22 +498,21 @@ ON data_plans(status)
 """)
 
 # =========================
-# BUTTON TABLE (NEW CLEAN SYSTEM)
+# BUTTONS CONTROL TABLE (SAFE + PRO)
 # =========================
 
 data_cur.execute("""
-CREATE TABLE IF NOT EXISTS button_table (
+CREATE TABLE IF NOT EXISTS data_buttons (
     id SERIAL PRIMARY KEY,
 
-    name TEXT NOT NULL,          -- SME, 1Day, Corporate
-    network TEXT NOT NULL,       -- MTN, GLO, AIRTEL, 9MOBILE
+    name TEXT NOT NULL,              -- SME, CORPORATE, GIFTING (no limit)
+    network TEXT NOT NULL,           -- MTN, GLO, AIRTEL, 9MOBILE
 
-    callback TEXT NOT NULL,      -- sme, 1d, cor
+    callback TEXT NOT NULL,          -- sme, corporate, gifting
 
-    category TEXT NOT NULL,      -- type / expire
+    position INTEGER DEFAULT 1,      -- sorting
 
-    position INTEGER DEFAULT 1,
-    status INTEGER DEFAULT 1,
+    status INTEGER DEFAULT 1,        -- 1 = show, 0 = hidden
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -522,22 +520,14 @@ CREATE TABLE IF NOT EXISTS button_table (
 
 # ===== INDEX =====
 data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_table_network 
-ON button_table(network)
+CREATE INDEX IF NOT EXISTS idx_btn_network 
+ON data_buttons(network)
 """)
 
 data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_table_category 
-ON button_table(category)
+CREATE INDEX IF NOT EXISTS idx_btn_status 
+ON data_buttons(status)
 """)
-
-data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_table_status 
-ON button_table(status)
-""")
-
-
-
 # =========================
 # DATABASE TABLES (SAFE)
 # =========================
@@ -1991,264 +1981,450 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
 
 
 
+#========================================
+# MTN TYPES (FULL WITH ALL BUTTONS)
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "mtn")
+def mtn_types(call):
+    text = "🛜 MTN - Zaɓi nau'in data:"
 
+    kb = InlineKeyboardMarkup()
+
+    # ===== ROW 1 =====
+    kb.row(
+        InlineKeyboardButton("SME", callback_data="mtnsme"),
+        InlineKeyboardButton("Gifting", callback_data="mtngifting")
+    )
+
+    # ===== ROW 2 =====
+    kb.row(
+        InlineKeyboardButton("SME2", callback_data="mtnsme2"),
+        InlineKeyboardButton("Data Share", callback_data="mtndatashare")
+    )
+
+    # ===== ROW 3 =====
+    kb.add(
+        InlineKeyboardButton("Corporate", callback_data="mtncorporate")
+    )
+
+    # ===== ROW 4 =====
+    kb.add(
+        InlineKeyboardButton("MTN Awoof", callback_data="mtnawoof")
+    )
+
+    # ===== BACK =====
+    kb.add(
+        InlineKeyboardButton("⬅ Back", callback_data="data")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
 
 
 #========================================
-# DYNAMIC NETWORK → SHOW TYPE BUTTONS
+# MTN SME2
 #========================================
-@bot.callback_query_handler(func=lambda call: call.data in ["mtn", "glo", "airtel", "9mobile"])
-def dynamic_network_buttons(call):
-    try:
-        network = call.data.upper()   # MTN, GLO...
+@bot.callback_query_handler(func=lambda call: call.data == "mtnsme2")
+def mtn_sme2_duration(call):
+    text = "🛜 MTN SME2 - Zaɓi duration:"
 
-        conn = get_data_conn()
-        cur = conn.cursor()
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtnsme2_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtnsme2_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtnsme2_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtnsme2_30d")
+    )
+    kb.add(InlineKeyboardButton("⬅ Back", callback_data="mtn"))
 
-        # ===== GET TYPE BUTTONS =====
-        cur.execute("""
-        SELECT name, callback FROM button_table
-        WHERE LOWER(network)=LOWER(%s)
-        AND category='type'
-        AND status=1
-        ORDER BY position ASC
-        """, (network,))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-        buttons = cur.fetchall()
-
-        kb = InlineKeyboardMarkup(row_width=2)
-
-        if buttons:
-            for i in range(0, len(buttons), 2):
-                row = []
-                for j in range(2):
-                    if i + j < len(buttons):
-                        name, callback = buttons[i + j]
-
-                        # 🔥 IMPORTANT: encode network + callback
-                        cb = f"type_{network}_{callback}"
-
-                        row.append(
-                            InlineKeyboardButton(name, callback_data=cb)
-                        )
-                kb.row(*row)
-        else:
-            kb.add(InlineKeyboardButton("❌ Babu nau'i", callback_data="noop"))
-
-        kb.add(
-            InlineKeyboardButton("⬅ Back", callback_data="data")
-        )
-
-        text = f"🛜 {network} - Zaɓi nau'in data:"
-
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb
-        )
-
-        cur.close()
-        conn.close()
-
-    except Exception as e:
-        print("TYPE ERROR:", e)
-
-# =========================  
-# ADD BUTTON (FINAL SECURE SYSTEM)  
-# =========================  
-@bot.message_handler(commands=['addbutton'])  
-def add_button_handler(message):  
-    try:  
-        # ❌ ONLY ADMIN  
-        if message.from_user.id != ADMIN_ID:  
-            return  
-  
-        text = message.text.replace("/addbutton", "").strip()  
-  
-        if not text:  
-            bot.send_message(message.chat.id, "❌ Ka turo data bayan command")  
-            return  
-  
-        lines = text.split("\n")  
-  
-        category = None  
-        added = []  
-        skipped = []  
-  
-        conn = get_data_conn()  
-        cur = conn.cursor()  
-  
-        for line in lines:  
-            line = line.strip()  
-  
-            # ===== DETECT CATEGORY =====  
-            if line.lower() == "+nau'i":  
-                category = "type"  
-                continue  
-  
-            elif line.lower() == "+expire":  
-                category = "expire"  
-                continue  
-  
-            # ❌ idan ba'a saka category ba  
-            if not category:  
-                skipped.append(f"❌ {line} (ba'a saka +nau'i ko +expire ba)")  
-                continue  
-  
-            parts = line.split()  
-  
-            if len(parts) < 3:  
-                skipped.append(f"❌ {line} (format error)")  
-                continue  
-  
-            name = parts[0]                     # SME  
-            network = parts[1].upper()          # MTN  
-            callback = parts[2]                 # sme  
-  
-            # ===== CHECK DUPLICATE NAME =====  
-            cur.execute("""  
-            SELECT callback FROM button_table  
-            WHERE LOWER(name)=LOWER(%s)  
-            AND LOWER(network)=LOWER(%s)  
-            """, (name, network))  
-  
-            name_exist = cur.fetchone()  
-  
-            if name_exist:  
-                skipped.append(
-f"""⚠️ Duplicate NAME
-{name} ({network})
-Callback: {name_exist[0]}"""
-                )  
-                continue  
-  
-            # ===== CHECK DUPLICATE CALLBACK =====  
-            cur.execute("""  
-            SELECT name FROM button_table  
-            WHERE LOWER(callback)=LOWER(%s)  
-            AND LOWER(network)=LOWER(%s)  
-            """, (callback, network))  
-  
-            callback_exist = cur.fetchone()  
-  
-            if callback_exist:  
-                skipped.append(
-f"""⚠️ Duplicate CALLBACK
-{callback} ({network})
-Name: {callback_exist[0]}"""
-                )  
-                continue  
-  
-            # ===== INSERT =====  
-            cur.execute("""  
-            INSERT INTO button_table (name, network, callback, category)  
-            VALUES (%s, %s, %s, %s)  
-            """, (name, network, callback, category))  
-  
-            added.append(
-f"""✅ {name} ({network})
-Callback: {callback}
-Category: {category}"""
-            )  
-  
-        conn.commit()  
-        cur.close()  
-        conn.close()  
-  
-        # ===== RESULT =====  
-        msg = ""  
-  
-        if added:  
-            msg += "✅ AN SAKA BUTTON:\n\n" + "\n\n".join(added) + "\n\n"  
-  
-        if skipped:  
-            msg += "⚠️ AN TSALLAKE:\n\n" + "\n\n".join(skipped)  
-  
-        if not msg:  
-            msg = "❌ Babu abin da aka saka"  
-  
-        bot.send_message(message.chat.id, msg)  
-  
-    except Exception as e:  
-        print("ADD BUTTON ERROR:", e)
-
-
-# =========================
-# DELETE ALL BUTTONS (ADMIN ONLY)
-# =========================
-@bot.message_handler(commands=['delete'])
-def delete_all_buttons(message):
-    try:
-        # ❌ ONLY ADMIN
-        if message.from_user.id != ADMIN_ID:
-            return
-
-        conn = get_data_conn()
-        cur = conn.cursor()
-
-        # ===== COUNT BEFORE DELETE =====
-        cur.execute("SELECT COUNT(*) FROM button_table")
-        total = cur.fetchone()[0]
-
-        # ===== DELETE ALL =====
-        cur.execute("DELETE FROM button_table")
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        # ===== RESPONSE =====
-        bot.send_message(
-            message.chat.id,
-            f"""🗑 AN GOGE DUK BUTTONS
-
-Jimilla: {total}
-
-✅ Table ya zama empty"""
-        )
-
-    except Exception as e:
-        print("DELETE ERROR:", e)
-# =========================
-# ADMIN CONFIG
-# =========================
 
 #========================================
-# UNIVERSAL DATA PLANS (ALL NETWORKS)
+# MTN DATA SHARE
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "mtndatashare")
+def mtn_datashare_duration(call):
+    text = "🛜 MTN Data Share - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtndshare_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtndshare_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtndshare_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtndshare_30d")
+    )
+    kb.add(InlineKeyboardButton("⬅ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+#========================================
+# MTN AWOOF
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "mtnawoof")
+def mtn_awoof_duration(call):
+    text = "🛜 MTN Awoof - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtnawoof_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtnawoof_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtnawoof_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtnawoof_30d")
+    )
+    kb.add(InlineKeyboardButton("⬅ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== AIRTEL =====
+@bot.callback_query_handler(func=lambda call: call.data == "airtel")
+def airtel_types(call):
+    text = "🛜 Airtel - Zaɓi nau'in data:"
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("SME", callback_data="airtelsme"),
+        InlineKeyboardButton("Gifting", callback_data="airtelgifting")
+    )
+
+    kb.add(
+        InlineKeyboardButton("Corporate", callback_data="airtelcorporate")
+    )
+
+    kb.add(
+        InlineKeyboardButton("◀ Back", callback_data="data")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
+
+
+# ===== GLO =====
+@bot.callback_query_handler(func=lambda call: call.data == "glo")
+def glo_types(call):
+    text = "🛜 Glo - Zaɓi nau'in data:"
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("SME", callback_data="glosme"),
+        InlineKeyboardButton("Gifting", callback_data="glogifting")
+    )
+
+    kb.add(
+        InlineKeyboardButton("Corporate", callback_data="glocorporate")
+    )
+
+    kb.add(
+        InlineKeyboardButton("◀ Back", callback_data="data")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
+
+# ===== MTN SME =====
+@bot.callback_query_handler(func=lambda call: call.data == "mtnsme")
+def mtn_sme_duration(call):
+    text = "🛜 MTN SME - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtnsme_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtnsme_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtnsme_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtnsme_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== MTN GIFTING =====
+@bot.callback_query_handler(func=lambda call: call.data == "mtngifting")
+def mtn_gifting_duration(call):
+    text = "🛜 MTN Gifting - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtngifting_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtngifting_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtngifting_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtngifting_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== MTN CORPORATE =====
+@bot.callback_query_handler(func=lambda call: call.data == "mtncorporate")
+def mtn_corporate_duration(call):
+    text = "🛜 MTN Corporate - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="mtncorp_1d"),
+        InlineKeyboardButton("2Days", callback_data="mtncorp_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="mtncorp_7d"),
+        InlineKeyboardButton("30Days", callback_data="mtncorp_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="mtn"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== AIRTEL SME =====
+@bot.callback_query_handler(func=lambda call: call.data == "airtelsme")
+def airtel_sme_duration(call):
+    text = "🛜 Airtel SME - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="airtelsme_1d"),
+        InlineKeyboardButton("2Days", callback_data="airtelsme_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="airtelsme_7d"),
+        InlineKeyboardButton("30Days", callback_data="airtelsme_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="airtel"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== AIRTEL GIFTING =====
+@bot.callback_query_handler(func=lambda call: call.data == "airtelgifting")
+def airtel_gifting_duration(call):
+    text = "🛜 Airtel Gifting - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="airtelgift_1d"),
+        InlineKeyboardButton("2Days", callback_data="airtelgift_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="airtelgift_7d"),
+        InlineKeyboardButton("30Days", callback_data="airtelgift_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="airtel"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== AIRTEL CORPORATE =====
+@bot.callback_query_handler(func=lambda call: call.data == "airtelcorporate")
+def airtel_corporate_duration(call):
+    text = "🛜 Airtel Corporate - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="airtelcorp_1d"),
+        InlineKeyboardButton("2Days", callback_data="airtelcorp_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="airtelcorp_7d"),
+        InlineKeyboardButton("30Days", callback_data="airtelcorp_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="airtel"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== GLO SME =====
+@bot.callback_query_handler(func=lambda call: call.data == "glosme")
+def glo_sme_duration(call):
+    text = "🛜 Glo SME - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="glosme_1d"),
+        InlineKeyboardButton("2Days", callback_data="glosme_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="glosme_7d"),
+        InlineKeyboardButton("30Days", callback_data="glosme_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="glo"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== GLO GIFTING =====
+@bot.callback_query_handler(func=lambda call: call.data == "glogifting")
+def glo_gifting_duration(call):
+    text = "🛜 Glo Gifting - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="glogift_1d"),
+        InlineKeyboardButton("2Days", callback_data="glogift_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="glogift_7d"),
+        InlineKeyboardButton("30Days", callback_data="glogift_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="glo"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== GLO CORPORATE =====
+@bot.callback_query_handler(func=lambda call: call.data == "glocorporate")
+def glo_corporate_duration(call):
+    text = "🛜 Glo Corporate - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="glocorp_1d"),
+        InlineKeyboardButton("2Days", callback_data="glocorp_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="glocorp_7d"),
+        InlineKeyboardButton("30Days", callback_data="glocorp_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="glo"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== 9MOBILE =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobile")
+def nine_mobile_types(call):
+    text = "🛜 9mobile - Zaɓi nau'in data:"
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("SME", callback_data="9mobilesme"),
+        InlineKeyboardButton("Gifting", callback_data="9mobilegifting")
+    )
+
+    kb.add(
+        InlineKeyboardButton("Corporate", callback_data="9mobilecorporate")
+    )
+
+    kb.add(
+        InlineKeyboardButton("◀ Back", callback_data="data")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
+# ===== 9MOBILE SME =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobilesme")
+def nine_mobile_sme_duration(call):
+    text = "🛜 9mobile SME - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="9mobilesme_1d"),
+        InlineKeyboardButton("2Days", callback_data="9mobilesme_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="9mobilesme_7d"),
+        InlineKeyboardButton("30Days", callback_data="9mobilesme_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="9mobile"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== 9MOBILE GIFTING =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobilegifting")
+def nine_mobile_gifting_duration(call):
+    text = "🛜 9mobile Gifting - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="9mobilegift_1d"),
+        InlineKeyboardButton("2Days", callback_data="9mobilegift_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="9mobilegift_7d"),
+        InlineKeyboardButton("30Days", callback_data="9mobilegift_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="9mobile"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+# ===== 9MOBILE CORPORATE =====
+@bot.callback_query_handler(func=lambda call: call.data == "9mobilecorporate")
+def nine_mobile_corporate_duration(call):
+    text = "🛜 9mobile Corporate - Zaɓi duration:"
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("1Day", callback_data="9mobilecorp_1d"),
+        InlineKeyboardButton("2Days", callback_data="9mobilecorp_2d")
+    )
+    kb.row(
+        InlineKeyboardButton("7Days", callback_data="9mobilecorp_7d"),
+        InlineKeyboardButton("30Days", callback_data="9mobilecorp_30d")
+    )
+    kb.add(InlineKeyboardButton("◀ Back", callback_data="9mobile"))
+
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+#========================================
+# MTN SME 1DAY (FIXED PAGINATION)
 #========================================
 
 PLANS_PER_PAGE = 4
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("exp_"))
-def handle_all_data_plans(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mtnsme_1d"))
+def handle_mtn_sme_1day(call):
     try:
         parts = call.data.split("_")
 
-        # exp_MTN_sme_1d
-        network = parts[1]              # MTN
-        plan_type = parts[2]            # sme
-        duration = parts[3]             # 1d
-
-        # ===== PAGE FIX =====
-        if len(parts) == 4:
+        # ===== FIX PAGE =====
+        if len(parts) == 2:
             page = 0
         else:
-            page = int(parts[4])
+            page = int(parts[2])
 
         conn = get_data_conn()
         cur = conn.cursor()
 
-        # 🔥 IMPORTANT: match DB format
         cur.execute("""
         SELECT api_id, plan_name, price
         FROM data_plans
-        WHERE LOWER(network)=LOWER(%s)
-        AND LOWER(plan_type)=LOWER(%s)
-        AND LOWER(duration)=LOWER(%s)
+        WHERE network=%s 
+        AND plan_type=%s 
+        AND duration=%s 
         AND status=1
         ORDER BY price ASC
-        """, (network, plan_type, duration))
+        """, ("MTN", "SME", "1day"))
 
         plans = cur.fetchall()
 
@@ -2258,16 +2434,13 @@ def handle_all_data_plans(call):
 
         kb = InlineKeyboardMarkup(row_width=2)
 
-        # ===== BUTTONS =====
         if current:
             for i in range(0, len(current), 2):
                 row = []
                 for j in range(2):
                     if i + j < len(current):
                         api_id, name, price = current[i + j]
-
                         text = f"{name}\n₦{price/100:.2f}"
-
                         row.append(
                             InlineKeyboardButton(
                                 text,
@@ -2283,33 +2456,25 @@ def handle_all_data_plans(call):
 
         if page > 0:
             nav.append(
-                InlineKeyboardButton(
-                    "⏪ Previous",
-                    callback_data=f"exp_{network}_{plan_type}_{duration}_{page-1}"
-                )
+                InlineKeyboardButton("⏪ Previous", callback_data=f"mtnsme_1d_{page-1}")
             )
 
         if end < len(plans):
             nav.append(
-                InlineKeyboardButton(
-                    "More ▶",
-                    callback_data=f"exp_{network}_{plan_type}_{duration}_{page+1}"
-                )
+                InlineKeyboardButton("More ▶", callback_data=f"mtnsme_1d_{page+1}")
             )
 
         if nav:
             kb.row(*nav)
 
-        # ===== BACK =====
         kb.row(
-            InlineKeyboardButton(
-                "◀ Back",
-                callback_data=f"type_{network}_{plan_type}"
-            )
+            InlineKeyboardButton("◀ Back", callback_data="mtnsme")
         )
 
-        # ===== TEXT =====
-        text = f"""📡 *{network} {plan_type.upper()} - {duration.upper()}*
+        text = """📡 *MTN SME - 1DAY*
+
+Wannan data yana expire cikin awa 24  
+This data is valid for 24 hours  
 
 Zaɓi plan ɗin da kake so 👇"""
 
@@ -2325,9 +2490,8 @@ Zaɓi plan ɗin da kake so 👇"""
         conn.close()
 
     except Exception as e:
-        print("UNIVERSAL PLAN ERROR:", e)
+        print("ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
-
 
 
 
