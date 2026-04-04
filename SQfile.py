@@ -1,3 +1,6 @@
+
+
+
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -2265,7 +2268,7 @@ def handle_mtn_sme_1day(call):
             kb.row(*nav)
 
         kb.row(
-            InlineKeyboardButton("◀ Back", callback_data="type_mtn_")
+            InlineKeyboardButton("◀ Back", callback_data="type_mtn_sme")
         )
 
         text = """📡 *MTN SME - 1DAY*
