@@ -1,6 +1,3 @@
-
-
-
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -906,6 +903,21 @@ PAYSTACK_BASE = "https://api.paystack.co"
 LEGIT_URL = "https://legitdata.com.ng/api/user/"
 
 LEGIT_TOKEN = "ba5e0d85c11376ffa9389b86f58ba2717acbb930"
+
+#========================================
+# 🔐 LOCK SYSTEM
+#========================================
+LOCK_MTN = [1, 1, 1, 1, 1, 1, 1]  
+# SME, Gifting, Data Share, Corporate, Awoof, SME2, Special
+
+LOCK_AIRTEL = [1, 1, 1, 1]  
+# Gifting, SME, Corporate, Special
+
+LOCK_GLO = [1, 1, 1, 1]  
+# Special, Gifting, SME, Corporate
+
+LOCK_9MOBILE = [1, 1]  
+# SME, Corporate
 
 
 VIP_GROUP_ID = -1003656360408
@@ -1980,6 +1992,9 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
     )
 
 
+
+
+
 #========================================
 # HANDLE NETWORK TYPES (CUSTOM)
 #========================================
@@ -2022,10 +2037,19 @@ def handle_network_types(call):
         # 9MOBILE
         # =========================
         if network == "9mobile":
-            kb.row(
-                InlineKeyboardButton("SME", callback_data="type_9mobile_sme"),
-                InlineKeyboardButton("Corporate", callback_data="type_9mobile_corporate")
-            )
+            if LOCK_9MOBILE[0]:
+                btn1 = InlineKeyboardButton("📶 SME", callback_data="type_9mobile_sme")
+            else:
+                btn1 = None
+
+            if LOCK_9MOBILE[1]:
+                btn2 = InlineKeyboardButton("📶 Corporate", callback_data="type_9mobile_corporate")
+            else:
+                btn2 = None
+
+            row = [b for b in [btn1, btn2] if b]
+            if row:
+                kb.row(*row)
 
             kb.add(
                 InlineKeyboardButton("⬅ Back", callback_data="data")
@@ -2035,15 +2059,21 @@ def handle_network_types(call):
         # AIRTEL
         # =========================
         elif network == "airtel":
-            kb.row(
-                InlineKeyboardButton("Gifting", callback_data="type_airtel_gifting"),
-                InlineKeyboardButton("SME", callback_data="type_airtel_sme")
-            )
+            row1 = []
+            if LOCK_AIRTEL[0]:
+                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_airtel_gifting"))
+            if LOCK_AIRTEL[1]:
+                row1.append(InlineKeyboardButton("📶 SME", callback_data="type_airtel_sme"))
+            if row1:
+                kb.row(*row1)
 
-            kb.row(
-                InlineKeyboardButton("Corporate", callback_data="type_airtel_corporate"),
-                InlineKeyboardButton("Special", callback_data="type_airtel_special")
-            )
+            row2 = []
+            if LOCK_AIRTEL[2]:
+                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_airtel_corporate"))
+            if LOCK_AIRTEL[3]:
+                row2.append(InlineKeyboardButton("📶 Special", callback_data="type_airtel_special"))
+            if row2:
+                kb.row(*row2)
 
             kb.add(
                 InlineKeyboardButton("⬅ Back", callback_data="data")
@@ -2053,15 +2083,21 @@ def handle_network_types(call):
         # GLO
         # =========================
         elif network == "glo":
-            kb.row(
-                InlineKeyboardButton("Special", callback_data="type_glo_special"),
-                InlineKeyboardButton("Gifting", callback_data="type_glo_gifting")
-            )
+            row1 = []
+            if LOCK_GLO[0]:
+                row1.append(InlineKeyboardButton("📶 Special", callback_data="type_glo_special"))
+            if LOCK_GLO[1]:
+                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_glo_gifting"))
+            if row1:
+                kb.row(*row1)
 
-            kb.row(
-                InlineKeyboardButton("SME", callback_data="type_glo_sme"),
-                InlineKeyboardButton("Corporate", callback_data="type_glo_corporate")
-            )
+            row2 = []
+            if LOCK_GLO[2]:
+                row2.append(InlineKeyboardButton("📶 SME", callback_data="type_glo_sme"))
+            if LOCK_GLO[3]:
+                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_glo_corporate"))
+            if row2:
+                kb.row(*row2)
 
             kb.add(
                 InlineKeyboardButton("⬅ Back", callback_data="data")
@@ -2074,15 +2110,21 @@ def handle_network_types(call):
 
             # ===== PAGE 1 =====
             if page == 1:
-                kb.row(
-                    InlineKeyboardButton("SME", callback_data="type_mtn_sme"),
-                    InlineKeyboardButton("Gifting", callback_data="type_mtn_gifting")
-                )
+                row1 = []
+                if LOCK_MTN[0]:
+                    row1.append(InlineKeyboardButton("📶 SME", callback_data="type_mtn_sme"))
+                if LOCK_MTN[1]:
+                    row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_mtn_gifting"))
+                if row1:
+                    kb.row(*row1)
 
-                kb.row(
-                    InlineKeyboardButton("Data Share", callback_data="type_mtn_datashare"),
-                    InlineKeyboardButton("Corporate", callback_data="type_mtn_corporate")
-                )
+                row2 = []
+                if LOCK_MTN[2]:
+                    row2.append(InlineKeyboardButton("📶 Data Share", callback_data="type_mtn_datashare"))
+                if LOCK_MTN[3]:
+                    row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_mtn_corporate"))
+                if row2:
+                    kb.row(*row2)
 
                 kb.row(
                     InlineKeyboardButton("⬅ Back", callback_data="data"),
@@ -2091,14 +2133,18 @@ def handle_network_types(call):
 
             # ===== PAGE 2 =====
             else:
-                kb.row(
-                    InlineKeyboardButton("MTN Awoof", callback_data="type_mtn_awoof"),
-                    InlineKeyboardButton("SME2", callback_data="type_mtn_sme2")
-                )
+                row1 = []
+                if LOCK_MTN[4]:
+                    row1.append(InlineKeyboardButton("📶 MTN Awoof", callback_data="type_mtn_awoof"))
+                if LOCK_MTN[5]:
+                    row1.append(InlineKeyboardButton("📶 SME2", callback_data="type_mtn_sme2"))
+                if row1:
+                    kb.row(*row1)
 
-                kb.add(
-                    InlineKeyboardButton("Special", callback_data="type_mtn_special")
-                )
+                if LOCK_MTN[6]:
+                    kb.add(
+                        InlineKeyboardButton("📶 Special", callback_data="type_mtn_special")
+                    )
 
                 kb.add(
                     InlineKeyboardButton("⬅ Back", callback_data="mtn_back")
@@ -2116,6 +2162,7 @@ def handle_network_types(call):
 
     except Exception as e:
         print("NETWORK TYPES ERROR:", e)
+
 
 
 #========================================
