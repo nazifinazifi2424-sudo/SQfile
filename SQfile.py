@@ -2179,24 +2179,56 @@ def handle_network_types(call):
         print("NETWORK TYPES ERROR:", e)
 
 
-
 #========================================
-# MTN SME 1DAY (FIXED PAGINATION)
+# MTN DATA (DYNAMIC - SUPPORT ALL TYPES & DURATION)
 #========================================
 
 PLANS_PER_PAGE = 4
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("mtnsme_1d"))
-def handle_mtn_sme_1day(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("mtn"))
+def handle_mtn_all(call):
     try:
         parts = call.data.split("_")
 
-        # ===== FIX PAGE =====
+        # ===== PARSE =====
+        prefix = parts[0]        # mtnsme / mtngifting / mtncorporate etc
+        duration_raw = parts[1]  # 1d / 7d / 30d
+
+        # ===== PAGE =====
         if len(parts) == 2:
             page = 0
         else:
             page = int(parts[2])
 
+        # ===== FIX TYPE =====
+        if "sme2" in prefix:
+            plan_type = "SME2"
+        elif "sme" in prefix:
+            plan_type = "SME"
+        elif "gifting" in prefix:
+            plan_type = "GIFTING"
+        elif "corporate" in prefix:
+            plan_type = "CORPORATE"
+        elif "datashare" in prefix:
+            plan_type = "DATASHARE"
+        elif "special" in prefix:
+            plan_type = "SPECIAL"
+        else:
+            return
+
+        # ===== FIX DURATION =====
+        if duration_raw == "1d":
+            duration = "1day"
+        elif duration_raw == "7d":
+            duration = "7days"
+        elif duration_raw == "30d":
+            duration = "30days"
+        elif duration_raw == "2d":
+            duration = "2days"
+        else:
+            duration = duration_raw
+
+        # ===== DB =====
         conn = get_data_conn()
         cur = conn.cursor()
 
@@ -2208,7 +2240,7 @@ def handle_mtn_sme_1day(call):
         AND duration=%s 
         AND status=1
         ORDER BY price ASC
-        """, ("MTN", "SME", "1day"))
+        """, ("MTN", plan_type, duration))
 
         plans = cur.fetchall()
 
@@ -2235,30 +2267,27 @@ def handle_mtn_sme_1day(call):
         else:
             kb.add(InlineKeyboardButton("❌ Babu data", callback_data="noop"))
 
-        # ===== NAVIGATION =====
+        # ===== NAV =====
         nav = []
 
         if page > 0:
             nav.append(
-                InlineKeyboardButton("⏪ Previous", callback_data=f"mtnsme_1d_{page-1}")
+                InlineKeyboardButton("⏪ Previous", callback_data=f"{prefix}_{duration_raw}_{page-1}")
             )
 
         if end < len(plans):
             nav.append(
-                InlineKeyboardButton("More ▶", callback_data=f"mtnsme_1d_{page+1}")
+                InlineKeyboardButton("More ▶", callback_data=f"{prefix}_{duration_raw}_{page+1}")
             )
 
         if nav:
             kb.row(*nav)
 
         kb.row(
-            InlineKeyboardButton("◀ Back", callback_data="type_mtn_sme")
+            InlineKeyboardButton("◀ Back", callback_data=f"type_mtn_{plan_type.lower()}")
         )
 
-        text = """📡 *MTN SME - 1DAY*
-
-Wannan data yana expire cikin awa 24  
-This data is valid for 24 hours  
+        text = f"""📡 *MTN {plan_type} - {duration.upper()}*
 
 Zaɓi plan ɗin da kake so 👇"""
 
@@ -2274,8 +2303,10 @@ Zaɓi plan ɗin da kake so 👇"""
         conn.close()
 
     except Exception as e:
-        print("ERROR:", e)
+        print("MTN DYNAMIC ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data")
+
+
 
 
 
