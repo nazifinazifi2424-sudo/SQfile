@@ -1991,8 +1991,6 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
         reply_markup=kb
     )
 
-
-
 #========================================
 # HANDLE NETWORK TYPES (CUSTOM)
 #========================================
@@ -2021,11 +2019,16 @@ def handle_network_types(call):
             else:
                 page = 1
 
-        # SAVE SESSION
-        user_data_session[user_id] = {
+        # =========================
+        # ✅ FIXED SESSION (BA ZA A GOGE DATA BA)
+        # =========================
+        if user_id not in user_data_session:
+            user_data_session[user_id] = {}
+
+        user_data_session[user_id].update({
             "network": network,
             "page": page
-        }
+        })
 
         text = f"🛜 {network.upper()} - Zaɓi nau'in data:"
 
@@ -2035,12 +2038,12 @@ def handle_network_types(call):
         # 9MOBILE
         # =========================
         if network == "9mobile":
-            if LOCK_9MOBILE[0]:
+            if len(LOCK_9MOBILE) > 0 and LOCK_9MOBILE[0]:
                 btn1 = InlineKeyboardButton("📶 SME", callback_data="type_9mobile_sme")
             else:
                 btn1 = None
 
-            if LOCK_9MOBILE[1]:
+            if len(LOCK_9MOBILE) > 1 and LOCK_9MOBILE[1]:
                 btn2 = InlineKeyboardButton("📶 Corporate", callback_data="type_9mobile_corporate")
             else:
                 btn2 = None
@@ -2058,17 +2061,17 @@ def handle_network_types(call):
         # =========================
         elif network == "airtel":
             row1 = []
-            if LOCK_AIRTEL[0]:
+            if len(LOCK_AIRTEL) > 0 and LOCK_AIRTEL[0]:
                 row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_airtel_gifting"))
-            if LOCK_AIRTEL[1]:
+            if len(LOCK_AIRTEL) > 1 and LOCK_AIRTEL[1]:
                 row1.append(InlineKeyboardButton("📶 SME", callback_data="type_airtel_sme"))
             if row1:
                 kb.row(*row1)
 
             row2 = []
-            if LOCK_AIRTEL[2]:
+            if len(LOCK_AIRTEL) > 2 and LOCK_AIRTEL[2]:
                 row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_airtel_corporate"))
-            if LOCK_AIRTEL[3]:
+            if len(LOCK_AIRTEL) > 3 and LOCK_AIRTEL[3]:
                 row2.append(InlineKeyboardButton("📶 Special", callback_data="type_airtel_special"))
             if row2:
                 kb.row(*row2)
@@ -2082,17 +2085,17 @@ def handle_network_types(call):
         # =========================
         elif network == "glo":
             row1 = []
-            if LOCK_GLO[0]:
+            if len(LOCK_GLO) > 0 and LOCK_GLO[0]:
                 row1.append(InlineKeyboardButton("📶 Special", callback_data="type_glo_special"))
-            if LOCK_GLO[1]:
+            if len(LOCK_GLO) > 1 and LOCK_GLO[1]:
                 row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_glo_gifting"))
             if row1:
                 kb.row(*row1)
 
             row2 = []
-            if LOCK_GLO[2]:
+            if len(LOCK_GLO) > 2 and LOCK_GLO[2]:
                 row2.append(InlineKeyboardButton("📶 SME", callback_data="type_glo_sme"))
-            if LOCK_GLO[3]:
+            if len(LOCK_GLO) > 3 and LOCK_GLO[3]:
                 row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_glo_corporate"))
             if row2:
                 kb.row(*row2)
@@ -2109,17 +2112,17 @@ def handle_network_types(call):
             # ===== PAGE 1 =====
             if page == 1:
                 row1 = []
-                if LOCK_MTN[0]:
+                if len(LOCK_MTN) > 0 and LOCK_MTN[0]:
                     row1.append(InlineKeyboardButton("📶 SME", callback_data="type_mtn_sme"))
-                if LOCK_MTN[1]:
+                if len(LOCK_MTN) > 1 and LOCK_MTN[1]:
                     row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_mtn_gifting"))
                 if row1:
                     kb.row(*row1)
 
                 row2 = []
-                if LOCK_MTN[2]:
+                if len(LOCK_MTN) > 2 and LOCK_MTN[2]:
                     row2.append(InlineKeyboardButton("📶 Data Share", callback_data="type_mtn_datashare"))
-                if LOCK_MTN[3]:
+                if len(LOCK_MTN) > 3 and LOCK_MTN[3]:
                     row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_mtn_corporate"))
                 if row2:
                     kb.row(*row2)
@@ -2132,14 +2135,14 @@ def handle_network_types(call):
             # ===== PAGE 2 =====
             else:
                 row1 = []
-                if LOCK_MTN[4]:
+                if len(LOCK_MTN) > 4 and LOCK_MTN[4]:
                     row1.append(InlineKeyboardButton("📶 MTN Awoof", callback_data="type_mtn_awoof"))
-                if LOCK_MTN[5]:
+                if len(LOCK_MTN) > 5 and LOCK_MTN[5]:
                     row1.append(InlineKeyboardButton("📶 SME2", callback_data="type_mtn_sme2"))
                 if row1:
                     kb.row(*row1)
 
-                if LOCK_MTN[6]:
+                if len(LOCK_MTN) > 6 and LOCK_MTN[6]:
                     kb.add(
                         InlineKeyboardButton("📶 Special", callback_data="type_mtn_special")
                     )
@@ -2160,9 +2163,6 @@ def handle_network_types(call):
 
     except Exception as e:
         print("NETWORK TYPES ERROR:", e)
-
-
-
 
 #========================================
 # MTN SME 1DAY (FIXED PAGINATION)
