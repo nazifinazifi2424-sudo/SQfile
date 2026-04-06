@@ -2453,7 +2453,7 @@ def handle_number(message):
 
             msg = bot.send_message(
                 chat_id,
-f"""❌ Karma duba lambarka da kyau
+f"""❌ Kara duba lambarka da kyau
 Guda {length} ka bayar
 Bata cika ba, ana jiranka ka cikakkiya"""
             )
@@ -2461,7 +2461,7 @@ Bata cika ba, ana jiranka ka cikakkiya"""
             data.update({
                 "active": True,
                 "message_id": msg.message_id,
-                "countdown_text": f"""❌ Karma duba lambarka da kyau
+                "countdown_text": f"""❌ Kara duba lambarka da kyau
 Guda {length} ka bayar
 Bata cika ba, ana jiranka ka cikakkiya"""
             })
