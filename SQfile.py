@@ -1993,6 +1993,174 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi.
 
 
 
+#========================================
+# HANDLE NETWORK TYPES (CUSTOM)
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data in [
+    "mtn", "airtel", "glo", "9mobile",
+    "mtn_more", "mtn_back"
+])
+def handle_network_types(call):
+    try:
+        user_id = call.from_user.id
+
+        # =========================
+        # DETERMINE NETWORK + PAGE
+        # =========================
+        if call.data in ["mtn", "airtel", "glo", "9mobile"]:
+            network = call.data
+            page = 1
+        else:
+            if user_id not in user_data_session:
+                return
+
+            network = user_data_session[user_id]["network"]
+
+            if call.data == "mtn_more":
+                page = 2
+            else:
+                page = 1
+
+        # SAVE SESSION
+        user_data_session[user_id] = {
+            "network": network,
+            "page": page
+        }
+
+        text = f"🛜 {network.upper()} - Zaɓi nau'in data:"
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # 9MOBILE
+        # =========================
+        if network == "9mobile":
+            if LOCK_9MOBILE[0]:
+                btn1 = InlineKeyboardButton("📶 SME", callback_data="type_9mobile_sme")
+            else:
+                btn1 = None
+
+            if LOCK_9MOBILE[1]:
+                btn2 = InlineKeyboardButton("📶 Corporate", callback_data="type_9mobile_corporate")
+            else:
+                btn2 = None
+
+            row = [b for b in [btn1, btn2] if b]
+            if row:
+                kb.row(*row)
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="data")
+            )
+
+        # =========================
+        # AIRTEL
+        # =========================
+        elif network == "airtel":
+            row1 = []
+            if LOCK_AIRTEL[0]:
+                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_airtel_gifting"))
+            if LOCK_AIRTEL[1]:
+                row1.append(InlineKeyboardButton("📶 SME", callback_data="type_airtel_sme"))
+            if row1:
+                kb.row(*row1)
+
+            row2 = []
+            if LOCK_AIRTEL[2]:
+                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_airtel_corporate"))
+            if LOCK_AIRTEL[3]:
+                row2.append(InlineKeyboardButton("📶 Special", callback_data="type_airtel_special"))
+            if row2:
+                kb.row(*row2)
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="data")
+            )
+
+        # =========================
+        # GLO
+        # =========================
+        elif network == "glo":
+            row1 = []
+            if LOCK_GLO[0]:
+                row1.append(InlineKeyboardButton("📶 Special", callback_data="type_glo_special"))
+            if LOCK_GLO[1]:
+                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_glo_gifting"))
+            if row1:
+                kb.row(*row1)
+
+            row2 = []
+            if LOCK_GLO[2]:
+                row2.append(InlineKeyboardButton("📶 SME", callback_data="type_glo_sme"))
+            if LOCK_GLO[3]:
+                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_glo_corporate"))
+            if row2:
+                kb.row(*row2)
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="data")
+            )
+
+        # =========================
+        # MTN (WITH PAGINATION)
+        # =========================
+        elif network == "mtn":
+
+            # ===== PAGE 1 =====
+            if page == 1:
+                row1 = []
+                if LOCK_MTN[0]:
+                    row1.append(InlineKeyboardButton("📶 SME", callback_data="type_mtn_sme"))
+                if LOCK_MTN[1]:
+                    row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_mtn_gifting"))
+                if row1:
+                    kb.row(*row1)
+
+                row2 = []
+                if LOCK_MTN[2]:
+                    row2.append(InlineKeyboardButton("📶 Data Share", callback_data="type_mtn_datashare"))
+                if LOCK_MTN[3]:
+                    row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_mtn_corporate"))
+                if row2:
+                    kb.row(*row2)
+
+                kb.row(
+                    InlineKeyboardButton("⬅ Back", callback_data="data"),
+                    InlineKeyboardButton("More ▶", callback_data="mtn_more")
+                )
+
+            # ===== PAGE 2 =====
+            else:
+                row1 = []
+                if LOCK_MTN[4]:
+                    row1.append(InlineKeyboardButton("📶 MTN Awoof", callback_data="type_mtn_awoof"))
+                if LOCK_MTN[5]:
+                    row1.append(InlineKeyboardButton("📶 SME2", callback_data="type_mtn_sme2"))
+                if row1:
+                    kb.row(*row1)
+
+                if LOCK_MTN[6]:
+                    kb.add(
+                        InlineKeyboardButton("📶 Special", callback_data="type_mtn_special")
+                    )
+
+                kb.add(
+                    InlineKeyboardButton("⬅ Back", callback_data="mtn_back")
+                )
+
+        # =========================
+        # EDIT MESSAGE
+        # =========================
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("NETWORK TYPES ERROR:", e)
+
 
 
 
