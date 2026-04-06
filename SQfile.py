@@ -907,7 +907,7 @@ LEGIT_TOKEN = "ba5e0d85c11376ffa9389b86f58ba2717acbb930"
 #========================================
 # 🔐 LOCK SYSTEM
 #========================================
-LOCK_MTN = [1, 1, 1, 1, 1, 1, 1]  
+LOCK_MTN = [1, 1, 0, 1, 0, 0, 0]  
 # SME, Gifting, Data Share, Corporate, Awoof, SME2, Special
 
 LOCK_AIRTEL = [1, 1, 1, 1]  
