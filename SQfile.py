@@ -2453,6 +2453,84 @@ Dan Allah a tabbatar layin da za'a siya data babu bashi."""
 
 
 
+#========================================
+# HANDLE MTN TYPE → DURATION (CUSTOM)
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("type_mtn_"))
+def handle_mtn_duration(call):
+    try:
+        dtype = call.data.split("_")[2]  # sme, gifting, corporate
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # GIFTING
+        # =========================
+        if dtype == "gifting":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="mtngifting_1d"),
+                InlineKeyboardButton("2Days", callback_data="mtngifting_2d"),
+                InlineKeyboardButton("1Week", callback_data="mtngifting_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="mtngifting_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="mtn")
+            )
+
+        # =========================
+        # SME
+        # =========================
+        elif dtype == "sme":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="mtnsme_1d"),
+                InlineKeyboardButton("7Days", callback_data="mtnsme_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="mtnsme_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="mtn")
+            )
+
+        # =========================
+        # CORPORATE
+        # =========================
+        elif dtype == "corporate":
+
+            kb.row(
+                InlineKeyboardButton("2Days", callback_data="mtncorporate_2d"),
+                InlineKeyboardButton("1Day", callback_data="mtncorporate_1d"),
+                InlineKeyboardButton("30Days", callback_data="mtncorporate_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("1Week", callback_data="mtncorporate_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="mtn")
+            )
+
+        text = f"🛜 MTN {dtype.upper()} - Zaɓi duration:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("MTN DURATION ERROR:", e)
+
 
 
 #========================================
