@@ -2432,21 +2432,19 @@ def handle_mtn_duration(call):
 
 
 #========================================
-# MTN DATA (DYNAMIC - SUPPORT ALL TYPES & DURATION)
+# UNIVERSAL DATA HANDLER (ALL NETWORKS)
 #========================================
 
 PLANS_PER_PAGE = 4
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith((
-    "mtnsme_", "mtngifting_", "mtncorporate_", 
-    "mtndatashare_", "mtnspecial_", "mtnsme2_"
+@bot.callback_query_handler(func=lambda call: call.data.endswith((
+    "_1d", "_2d", "_3d", "_7d", "_30d"
 )))
-def handle_mtn_all(call):
+def handle_all_data(call):
     try:
         parts = call.data.split("_")
 
-        # ===== PARSE =====
-        prefix = parts[0]
+        prefix = parts[0]        # airtelsme / glosme / mtnsme etc
         duration_raw = parts[1]
 
         # ===== PAGE =====
@@ -2455,7 +2453,19 @@ def handle_mtn_all(call):
         else:
             page = int(parts[2])
 
-        # ===== FIX TYPE =====
+        # ===== DETECT NETWORK =====
+        if prefix.startswith("mtn"):
+            network = "MTN"
+        elif prefix.startswith("airtel"):
+            network = "AIRTEL"
+        elif prefix.startswith("glo"):
+            network = "GLO"
+        elif prefix.startswith("9mobile"):
+            network = "9MOBILE"
+        else:
+            return
+
+        # ===== DETECT PLAN TYPE =====
         if "sme2" in prefix:
             plan_type = "SME2"
         elif "sme" in prefix:
@@ -2474,12 +2484,14 @@ def handle_mtn_all(call):
         # ===== FIX DURATION =====
         if duration_raw == "1d":
             duration = "1day"
+        elif duration_raw == "2d":
+            duration = "2days"
+        elif duration_raw == "3d":
+            duration = "3days"
         elif duration_raw == "7d":
             duration = "7days"
         elif duration_raw == "30d":
             duration = "30days"
-        elif duration_raw == "2d":
-            duration = "2days"
         else:
             duration = duration_raw
 
@@ -2495,11 +2507,11 @@ def handle_mtn_all(call):
         AND duration=%s 
         AND status=1
         ORDER BY price ASC
-        """, ("MTN", plan_type, duration))
+        """, (network, plan_type, duration))
 
         plans = cur.fetchall()
 
-        # ❗ IDAN BABU DATA → POPUP ALERT (BA EDIT BA)
+        # ❗ IDAN BABU DATA → POPUP (BA EDIT BA)
         if not plans:
             bot.answer_callback_query(
                 call.id,
@@ -2510,6 +2522,7 @@ def handle_mtn_all(call):
             conn.close()
             return
 
+        # ===== PAGINATION =====
         start = page * PLANS_PER_PAGE
         end = start + PLANS_PER_PAGE
         current = plans[start:end]
@@ -2547,10 +2560,10 @@ def handle_mtn_all(call):
             kb.row(*nav)
 
         kb.row(
-            InlineKeyboardButton("◀ Back", callback_data=f"type_mtn_{plan_type.lower()}")
+            InlineKeyboardButton("◀ Back", callback_data=f"type_{network.lower()}_{plan_type.lower()}")
         )
 
-        text = f"""📡 *MTN {plan_type} - {duration.upper()}*
+        text = f"""📡 *{network} {plan_type} - {duration.upper()}*
 
 Zaɓi plan ɗin da kake so 👇"""
 
@@ -2566,8 +2579,10 @@ Zaɓi plan ɗin da kake so 👇"""
         conn.close()
 
     except Exception as e:
-        print("MTN DYNAMIC ERROR:", e)
+        print("UNIVERSAL DATA ERROR:", e)
         bot.answer_callback_query(call.id, "⚠️ Error loading data", show_alert=True)
+
+
 
 
 
