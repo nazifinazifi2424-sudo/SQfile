@@ -2431,21 +2431,23 @@ def handle_mtn_duration(call):
         print("MTN DURATION ERROR:", e)
 
 
-
 #========================================
 # MTN DATA (DYNAMIC - SUPPORT ALL TYPES & DURATION)
 #========================================
 
 PLANS_PER_PAGE = 4
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("mtn"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith((
+    "mtnsme_", "mtngifting_", "mtncorporate_", 
+    "mtndatashare_", "mtnspecial_", "mtnsme2_"
+)))
 def handle_mtn_all(call):
     try:
         parts = call.data.split("_")
 
         # ===== PARSE =====
-        prefix = parts[0]        # mtnsme / mtngifting / mtncorporate etc
-        duration_raw = parts[1]  # 1d / 7d / 30d
+        prefix = parts[0]
+        duration_raw = parts[1]
 
         # ===== PAGE =====
         if len(parts) == 2:
@@ -2497,28 +2499,36 @@ def handle_mtn_all(call):
 
         plans = cur.fetchall()
 
+        # ❗ IDAN BABU DATA → POPUP ALERT (BA EDIT BA)
+        if not plans:
+            bot.answer_callback_query(
+                call.id,
+                "❌ Babu data a wannan duration",
+                show_alert=True
+            )
+            cur.close()
+            conn.close()
+            return
+
         start = page * PLANS_PER_PAGE
         end = start + PLANS_PER_PAGE
         current = plans[start:end]
 
         kb = InlineKeyboardMarkup(row_width=2)
 
-        if current:
-            for i in range(0, len(current), 2):
-                row = []
-                for j in range(2):
-                    if i + j < len(current):
-                        api_id, name, price = current[i + j]
-                        text = f"{name}\n₦{price/100:.2f}"
-                        row.append(
-                            InlineKeyboardButton(
-                                text,
-                                callback_data=f"buydata_{api_id}"
-                            )
+        for i in range(0, len(current), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(current):
+                    api_id, name, price = current[i + j]
+                    text = f"{name}\n₦{price/100:.2f}"
+                    row.append(
+                        InlineKeyboardButton(
+                            text,
+                            callback_data=f"buydata_{api_id}"
                         )
-                kb.row(*row)
-        else:
-            kb.add(InlineKeyboardButton("❌ Babu data", callback_data="noop"))
+                    )
+            kb.row(*row)
 
         # ===== NAV =====
         nav = []
@@ -2557,10 +2567,7 @@ Zaɓi plan ɗin da kake so 👇"""
 
     except Exception as e:
         print("MTN DYNAMIC ERROR:", e)
-        bot.answer_callback_query(call.id, "⚠️ Error loading data")
-
-
-
+        bot.answer_callback_query(call.id, "⚠️ Error loading data", show_alert=True)
 
 
 
