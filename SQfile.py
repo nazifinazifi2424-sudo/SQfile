@@ -2178,15 +2178,14 @@ def handle_network_types(call):
     except Exception as e:  
         print("NETWORK TYPES ERROR:", e)
 
-
-
-
 #========================================
 # HANDLE GLO TYPE → DURATION
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("type_glo_"))
 def handle_glo_duration(call):
     try:
+        user_data_session.pop(call.from_user.id, None)
+
         dtype = call.data.split("_")[2]  # sme, corporate, gifting
 
         kb = InlineKeyboardMarkup()
@@ -2249,12 +2248,15 @@ def handle_glo_duration(call):
     except Exception as e:
         print("GLO DURATION ERROR:", e)
 
+
 #========================================
 # HANDLE AIRTEL TYPE → DURATION
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("type_airtel_"))
 def handle_airtel_duration(call):
     try:
+        user_data_session.pop(call.from_user.id, None)
+
         dtype = call.data.split("_")[2]  # sme, gifting, corporate, special
 
         kb = InlineKeyboardMarkup()
@@ -2309,13 +2311,14 @@ def handle_airtel_duration(call):
     except Exception as e:
         print("AIRTEL DURATION ERROR:", e)
 
-
 #========================================
 # HANDLE 9MOBILE TYPE → DURATION
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("type_9mobile_"))
 def handle_9mobile_duration(call):
     try:
+        user_data_session.pop(call.from_user.id, None)
+
         dtype = call.data.split("_")[2]  # sme, corporate
 
         kb = InlineKeyboardMarkup()
@@ -2347,13 +2350,14 @@ def handle_9mobile_duration(call):
 
 
 
-
 #========================================
 # HANDLE MTN TYPE → DURATION (CUSTOM)
 #========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("type_mtn_"))
 def handle_mtn_duration(call):
     try:
+        user_data_session.pop(call.from_user.id, None)
+
         dtype = call.data.split("_")[2]  # sme, gifting, corporate
 
         kb = InlineKeyboardMarkup()
@@ -2425,6 +2429,8 @@ def handle_mtn_duration(call):
 
     except Exception as e:
         print("MTN DURATION ERROR:", e)
+
+
 
 #========================================
 # MTN DATA (DYNAMIC - SUPPORT ALL TYPES & DURATION)
