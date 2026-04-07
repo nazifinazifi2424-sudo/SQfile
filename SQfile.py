@@ -2181,6 +2181,73 @@ def handle_network_types(call):
 
 
 
+#========================================
+# HANDLE GLO TYPE → DURATION
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("type_glo_"))
+def handle_glo_duration(call):
+    try:
+        dtype = call.data.split("_")[2]  # sme, corporate, gifting
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # SME
+        # =========================
+        if dtype == "sme":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="glosme_1d"),
+                InlineKeyboardButton("2Days", callback_data="glosme_2d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("7Days", callback_data="glosme_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="glo")
+            )
+
+        # =========================
+        # CORPORATE
+        # =========================
+        elif dtype == "corporate":
+
+            kb.row(
+                InlineKeyboardButton("30Days", callback_data="glocorporate_30d"),
+                InlineKeyboardButton("7Days", callback_data="glocorporate_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="glo")
+            )
+
+        # =========================
+        # GIFTING
+        # =========================
+        elif dtype == "gifting":
+
+            kb.row(
+                InlineKeyboardButton("3Days", callback_data="glogifting_3d"),
+                InlineKeyboardButton("7Days", callback_data="glogifting_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="glo")
+            )
+
+        text = f"🛜 GLO {dtype.upper()} - Zaɓi duration:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("GLO DURATION ERROR:", e)
 
 #========================================
 # HANDLE AIRTEL TYPE → DURATION
