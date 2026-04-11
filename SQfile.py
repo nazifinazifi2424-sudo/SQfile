@@ -1,5 +1,6 @@
 
 
+
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -55,6 +56,34 @@ def get_wallet_conn():
 wallet_conn = psycopg2.connect(WALLET_DATABASE_URL)
 wallet_conn.autocommit = True
 wallet_cur = wallet_conn.cursor()
+
+
+# ======================
+# DATA DATABASE CONNECTION
+# ======================
+DATA_DATABASE_URL = os.environ.get("DATA_DATABASE_URL")
+
+if not DATA_DATABASE_URL:
+    raise RuntimeError("DATA_DATABASE_URL is not set")
+
+def get_data_conn():
+    try:
+        c = psycopg2.connect(
+            DATA_DATABASE_URL,
+            connect_timeout=5,
+            sslmode="require"
+        )
+        c.autocommit = True
+        return c
+    except Exception as e:
+        print("❌ DATA DB CONNECT ERROR:", e)
+        return None
+
+
+# GLOBAL (for table creation)
+data_conn = psycopg2.connect(DATA_DATABASE_URL)
+data_conn.autocommit = True
+data_cur = data_conn.cursor()
 
 
 # AUTO DB FIX: ENSURE invite_link COLUMN
@@ -426,6 +455,80 @@ ON wallet_withdrawals(user_id)
 
 
 # =========================
+# DATA DATABASE TABLES (PRO VERSION)
+# =========================
+
+data_cur.execute("""
+CREATE TABLE IF NOT EXISTS data_plans (
+    id SERIAL PRIMARY KEY,
+
+    api_id BIGINT UNIQUE,              -- API plan ID
+
+    network VARCHAR(20) NOT NULL,      -- MTN, GLO, AIRTEL, 9MOBILE
+    plan_type VARCHAR(50) NOT NULL,    -- SME, SME2, AWOOF, SPECIAL...
+
+    plan_name VARCHAR(50) NOT NULL,    -- 1GB, 460MB...
+    plan_desc TEXT,                    -- full description (optional)
+
+    duration VARCHAR(50) NOT NULL,     -- 1day, 7days, 30days
+
+    price BIGINT NOT NULL,             -- use kobo (e.g 30000 = ₦300)
+
+    status INTEGER DEFAULT 1,          -- 1 = ON, 0 = OFF
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# ===== INDEX domin saurin query =====
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_data_network 
+ON data_plans(network)
+""")
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_data_type 
+ON data_plans(plan_type)
+""")
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_data_status 
+ON data_plans(status)
+""")
+
+# =========================
+# BUTTONS CONTROL TABLE (SAFE + PRO)
+# =========================
+
+data_cur.execute("""
+CREATE TABLE IF NOT EXISTS data_buttons (
+    id SERIAL PRIMARY KEY,
+
+    name TEXT NOT NULL,              -- SME, CORPORATE, GIFTING (no limit)
+    network TEXT NOT NULL,           -- MTN, GLO, AIRTEL, 9MOBILE
+
+    callback TEXT NOT NULL,          -- sme, corporate, gifting
+
+    position INTEGER DEFAULT 1,      -- sorting
+
+    status INTEGER DEFAULT 1,        -- 1 = show, 0 = hidden
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# ===== INDEX =====
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_btn_network 
+ON data_buttons(network)
+""")
+
+data_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_btn_status 
+ON data_buttons(status)
+""")
+# =========================
 # DATABASE TABLES (SAFE)
 # =========================
 
@@ -760,8 +863,9 @@ import hashlib
 ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
+user_data_session = {}
 # --- Admins configuration ---
-ADMINS = [6603268127]
+ADMINS = [8537505191]
 
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -779,34 +883,53 @@ WARNING_1_UNIT = "days"
 
 WARNING_2_VALUE = 32
 WARNING_2_UNIT = "days"
-ADMIN_ID = 6603268127
+ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
-BOT_USERNAME = "Algaitabot"
-CHANNEL = "@Algaitamoviestore"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 70
-VIP_LINK = "https://t.me/+sRDID76KGO1lMTc8"  # saka permanent group link naka
+VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is missing")
+# ========= PAYSTACK CONFIG =========
+PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
+PAYSTACK_PUBLIC = os.getenv("PAYSTACK_PUBLIC")
+PAYSTACK_REDIRECT_URL = os.getenv("PAYSTACK_REDIRECT_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
+PAYSTACK_BASE = "https://api.paystack.co"
 
+LEGIT_URL = "https://legitdata.com.ng/api/user/"
 
-KORA_SECRET = os.getenv("KORA_SECRET")
-KORA_PUBLIC = os.getenv("KORA_PUBLIC")  # optional
-KORA_REDIRECT_URL = os.getenv("KORA_REDIRECT_URL")
-KORA_WEBHOOK_URL = os.getenv("KORA_WEBHOOK_URL")
+LEGIT_TOKEN = "ba5e0d85c11376ffa9389b86f58ba2717acbb930"
 
-KORA_BASE = "https://api.korapay.com/merchant/api/v1"
+LOCK_MTN_MORE = 0
+
+#========================================
+# 🔐 LOCK SYSTEM
+#========================================
+LOCK_MTN = [1, 1, 0, 1, 0, 0, 0]  
+# SME, Gifting, Data Share, Corporate, Awoof, SME2, Special
+
+LOCK_AIRTEL = [1, 1, 1, 1]  
+# Gifting, SME, Corporate, Special
+
+LOCK_GLO = [1, 1, 1, 1]  
+# Special, Gifting, SME, Corporate
+
+LOCK_9MOBILE = [1, 1]  
+# SME, Corporate
 
 
 VIP_GROUP_ID = -1003656360408
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003555015230
-STORAGE_CHANNEL = -1003520788779
+PAYMENT_NOTIFY_GROUP = -1003769342354
+STORAGE_CHANNEL =  -1003794258511
 
 PAYMENT_NOTIFY_GROUP_WALLET = -1003803657269
 
@@ -831,55 +954,40 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 # ========= FLASK =========
 app = Flask(__name__)
 
-
 import time
-import random
-import requests
 
-def create_kora_payment(user_id, order_id, amount, title):
-    try:
-        headers = {
-            "Authorization": f"Bearer {KORA_SECRET}",
-            "Content-Type": "application/json"
+def create_paystack_payment(user_id, order_id, amount, title):
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "reference": f"{order_id}_{int(time.time())}",  # ✅ FIX
+        "amount": int(amount) * 100,
+        "currency": "NGN",
+        "callback_url": PAYSTACK_REDIRECT_URL,
+        "email": f"user{user_id}@telegram.com",
+        "metadata": {
+            "order_id": str(order_id),
+            "user_id": user_id,
+            "title": title[:50]
         }
+    }
 
-        # ✅ STRONG UNIQUE REFERENCE (NO STALE / NO DUPLICATE)
-        reference = f"{order_id}_{int(time.time())}_{random.randint(1000,9999)}"
+    r = requests.post(
+        f"{PAYSTACK_BASE}/transaction/initialize",
+        json=payload,
+        headers=headers,
+        timeout=30
+    )
 
-        payload = {
-            "reference": reference,
-            "amount": int(amount),
-            "currency": "NGN",
-            "redirect_url": KORA_REDIRECT_URL,
-            "customer": {
-                "email": f"user{user_id}@engrservice.com"
-            },
-            "metadata": {
-                "order_id": str(order_id),
-                "user_id": user_id,
-                "title": title[:50]
-            }
-        }
-
-        r = requests.post(
-            f"{KORA_BASE}/charges/initialize",
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-
-        if not data.get("status") or "data" not in data:
-            return None
-
-        return data["data"].get("checkout_url")
-
-    except:
+    data = r.json()
+    if not data.get("status"):
         return None
+
+    return data["data"]["authorization_url"]
+
 
 
 # ========= HOME / KEEP ALIVE =========
@@ -887,24 +995,24 @@ def create_kora_payment(user_id, order_id, amount, title):
 def home():
     return "OK", 200
 
-# ========= CALLBACK PAGE =========  
-@app.route("/korapay-callback", methods=["GET"])  
-def korapay_callback():  
-    return """  
-    <html>  
-    <head>  
-        <title>Payment Successful</title>  
-        <meta http-equiv="refresh" content="5;url=https://t.me/Aslamtv2bot">  
-    </head>  
-    <body style="font-family: Arial; text-align: center; padding-top: 150px; font-size: 22px;">  
-        <h2>✅ Payment Successful</h2>  
-        <p>An tabbatar da biyan ka.</p>  
-        <p>Kashe browser ka koma telegram</p>  
-        <a href="https://t.me/Algaitabot">Komawa Telegram yanzu</a>  
-    </body>  
-    </html>  
-    """
 
+# ========= CALLBACK PAGE =========
+@app.route("/paystack-callback", methods=["GET"])
+def paystack_callback():
+    return """
+    <html>
+    <head>
+        <title>Payment Successful</title>
+        <meta http-equiv="refresh" content="5;url=https://t.me/Aslamtv2bot">
+    </head>
+    <body style="font-family: Arial; text-align: center; padding-top: 150px; font-size: 22px;">
+        <h2>✅ Payment Successful</h2>
+        <p>An tabbatar da biyan ka.</p>
+        <p>Kashe browser ka koma telegram</p>
+        <a href="https://t.me/Algaitabot">Komawa Telegram yanzu</a>
+    </body>
+    </html>
+    """
 
 # ========= FEEDBACK =========
 def send_feedback_prompt(user_id, order_id):
@@ -955,266 +1063,156 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
-import hmac
-import hashlib
-import json
-from flask import request
-
 @app.route("/webhook", methods=["POST"])
-def korapay_webhook():
-    try:
-        # ================= SECURITY & VALIDATION (KORAPAY) =================
-        # Maimakon 'verif-hash', Korapay tana amfani da 'x-korapay-signature'
-        signature = request.headers.get("x-korapay-signature")
-        if not signature: 
-            return "Missing signature", 401
+def paystack_webhook():
 
-        # Korapay tana buƙatar mu lissafa HMAC SHA256 na saƙon (request.data)
-        payload_body = request.data
-        hashed = hmac.new(
-            KORA_SECRET.encode('utf-8'), 
-            payload_body, 
-            hashlib.sha256
-        ).hexdigest()
+    # ================= SIGNATURE =================
+    signature = request.headers.get("x-paystack-signature")
 
-        if hashed != signature: 
-            return "Invalid signature", 401
+    if not signature:
+        return "Missing signature", 401
 
-        # ================= PAYLOAD (KORAPAY) =================
-        payload = request.json or {}
-        data = payload.get("data", {})
+    computed = hmac.new(
+        PAYSTACK_SECRET.encode(),
+        request.data,
+        hashlib.sha512
+    ).hexdigest()
 
-        # Status ɗin Korapay 'success' ne (ba 'successful' ba)
-        status = (data.get("status") or "").lower()
-        if status != "success": 
-            return "Ignored", 200
+    if signature != computed:
+        return "Invalid signature", 401
 
-        # Maimakon 'tx_ref', Korapay tana amfani da 'reference'
-        raw_reference = data.get("reference")
-        
-        # Muna ɗauko currency daga amount_details
-        amount_details = data.get("amount_details", {})
-        currency = amount_details.get("currency")
+    # ================= PAYLOAD =================
+    payload = request.json or {}
 
-        # Safe amount conversion
-        try:
-            paid_amount = int(float(data.get("amount", 0)))
-        except:
-            paid_amount = 0
+    event = payload.get("event")
+    if event != "charge.success":
+        return "Ignored", 200
 
-        # ✅ FIX REFERENCE: Ciro order_id ta hanyar split (kamar yadda aka gyara maka)
-        order_id = raw_reference.split("_")[0] if raw_reference else None
+    data = payload.get("data", {})
 
-        if not order_id:
-            return "Order ID missing", 200
+    raw_reference = data.get("reference")
+    currency = data.get("currency")
+    paid_amount = int(data.get("amount", 0) / 100)
 
-        # ================= DB =================
-        conn = get_conn()
-        cur = conn.cursor()
+    # ================= FIX REFERENCE =================
+    metadata = data.get("metadata", {}) or {}
+    order_id = metadata.get("order_id")
 
-        cur.execute(
+    if not order_id and raw_reference:
+        order_id = raw_reference.split("_")[0]
+
+    if not order_id:
+        return "Order ID missing", 200
+
+    # ================= DB =================
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT user_id, amount, paid, type
+        FROM orders
+        WHERE id=%s
+        """,
+        (order_id,)
+    )
+    row = cur.fetchone()
+
+    if row:
+        user_id, expected_amount, paid, order_type = row
+    else:
+        order_type = None
+
+    # =====================================================
+    # ================= WALLET TOPUP ======================
+    # =====================================================
+
+    if not row:
+
+        wallet_conn = get_wallet_conn()
+        wallet_cur = wallet_conn.cursor()
+
+        wallet_cur.execute(
             """
-            SELECT user_id, amount, paid, type
-            FROM orders
+            SELECT user_id, amount, status
+            FROM wallet_deposits
             WHERE id=%s
             """,
             (order_id,)
         )
-        row = cur.fetchone()
 
-        if row:
-            user_id, expected_amount, paid, order_type = row
-        else:
-            order_type = None
+        dep = wallet_cur.fetchone()
 
-        # =====================================================
-        # ================= WALLET TOPUP ======================
-        # =====================================================
-
-        if not row:
-            wallet_conn = get_wallet_conn()
-            wallet_cur = wallet_conn.cursor()
-
-            wallet_cur.execute(
-                """
-                SELECT user_id, amount, status
-                FROM wallet_deposits
-                WHERE id=%s
-                """,
-                (order_id,)
-            )
-
-            dep = wallet_cur.fetchone()
-
-            if not dep:
-                wallet_cur.close()
-                wallet_conn.close()
-                cur.close()
-                conn.close()
-                return "Order not found", 200
-
-            user_id, expected_amount, status = dep
-
-            if status == "success":
-                wallet_cur.close()
-                wallet_conn.close()
-                cur.close()
-                conn.close()
-                return "Already processed", 200
-
-            # ✅ GYARA: Maimakon != expected_amount, mun yi amfani da < domin amincewa da biya
-            if paid_amount < expected_amount or currency != "NGN":
-                wallet_cur.close()
-                wallet_conn.close()
-                cur.close()
-                conn.close()
-                return "Wrong payment", 200
-
-            wallet_cur.execute(
-                """
-                UPDATE wallet_deposits
-                SET status='success',
-                    paystack_ref=%s,
-                    paid_at=NOW()
-                WHERE id=%s
-                """,
-                (raw_reference, order_id)
-            )
-
-            wallet_cur.execute(
-                """
-                INSERT INTO wallet_balance (user_id, balance)
-                VALUES (%s,%s)
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                balance = wallet_balance.balance + EXCLUDED.balance,
-                updated_at = NOW()
-                """,
-                (user_id, paid_amount)
-            )
-
-            wallet_cur.execute(
-                """
-                INSERT INTO wallet_transactions
-                (user_id, amount, type, reference, description)
-                VALUES (%s,%s,'deposit',%s,'Wallet Top-up')
-                """,
-                (user_id, paid_amount, order_id)
-            )
-
-            wallet_conn.commit()
+        if not dep:
             wallet_cur.close()
             wallet_conn.close()
-
-            # ================= DELETE ORIGINAL ORDER MESSAGE =================
-            if order_id in ORDER_MESSAGES:
-                chat_id, message_id = ORDER_MESSAGES[order_id]
-                try:
-                    bot.delete_message(chat_id, message_id)
-                except:
-                    pass
-                del ORDER_MESSAGES[order_id]
-
-            # ================= USER INFO =================
-            cur.execute(
-                """
-                SELECT first_name, last_name
-                FROM visited_users
-                WHERE user_id=%s
-                """,
-                (user_id,)
-            )
-            u = cur.fetchone()
-
-            if u and (u[0] or u[1]):
-                full_name = f"{u[0] or ''} {u[1] or ''}".strip()
-            else:
-                try:
-                    chat = bot.get_chat(user_id)
-                    full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
-                except:
-                    full_name = "User"
-
-            try:
-                chat = bot.get_chat(user_id)
-                tg_username = f"@{chat.username}" if chat.username else "unknown"
-            except:
-                tg_username = "unknown"
-
-            wallet_kb = InlineKeyboardMarkup()
-            wallet_kb.add(
-                InlineKeyboardButton(
-                    "🏦MY WALLET💵",
-                    callback_data="wallet"
-                )
-            )
-
-            bot.send_message(
-                user_id,
-                f"""🎉 <b>CONGRATULATIONS MALAM {full_name}</b>
-
-💰 <b>Your wallet credited:</b> ₦{paid_amount}
-
-🗃 <b>Order ID:</b> <code>{order_id}</code>
-
-Your deposit was successful.
-
-Use the button below to open your wallet.
-""",
-                parse_mode="HTML",
-                reply_markup=wallet_kb
-            )
-
-            if PAYMENT_NOTIFY_GROUP:
-                from datetime import datetime, timedelta
-                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-
-                bot.send_message(
-                    PAYMENT_NOTIFY_GROUP,
-                    f"""💰 <b>TOP-UP SUCCESSFUL</b>
-
-👤 <b>Name:</b> {full_name}
-🔗 <b>Username:</b> {tg_username}
-🆔 <b>User ID:</b> <code>{user_id}</code>
-
-💳 <b>Top-up:</b> ₦{paid_amount}
-
-🗃 <b>Order ID:</b> <code>{order_id}</code>
-📊 <b>Status:</b> success
-
-⏰ <b>Time:</b> {now}
-""",
-                    parse_mode="HTML"
-                )
-
             cur.close()
             conn.close()
-            return "OK", 200
+            return "Order not found", 200
 
-        if paid == 1:
+        user_id, expected_amount, status = dep
+
+        if status == "success":
+            wallet_cur.close()
+            wallet_conn.close()
             cur.close()
             conn.close()
             return "Already processed", 200
 
-        # ✅ GYARA: Maimakon != expected_amount, mun yi amfani da < domin amincewa da biya
-        if paid_amount < expected_amount or currency != "NGN":
+        if paid_amount != expected_amount or currency != "NGN":
+            wallet_cur.close()
+            wallet_conn.close()
             cur.close()
             conn.close()
             return "Wrong payment", 200
 
-        # ================= MARK AS PAID =================
-        cur.execute(
-            "UPDATE orders SET paid=1 WHERE id=%s",
-            (order_id,)
+        wallet_cur.execute(
+            """
+            UPDATE wallet_deposits
+            SET status='success',
+                paystack_ref=%s,
+                paid_at=NOW()
+            WHERE id=%s
+            """,
+            (raw_reference, order_id)
         )
+
+        wallet_cur.execute(
+            """
+            INSERT INTO wallet_balance (user_id, balance)
+            VALUES (%s,%s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+            balance = wallet_balance.balance + EXCLUDED.balance,
+            updated_at = NOW()
+            """,
+            (user_id, paid_amount)
+        )
+
+        wallet_cur.execute(
+            """
+            INSERT INTO wallet_transactions
+            (user_id, amount, type, reference, description)
+            VALUES (%s,%s,'deposit',%s,'Wallet Top-up')
+            """,
+            (user_id, paid_amount, order_id)
+        )
+
+        wallet_conn.commit()
+
+        wallet_cur.close()
+        wallet_conn.close()
 
         # ================= DELETE ORIGINAL ORDER MESSAGE =================
         if order_id in ORDER_MESSAGES:
+
             chat_id, message_id = ORDER_MESSAGES[order_id]
+
             try:
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
+
             del ORDER_MESSAGES[order_id]
 
         # ================= USER INFO =================
@@ -1243,103 +1241,211 @@ Use the button below to open your wallet.
         except:
             tg_username = "unknown"
 
-        # =====================================================
-        # ================== FILM ORDER =======================
-        # =====================================================
-        if order_type == "film":
-            cur.execute(
-                """
-                SELECT i.title, i.group_key
-                FROM order_items oi
-                JOIN items i ON i.id = oi.item_id
-                WHERE oi.order_id=%s
-                """,
-                (order_id,)
+        wallet_kb = InlineKeyboardMarkup()
+        wallet_kb.add(
+            InlineKeyboardButton(
+                "🏦MY WALLET💵",
+                callback_data="wallet"
             )
-            rows = cur.fetchall()
+        )
 
-            if not rows:
-                cur.close()
-                conn.close()
-                return "Empty order", 200
+        bot.send_message(
+            user_id,
+            f"""🎉 <b>CONGRATULATIONS MALAM {full_name}</b>
 
-            groups = {}
-            for title, group_key in rows:
-                key = group_key or f"single_{title}"
-                if key not in groups:
-                    groups[key] = {"title": title, "count": 0}
-                groups[key]["count"] += 1
+💰 <b>Your wallet credited:</b> ₦{paid_amount}
 
-            lines = []
-            for g in groups.values():
-                if g["count"] > 1:
-                    lines.append(f"{g['title']} ({g['count']})")
-                else:
-                    lines.append(f"{g['title']}")
+🗃 <b>Order ID:</b> <code>{order_id}</code>
 
-            titles_text = ", ".join(lines) if lines else "N/A"
+Your deposit was successful.
 
-            # ================= CASHBACK REWARD =================
-            cashback = (paid_amount // 200) * CASHBACK
-            if cashback > 200:
-                cashback = 200
+Use the button below to open your wallet.
+""",
+            parse_mode="HTML",
+            reply_markup=wallet_kb
+        )
 
-            if cashback > 0:
-                wallet_conn = get_wallet_conn()
-                wallet_cur = wallet_conn.cursor()
+        if PAYMENT_NOTIFY_GROUP:
+            from datetime import datetime, timedelta
+            now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-                wallet_cur.execute(
-                    """
-                    INSERT INTO wallet_balance (user_id, balance)
-                    VALUES (%s,%s)
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                    balance = wallet_balance.balance + EXCLUDED.balance,
-                    updated_at = NOW()
-                    """,
-                    (user_id, cashback)
-                )
+            bot.send_message(
+                PAYMENT_NOTIFY_GROUP,
+                f"""💰 <b>TOP-UP SUCCESSFUL</b>
 
-                wallet_cur.execute(
-                    """
-                    INSERT INTO wallet_transactions
-                    (user_id, amount, type, reference, description)
-                    VALUES (%s,%s,'cashback',%s,'Movie Cashback Reward')
-                    """,
-                    (user_id, cashback, order_id)
-                )
+👤 <b>Name:</b> {full_name}
+🔗 <b>Username:</b> {tg_username}
+🆔 <b>User ID:</b> <code>{user_id}</code>
 
-                wallet_conn.commit()
-                wallet_cur.close()
-                wallet_conn.close()
+💳 <b>Top-up:</b> ₦{paid_amount}
 
-                bot.send_message(
-                    user_id,
-                    f"""🎁 Cashback Reward🎉
+🗃 <b>Order ID:</b> <code>{order_id}</code>
+📊 <b>Status:</b> success
+
+⏰ <b>Time:</b> {now}
+""",
+                parse_mode="HTML"
+            )
+
+        cur.close()
+        conn.close()
+
+        return "OK", 200
+
+    if paid == 1:
+        cur.close()
+        conn.close()
+        return "Already processed", 200
+
+    if paid_amount != expected_amount or currency != "NGN":
+        cur.close()
+        conn.close()
+        return "Wrong payment", 200
+
+    # ================= MARK AS PAID =================
+    cur.execute(
+        "UPDATE orders SET paid=1 WHERE id=%s",
+        (order_id,)
+    )
+
+    # ================= DELETE ORIGINAL ORDER MESSAGE =================
+    if order_id in ORDER_MESSAGES:
+
+        chat_id, message_id = ORDER_MESSAGES[order_id]
+
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+
+        del ORDER_MESSAGES[order_id]
+
+    # ================= USER INFO =================
+    cur.execute(
+        """
+        SELECT first_name, last_name
+        FROM visited_users
+        WHERE user_id=%s
+        """,
+        (user_id,)
+    )
+    u = cur.fetchone()
+
+    if u and (u[0] or u[1]):
+        full_name = f"{u[0] or ''} {u[1] or ''}".strip()
+    else:
+        try:
+            chat = bot.get_chat(user_id)
+            full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
+        except:
+            full_name = "User"
+
+    try:
+        chat = bot.get_chat(user_id)
+        tg_username = f"@{chat.username}" if chat.username else "unknown"
+    except:
+        tg_username = "unknown"
+
+    # =====================================================
+    # ================== FILM ORDER =======================
+    # =====================================================
+    if order_type == "film":
+
+        cur.execute(
+            """
+            SELECT i.title, i.group_key
+            FROM order_items oi
+            JOIN items i ON i.id = oi.item_id
+            WHERE oi.order_id=%s
+            """,
+            (order_id,)
+        )
+        rows = cur.fetchall()
+
+        if not rows:
+            cur.close()
+            conn.close()
+            return "Empty order", 200
+
+        groups = {}
+
+        for title, group_key in rows:
+            key = group_key or f"single_{title}"
+            if key not in groups:
+                groups[key] = {"title": title, "count": 0}
+            groups[key]["count"] += 1
+
+        lines = []
+        for g in groups.values():
+            if g["count"] > 1:
+                lines.append(f"{g['title']} ({g['count']})")
+            else:
+                lines.append(f"{g['title']}")
+
+        titles_text = ", ".join(lines) if lines else "N/A"
+
+
+        # ================= CASHBACK REWARD =================
+        cashback = (paid_amount // 200) * CASHBACK
+        if cashback > 200:
+            cashback = 200
+
+        if cashback > 0:
+            wallet_conn = get_wallet_conn()
+            wallet_cur = wallet_conn.cursor()
+
+            wallet_cur.execute(
+                """
+                INSERT INTO wallet_balance (user_id, balance)
+                VALUES (%s,%s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                balance = wallet_balance.balance + EXCLUDED.balance,
+                updated_at = NOW()
+                """,
+                (user_id, cashback)
+            )
+
+            wallet_cur.execute(
+                """
+                INSERT INTO wallet_transactions
+                (user_id, amount, type, reference, description)
+                VALUES (%s,%s,'cashback',%s,'Movie Cashback Reward')
+                """,
+                (user_id, cashback, order_id)
+            )
+
+            wallet_conn.commit()
+            wallet_cur.close()
+            wallet_conn.close()
+
+            bot.send_message(
+                user_id,
+                f"""🎁 Cashback Reward🎉
 
 Wallet ID: <code>{user_id}</code>
 
 You received ₦{cashback} cashback,  
 
 Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
-                    parse_mode="HTML"
-                )
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-            kb = InlineKeyboardMarkup()
-            kb.add(
-                InlineKeyboardButton(
-                    "⬇️ DOWNLOAD NOW",
-                    callback_data=f"deliver:{order_id}"
-                )
+                parse_mode="HTML"
             )
 
-            bot.send_message(
-                user_id,
-                f"""🎉 <b>PAYMENT SUCCESSFUL</b>
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "⬇️ DOWNLOAD NOW",
+                callback_data=f"deliver:{order_id}"
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            f"""🎉 <b>PAYMENT SUCCESSFUL</b>
 
 👤 <b>Name:</b> {full_name}
 🆔 <b>User ID:</b> <code>{user_id}</code>
@@ -1351,17 +1457,17 @@ Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
 
 ⬇️ Click the button below to download your files.
 """,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
+            parse_mode="HTML",
+            reply_markup=kb
+        )
 
-            if PAYMENT_NOTIFY_GROUP:
-                from datetime import datetime, timedelta
-                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        if PAYMENT_NOTIFY_GROUP:
+            from datetime import datetime, timedelta
+            now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-                bot.send_message(
-                    PAYMENT_NOTIFY_GROUP,
-                    f"""✅ <b>NEW PAYMENT RECEIVED</b>
+            bot.send_message(
+                PAYMENT_NOTIFY_GROUP,
+                f"""✅ <b>NEW PAYMENT RECEIVED</b>
 
 👤 <b>Name:</b> {full_name}
 🔗 <b>Username:</b> {tg_username}
@@ -1373,61 +1479,63 @@ Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
 💰 <b>Amount:</b> ₦{paid_amount}
 ⏰ <b>Time:</b> {now}
 """,
-                    parse_mode="HTML"
-                )
-
-            return "OK", 200
-
-        # =====================================================
-        # ================== VIP ORDER ========================
-        # =====================================================
-        elif order_type == "vip":
-            from datetime import datetime, timedelta
-
-            start_date = datetime.now()
-            end_date = start_date + (
-                timedelta(minutes=VIP_DURATION_VALUE)
-                if VIP_DURATION_UNIT == "minutes"
-                else timedelta(days=VIP_DURATION_VALUE)
+                parse_mode="HTML"
             )
 
-            start_local = start_date + timedelta(hours=1)
-            end_local = end_date + timedelta(hours=1)
+        return "OK", 200
 
+    # =====================================================
+    # ================== VIP ORDER ========================
+    # =====================================================
+    elif order_type == "vip":
+
+        from datetime import datetime, timedelta
+
+        start_date = datetime.now()
+        end_date = start_date + (
+            timedelta(minutes=VIP_DURATION_VALUE)
+            if VIP_DURATION_UNIT == "minutes"
+            else timedelta(days=VIP_DURATION_VALUE)
+        )
+
+        start_local = start_date + timedelta(hours=1)
+        end_local = end_date + timedelta(hours=1)
+
+        already_in_group = False
+        try:
+            member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+            if member.status in ["member", "administrator", "creator"]:
+                already_in_group = True
+        except:
             already_in_group = False
-            try:
-                member = bot.get_chat_member(VIP_GROUP_ID, user_id)
-                if member.status in ["member", "administrator", "creator"]:
-                    already_in_group = True
-            except:
-                already_in_group = False
 
-            if already_in_group:
-                cur.execute(
-                    """
-                    INSERT INTO vip_members
-                    (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                    VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        order_id = EXCLUDED.order_id,
-                        join_date = EXCLUDED.join_date,
-                        expire_at = EXCLUDED.expire_at,
-                        status = 'active',
-                        warn1_sent = FALSE,
-                        warn2_sent = FALSE,
-                        payment_date = NOW()
-                    """,
-                    (user_id, order_id, start_date, end_date)
-                )
+        if already_in_group:
 
-                conn.commit()
-                cur.close()
-                conn.close()
+            cur.execute(
+                """
+                INSERT INTO vip_members
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    order_id = EXCLUDED.order_id,
+                    join_date = EXCLUDED.join_date,
+                    expire_at = EXCLUDED.expire_at,
+                    status = 'active',
+                    warn1_sent = FALSE,
+                    warn2_sent = FALSE,
+                    payment_date = NOW()
+                """,
+                (user_id, order_id, start_date, end_date)
+            )
 
-                bot.send_message(
-                    user_id,
-                    f"""💎 <b>AN SABUNTA VIP NAKA</b>
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            bot.send_message(
+                user_id,
+                f"""💎 <b>AN SABUNTA VIP NAKA</b>
 
 Muna tayaka murnar sabunta biyan VIP ɗinka.
 
@@ -1438,15 +1546,15 @@ ci gaba da ziyartar VIP Group kawai.
 ⏳ <b>Sake biya aranar ko kafin:</b> {end_local.strftime("%Y-%m-%d")}
 
 Na gode da kasancewa tare da mu 🙏""",
-                    parse_mode="HTML"
-                )
+                parse_mode="HTML"
+            )
 
-                if PAYMENT_NOTIFY_GROUP:
-                    now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            if PAYMENT_NOTIFY_GROUP:
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-                    bot.send_message(
-                        PAYMENT_NOTIFY_GROUP,
-                        f"""💎 <b>VIP RENEWAL PAYMENT</b>
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""💎 <b>VIP RENEWAL PAYMENT</b>
 
 👤 <b>Name:</b> {full_name}
 🔗 <b>Username:</b> {tg_username}
@@ -1457,51 +1565,52 @@ Na gode da kasancewa tare da mu 🙏""",
 💰 <b>Amount:</b> ₦{paid_amount}
 ⏰ <b>Time:</b> {now}
 """,
-                        parse_mode="HTML"
-                    )
-
-                try:
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"🔔 VIP RENEWAL\n\n👤 {full_name}\n🆔 {user_id}\n💰 ₦{paid_amount}\n\nYa sabunta VIP dinsa."
-                    )
-                except:
-                    pass
-
-            else:
-                cur.execute(
-                    """
-                    INSERT INTO vip_members
-                    (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                    VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        order_id = EXCLUDED.order_id,
-                        join_date = NULL,
-                        expire_at = NULL,
-                        status = 'active',
-                        warn1_sent = FALSE,
-                        warn2_sent = FALSE,
-                        payment_date = NOW()
-                    """,
-                    (user_id, order_id)
+                    parse_mode="HTML"
                 )
 
-                conn.commit()
-                cur.close()
-                conn.close()
-
-                vip_kb = InlineKeyboardMarkup()
-                vip_kb.add(
-                    InlineKeyboardButton(
-                        "🔐 JOIN VIP GROUP",
-                        callback_data=f"vipnow:{order_id}"
-                    )
-                )
-
+            try:
                 bot.send_message(
-                    user_id,
-                    f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
+                    ADMIN_ID,
+                    f"🔔 VIP RENEWAL\n\n👤 {full_name}\n🆔 {user_id}\n💰 ₦{paid_amount}\n\nYa sabunta VIP dinsa."
+                )
+            except:
+                pass
+
+        else:
+
+            cur.execute(
+                """
+                INSERT INTO vip_members
+                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    order_id = EXCLUDED.order_id,
+                    join_date = NULL,
+                    expire_at = NULL,
+                    status = 'active',
+                    warn1_sent = FALSE,
+                    warn2_sent = FALSE,
+                    payment_date = NOW()
+                """,
+                (user_id, order_id)
+            )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            vip_kb = InlineKeyboardMarkup()
+            vip_kb.add(
+                InlineKeyboardButton(
+                    "🔐 JOIN VIP GROUP",
+                    callback_data=f"vipnow:{order_id}"
+                )
+            )
+
+            bot.send_message(
+                user_id,
+                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
 
 👤 <b>Name:</b> {full_name}
 🆔 <b>User ID:</b> <code>{user_id}</code>
@@ -1513,16 +1622,16 @@ Na gode da kasancewa tare da mu 🙏""",
 
 🔐 Click the button below to join the VIP Group.
 """,
-                    parse_mode="HTML",
-                    reply_markup=vip_kb
-                )
+                parse_mode="HTML",
+                reply_markup=vip_kb
+            )
 
-                if PAYMENT_NOTIFY_GROUP:
-                    now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            if PAYMENT_NOTIFY_GROUP:
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-                    bot.send_message(
-                        PAYMENT_NOTIFY_GROUP,
-                        f"""💎 <b>NEW VIP SUBSCRIPTION</b>
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""💎 <b>NEW VIP SUBSCRIPTION</b>
 
 👤 <b>Name:</b> {full_name}
 🔗 <b>Username:</b> {tg_username}
@@ -1533,16 +1642,13 @@ Na gode da kasancewa tare da mu 🙏""",
 💰 <b>Amount:</b> ₦{paid_amount}
 ⏰ <b>Time:</b> {now}
 """,
-                        parse_mode="HTML"
-                    )
-
-            return "OK", 200
+                    parse_mode="HTML"
+                )
 
         return "OK", 200
 
-    except Exception as e:
-        print(f"Korapay Webhook Error: {e}")
-        return "Internal Error", 500
+    return "OK", 200
+
 
 
 
@@ -1722,6 +1828,1267 @@ def deliver_items(call):
     )
 
     send_feedback_prompt(user_id, order_id)
+
+# --- [ COMMAND: /price ID ] ---
+@bot.message_handler(commands=['price'])
+def get_price_details(message):
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "❌ Shigar da ID: `/price 414`", parse_mode="Markdown")
+        return
+    
+    plan_id = args[1]
+    # Wannan shi ne asalin URL din da documentation dinka ya nuna
+    PRICE_API = "https://legitdata.com.ng/api/network/Plans" 
+    
+    headers = {
+        'Authorization': f'Token {LEGIT_TOKEN}',
+        'Content-Type': 'application/json'
+    }
+
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        response = requests.get(PRICE_API, headers=headers)
+        
+        if response.status_code == 200:
+            plans = response.json()
+            
+            # Nemo plan din da yayi daidai da ID
+            # Mun saita shi ya duba kowane irin tsarin JSON ya dawo
+            data_list = plans.get('results', plans) if isinstance(plans, dict) else plans
+            
+            target = next((p for p in data_list if str(p.get('id')) == plan_id), None)
+            
+            if target:
+                network = target.get('network_name') or "Babu"
+                p_type = target.get('plan_type') or "Babu"
+                size = target.get('plan_size') or "Babu"
+                amount = target.get('plan_amount') or "0.00"
+                month = target.get('month_validate') or "Babu"
+                
+                sako = (f"🔍 **Bayanan Farashi (ID: {plan_id})**\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"📶 Network: *{network}*\n"
+                        f"🏷️ Nau'i: *{p_type}*\n"
+                        f"📦 Girma: *{size}*\n"
+                        f"💰 Farashi: *₦{amount}*\n"
+                        f"⏳ Tsawon Lokaci: *{month}*\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ An samo bayanan daga asalin API kofar.")
+                bot.reply_to(message, sako, parse_mode="Markdown")
+            else:
+                bot.reply_to(message, f"❌ Ban samu plan mai ID `{plan_id}` ba. Tabbatar ID din yana cikin Price List dinka.")
+        else:
+            bot.reply_to(message, f"❌ Kuskure: API ya ki budewa (Status: {response.status_code})")
+            
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Matsala ta faru: {str(e)}")
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "d_&_a")
+def open_data_airtime(call):
+    text = """📶 Data & Airtime  
+Zaku iya siyan:  
+📡 Data mai araha (MTN, Airtel, Glo, 9mobile)  
+📞 Katin kira (Airtime)  
+⚡ Kuma a tura muku nan take (instant delivery)  
+
+🎬 Idan kuna son sauke fim cikin sauƙi, Data mai sauri, zaku iya siya yanzu.
+"""
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("📡 Buy Data", callback_data="data"),
+        InlineKeyboardButton("📞 Buy Airtime", callback_data="airtime")
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        text,
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_d_&_a")
+def back_to_data_airtime(call):
+    text = """📶 Data & Airtime  
+Zaku iya siyan:  
+📡 Data mai araha (MTN, Airtel, Glo, 9mobile)  
+📞 Katin kira (Airtime)  
+⚡ Ana turawa nan take (instant delivery)  
+
+🎬 Idan kuna son sauke fim cikin sauƙi, Data mai sauri, zaku iya siya yanzu.
+"""
+
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("📡 Buy Data", callback_data="data"),
+        InlineKeyboardButton("📞 Buy Airtime", callback_data="airtime")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "airtime")
+def select_airtime_network(call):
+    text = "📞 Zaɓi network ɗin da kake son saya airtime:"
+
+    kb = InlineKeyboardMarkup()
+
+    # ===== NETWORK BUTTONS =====
+    kb.row(
+        InlineKeyboardButton("🛜 MTN", callback_data="airtel_mtn"),
+        InlineKeyboardButton("🛜 Airtel", callback_data="airtel_airtel")
+    )
+
+    kb.row(
+        InlineKeyboardButton("🛜 Glo", callback_data="airtel_glo"),
+        InlineKeyboardButton("🛜 9mobile", callback_data="airtel_9mobile")
+    )
+
+    # ===== BACK BUTTON =====
+    kb.add(
+        InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "data")
+def select_network(call):
+    text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
+
+Dan Allah a tabbatar layin da za'a siya data babu bashi.
+"""
+
+    kb = InlineKeyboardMarkup()
+
+    # ===== NETWORK BUTTONS =====
+    kb.row(
+        InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
+        InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
+    )
+
+    kb.row(
+        InlineKeyboardButton("🛜 Glo", callback_data="glo"),
+        InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
+    )
+
+    # ===== BACK BUTTON =====
+    kb.add(
+        InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb
+    )
+
+
+
+#========================================  
+# HANDLE NETWORK TYPES (CUSTOM)  
+#========================================  
+@bot.callback_query_handler(func=lambda call: call.data in [  
+    "mtn", "airtel", "glo", "9mobile",  
+    "mtn_more", "mtn_back"  
+])  
+def handle_network_types(call):  
+    try:  
+        user_id = call.from_user.id  
+  
+        # =========================  
+        # DETERMINE NETWORK + PAGE  
+        # =========================  
+        if call.data in ["mtn", "airtel", "glo", "9mobile"]:  
+            network = call.data  
+            page = 1  
+        else:  
+            if user_id not in user_data_session:  
+                return  
+  
+            network = user_data_session[user_id]["network"]  
+  
+            if call.data == "mtn_more":  
+                page = 2  
+            else:  
+                page = 1  
+  
+        # =========================  
+        # ✅ FIXED SESSION (BA ZA A GOGE DATA BA)  
+        # =========================  
+        if user_id not in user_data_session:  
+            user_data_session[user_id] = {}  
+  
+        user_data_session[user_id].update({  
+            "network": network,  
+            "page": page  
+        })  
+  
+        text = f"🛜 {network.upper()} - Zaɓi nau'in data:"  
+  
+        kb = InlineKeyboardMarkup()  
+  
+        # =========================  
+        # 9MOBILE  
+        # =========================  
+        if network == "9mobile":  
+            if len(LOCK_9MOBILE) > 0 and LOCK_9MOBILE[0]:  
+                btn1 = InlineKeyboardButton("📶 SME", callback_data="type_9mobile_sme")  
+            else:  
+                btn1 = None  
+  
+            if len(LOCK_9MOBILE) > 1 and LOCK_9MOBILE[1]:  
+                btn2 = InlineKeyboardButton("📶 Corporate", callback_data="type_9mobile_corporate")  
+            else:  
+                btn2 = None  
+  
+            row = [b for b in [btn1, btn2] if b]  
+            if row:  
+                kb.row(*row)  
+  
+            kb.add(  
+                InlineKeyboardButton("⬅ Back", callback_data="data")  
+            )  
+  
+        # =========================  
+        # AIRTEL  
+        # =========================  
+        elif network == "airtel":  
+            row1 = []  
+            if len(LOCK_AIRTEL) > 0 and LOCK_AIRTEL[0]:  
+                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_airtel_gifting"))  
+            if len(LOCK_AIRTEL) > 1 and LOCK_AIRTEL[1]:  
+                row1.append(InlineKeyboardButton("📶 SME", callback_data="type_airtel_sme"))  
+            if row1:  
+                kb.row(*row1)  
+  
+            row2 = []  
+            if len(LOCK_AIRTEL) > 2 and LOCK_AIRTEL[2]:  
+                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_airtel_corporate"))  
+            if len(LOCK_AIRTEL) > 3 and LOCK_AIRTEL[3]:  
+                row2.append(InlineKeyboardButton("📶 Special", callback_data="type_airtel_special"))  
+            if row2:  
+                kb.row(*row2)  
+  
+            kb.add(  
+                InlineKeyboardButton("⬅ Back", callback_data="data")  
+            )  
+  
+        # =========================  
+        # GLO  
+        # =========================  
+        elif network == "glo":  
+            row1 = []  
+            if len(LOCK_GLO) > 0 and LOCK_GLO[0]:  
+                row1.append(InlineKeyboardButton("📶 Special", callback_data="type_glo_special"))  
+            if len(LOCK_GLO) > 1 and LOCK_GLO[1]:  
+                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_glo_gifting"))  
+            if row1:  
+                kb.row(*row1)  
+  
+            row2 = []  
+            if len(LOCK_GLO) > 2 and LOCK_GLO[2]:  
+                row2.append(InlineKeyboardButton("📶 SME", callback_data="type_glo_sme"))  
+            if len(LOCK_GLO) > 3 and LOCK_GLO[3]:  
+                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_glo_corporate"))  
+            if row2:  
+                kb.row(*row2)  
+  
+            kb.add(  
+                InlineKeyboardButton("⬅ Back", callback_data="data")  
+            )  
+  
+        # =========================  
+        # MTN (WITH PAGINATION)  
+        # =========================  
+        elif network == "mtn":  
+  
+            # ===== PAGE 1 =====  
+            if page == 1:  
+                row1 = []  
+                if len(LOCK_MTN) > 0 and LOCK_MTN[0]:  
+                    row1.append(InlineKeyboardButton("📶 SME", callback_data="type_mtn_sme"))  
+                if len(LOCK_MTN) > 1 and LOCK_MTN[1]:  
+                    row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_mtn_gifting"))  
+                if row1:  
+                    kb.row(*row1)  
+  
+                row2 = []  
+                if len(LOCK_MTN) > 2 and LOCK_MTN[2]:  
+                    row2.append(InlineKeyboardButton("📶 Data Share", callback_data="type_mtn_datashare"))  
+                if len(LOCK_MTN) > 3 and LOCK_MTN[3]:  
+                    row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_mtn_corporate"))  
+                if row2:  
+                    kb.row(*row2)  
+  
+                # ✅ ONLY THIS LINE CHANGED (MORE LOCK)
+                nav_row = [
+                    InlineKeyboardButton("⬅ Back", callback_data="data")
+                ]
+
+                if LOCK_MTN_MORE:
+                    nav_row.append(
+                        InlineKeyboardButton("More ▶", callback_data="mtn_more")
+                    )
+
+                kb.row(*nav_row)
+  
+            # ===== PAGE 2 =====  
+            else:  
+                row1 = []  
+                if len(LOCK_MTN) > 4 and LOCK_MTN[4]:  
+                    row1.append(InlineKeyboardButton("📶 MTN Awoof", callback_data="type_mtn_awoof"))  
+                if len(LOCK_MTN) > 5 and LOCK_MTN[5]:  
+                    row1.append(InlineKeyboardButton("📶 SME2", callback_data="type_mtn_sme2"))  
+                if row1:  
+                    kb.row(*row1)  
+  
+                if len(LOCK_MTN) > 6 and LOCK_MTN[6]:  
+                    kb.add(  
+                        InlineKeyboardButton("📶 Special", callback_data="type_mtn_special")  
+                    )  
+  
+                kb.add(  
+                    InlineKeyboardButton("⬅ Back", callback_data="mtn_back")  
+                )  
+  
+        # =========================  
+        # EDIT MESSAGE  
+        # =========================  
+        bot.edit_message_text(  
+            text,  
+            call.message.chat.id,  
+            call.message.message_id,  
+            reply_markup=kb  
+        )  
+  
+    except Exception as e:  
+        print("NETWORK TYPES ERROR:", e)
+
+#========================================
+# HANDLE GLO TYPE → DURATION
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("type_glo_"))
+def handle_glo_duration(call):
+    try:
+        user_data_session.pop(call.from_user.id, None)
+
+        dtype = call.data.split("_")[2]  # sme, corporate, gifting
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # SME
+        # =========================
+        if dtype == "sme":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="glosme_1d"),
+                InlineKeyboardButton("2Days", callback_data="glosme_2d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("7Days", callback_data="glosme_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="glo")
+            )
+
+        # =========================
+        # CORPORATE
+        # =========================
+        elif dtype == "corporate":
+
+            kb.row(
+                InlineKeyboardButton("30Days", callback_data="glocorporate_30d"),
+                InlineKeyboardButton("7Days", callback_data="glocorporate_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="glo")
+            )
+
+        # =========================
+        # GIFTING
+        # =========================
+        elif dtype == "gifting":
+
+            kb.row(
+                InlineKeyboardButton("3Days", callback_data="glogifting_3d"),
+                InlineKeyboardButton("7Days", callback_data="glogifting_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="glo")
+            )
+
+        text = f"🛜 GLO {dtype.upper()} - Zaɓi duration:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("GLO DURATION ERROR:", e)
+
+
+#========================================
+# HANDLE AIRTEL TYPE → DURATION
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("type_airtel_"))
+def handle_airtel_duration(call):
+    try:
+        user_data_session.pop(call.from_user.id, None)
+
+        dtype = call.data.split("_")[2]  # sme, gifting, corporate, special
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # SME
+        # =========================
+        if dtype == "sme":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="airtelsme_1d"),
+                InlineKeyboardButton("3Days", callback_data="airtelsme_3d"),
+                InlineKeyboardButton("2Days", callback_data="airtelsme_2d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="airtelsme_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="airtel")
+            )
+
+        # =========================
+        # GIFTING
+        # =========================
+        elif dtype == "gifting":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="airtelgifting_1d"),
+                InlineKeyboardButton("7Days", callback_data="airtelgifting_7d"),
+                InlineKeyboardButton("2Days", callback_data="airtelgifting_2d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="airtelgifting_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="airtel")
+            )
+
+        text = f"🛜 AIRTEL {dtype.upper()} - Zaɓi duration:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("AIRTEL DURATION ERROR:", e)
+
+#========================================
+# HANDLE 9MOBILE TYPE → DURATION
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("type_9mobile_"))
+def handle_9mobile_duration(call):
+    try:
+        user_data_session.pop(call.from_user.id, None)
+
+        dtype = call.data.split("_")[2]  # sme, corporate
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # SME (ONLY ONE)
+        # =========================
+        if dtype == "sme":
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="9mobilesme_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="9mobile")
+            )
+
+        text = f"🛜 9MOBILE {dtype.upper()} - Zaɓi duration:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("9MOBILE DURATION ERROR:", e)
+
+
+
+#========================================
+# HANDLE MTN TYPE → DURATION (CUSTOM)
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("type_mtn_"))
+def handle_mtn_duration(call):
+    try:
+        user_data_session.pop(call.from_user.id, None)
+
+        dtype = call.data.split("_")[2]  # sme, gifting, corporate
+
+        kb = InlineKeyboardMarkup()
+
+        # =========================
+        # GIFTING
+        # =========================
+        if dtype == "gifting":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="mtngifting_1d"),
+                InlineKeyboardButton("2Days", callback_data="mtngifting_2d"),
+                InlineKeyboardButton("1Week", callback_data="mtngifting_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="mtngifting_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="mtn")
+            )
+
+        # =========================
+        # SME
+        # =========================
+        elif dtype == "sme":
+
+            kb.row(
+                InlineKeyboardButton("1Day", callback_data="mtnsme_1d"),
+                InlineKeyboardButton("7Days", callback_data="mtnsme_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("30Days", callback_data="mtnsme_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="mtn")
+            )
+
+        # =========================
+        # CORPORATE
+        # =========================
+        elif dtype == "corporate":
+
+            kb.row(
+                InlineKeyboardButton("2Days", callback_data="mtncorporate_2d"),
+                InlineKeyboardButton("1Day", callback_data="mtncorporate_1d"),
+                InlineKeyboardButton("30Days", callback_data="mtncorporate_30d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("1Week", callback_data="mtncorporate_7d")
+            )
+
+            kb.add(
+                InlineKeyboardButton("⬅ Back", callback_data="mtn")
+            )
+
+        text = f"🛜 MTN {dtype.upper()} - Zaɓi duration:"
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("MTN DURATION ERROR:", e)
+
+
+#========================================
+# UNIVERSAL DATA HANDLER (ALL NETWORKS)
+#========================================
+
+PLANS_PER_PAGE = 4
+
+@bot.callback_query_handler(func=lambda call: call.data.endswith((
+    "_1d", "_2d", "_3d", "_7d", "_30d"
+)))
+def handle_all_data(call):
+    try:
+        parts = call.data.split("_")
+
+        prefix = parts[0]        # airtelsme / glosme / mtnsme etc
+        duration_raw = parts[1]
+
+        # ===== PAGE =====
+        if len(parts) == 2:
+            page = 0
+        else:
+            page = int(parts[2])
+
+        # ===== DETECT NETWORK =====
+        if prefix.startswith("mtn"):
+            network = "MTN"
+        elif prefix.startswith("airtel"):
+            network = "AIRTEL"
+        elif prefix.startswith("glo"):
+            network = "GLO"
+        elif prefix.startswith("9mobile"):
+            network = "9MOBILE"
+        else:
+            return
+
+        # ===== DETECT PLAN TYPE =====
+        if "sme2" in prefix:
+            plan_type = "SME2"
+        elif "sme" in prefix:
+            plan_type = "SME"
+        elif "gifting" in prefix:
+            plan_type = "GIFTING"
+        elif "corporate" in prefix:
+            plan_type = "CORPORATE"
+        elif "datashare" in prefix:
+            plan_type = "DATASHARE"
+        elif "special" in prefix:
+            plan_type = "SPECIAL"
+        else:
+            return
+
+        # ===== FIX DURATION =====
+        if duration_raw == "1d":
+            duration = "1day"
+        elif duration_raw == "2d":
+            duration = "2days"
+        elif duration_raw == "3d":
+            duration = "3days"
+        elif duration_raw == "7d":
+            duration = "7days"
+        elif duration_raw == "30d":
+            duration = "30days"
+        else:
+            duration = duration_raw
+
+        # ===== DB =====
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT api_id, plan_name, price
+        FROM data_plans
+        WHERE network=%s 
+        AND plan_type=%s 
+        AND duration=%s 
+        AND status=1
+        ORDER BY price ASC
+        """, (network, plan_type, duration))
+
+        plans = cur.fetchall()
+
+        # ❗ IDAN BABU DATA → POPUP (BA EDIT BA)
+        if not plans:
+            bot.answer_callback_query(
+                call.id,
+                "❌ Babu data a wannan duration",
+                show_alert=True
+            )
+            cur.close()
+            conn.close()
+            return
+
+        # ===== PAGINATION =====
+        start = page * PLANS_PER_PAGE
+        end = start + PLANS_PER_PAGE
+        current = plans[start:end]
+
+        kb = InlineKeyboardMarkup(row_width=2)
+
+        for i in range(0, len(current), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(current):
+                    api_id, name, price = current[i + j]
+                    text = f"{name}\n₦{price/100:.2f}"
+                    row.append(
+                        InlineKeyboardButton(
+                            text,
+                            callback_data=f"buydata_{api_id}"
+                        )
+                    )
+            kb.row(*row)
+
+        # ===== NAV =====
+        nav = []
+
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton("⏪ Previous", callback_data=f"{prefix}_{duration_raw}_{page-1}")
+            )
+
+        if end < len(plans):
+            nav.append(
+                InlineKeyboardButton("More ▶", callback_data=f"{prefix}_{duration_raw}_{page+1}")
+            )
+
+        if nav:
+            kb.row(*nav)
+
+        kb.row(
+            InlineKeyboardButton("◀ Back", callback_data=f"type_{network.lower()}_{plan_type.lower()}")
+        )
+
+        text = f"""📡 *{network} {plan_type} - {duration.upper()}*
+
+Zaɓi plan ɗin da kake so 👇"""
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print("UNIVERSAL DATA ERROR:", e)
+        bot.answer_callback_query(call.id, "⚠️ Error loading data", show_alert=True)
+
+
+
+
+
+import uuid
+import threading
+import time
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# TEMP STORAGE
+user_data_session = {}
+
+#========================================
+# HANDLE BUY DATA
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
+def handle_buy_data(call):
+    try:
+        user_id = call.from_user.id
+        api_id = int(call.data.split("_")[1])
+
+        user_data_session.pop(user_id, None)
+
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT network, plan_name, duration, price, status
+        FROM data_plans
+        WHERE api_id=%s
+        """, (api_id,))
+
+        plan = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not plan:
+            return
+
+        network, plan_name, duration, price, status = plan
+
+        if status == 0:
+            bot.answer_callback_query(call.id, "⚠️ Network busy", show_alert=True)
+            return
+
+        order_id = str(uuid.uuid4())
+
+        user_data_session[user_id] = {
+            "order_id": order_id,
+            "api_id": api_id,
+            "network": network,
+            "plan_name": plan_name,
+            "duration": duration,
+            "amount": price,
+            "active": True,
+            "chat_id": call.message.chat.id,
+            "message_id": call.message.message_id
+        }
+
+        start_countdown(user_id)
+
+    except Exception as e:
+        print(e)
+
+#========================================
+# COUNTDOWN FUNCTION (FIXED 100%)
+#========================================
+def start_countdown(user_id):
+    def run():
+        if user_id not in user_data_session:
+            return
+
+        data = user_data_session[user_id]
+        current_msg_id = data["message_id"]
+
+        for sec in range(60, -1, -1):
+
+            if user_id not in user_data_session:
+                return
+
+            data = user_data_session[user_id]
+
+            if data["message_id"] != current_msg_id:
+                return
+
+            if not data.get("active"):
+                return
+
+            try:
+                kb = InlineKeyboardMarkup()
+                kb.add(
+                    InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
+                )
+
+                if "countdown_text" in data:
+                    text = f"""{data['countdown_text']}
+
+⏳ Waiting... {sec}s"""
+                else:
+                    text = f"""📲 *Shigar da lambar {data['network']} ɗinka, Lamba kawai zaka turo*
+Misali:
+`080xxxxxx24, Wannan shine data da zaka siya👇`
+Network: {data['network']}
+Plan: {data['plan_name']}
+Expire: {data['duration']}
+Amount: ₦{data['amount']/100:.2f}
+
+⚠️ Ka turo lamba kafin lokaci ya fita"""
+
+                bot.edit_message_text(
+                    text,
+                    data["chat_id"],
+                    data["message_id"],
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+
+            time.sleep(1)
+
+        # TIMEOUT (FIXED 👉 yanzu yana kiran select_network)
+        if user_id in user_data_session:
+            data = user_data_session[user_id]
+
+            chat_id = data["chat_id"]
+            msg_id = data["message_id"]
+
+            user_data_session.pop(user_id, None)
+
+            try:
+                class FakeCall:
+                    pass
+
+                fake = FakeCall()
+                fake.from_user = type('', (), {'id': user_id})()
+                fake.message = type('', (), {
+                    'chat': type('', (), {'id': chat_id})(),
+                    'message_id': msg_id
+                })()
+
+                select_network(fake)
+            except:
+                pass
+
+    threading.Thread(target=run).start()
+
+#========================================
+# HANDLE NUMBER INPUT (FINAL PERFECT)
+#========================================
+@bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
+def handle_number(message):
+    try:
+        user_id = message.from_user.id
+        data = user_data_session.get(user_id)
+
+        if not data:
+            return
+
+        number = message.text.strip().replace(" ", "")
+
+        chat_id = data["chat_id"]
+        old_msg_id = data["message_id"]
+
+        data["active"] = False
+
+        if not number.isdigit():
+            try:
+                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
+            except:
+                pass
+
+            msg = bot.send_message(chat_id, "❌ Lambar ba daidai ba")
+
+            data.update({
+                "active": True,
+                "message_id": msg.message_id,
+                "countdown_text": "❌ Lambar ba daidai ba\n\nDa fatan a sake turo daidai"
+            })
+
+            start_countdown(user_id)
+            return
+
+        length = len(number)
+
+        if length < 11:
+            try:
+                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
+            except:
+                pass
+
+            msg = bot.send_message(
+                chat_id,
+f"""❌ Kara duba lambarka da kyau
+Guda {length} ka bayar
+Bata cika ba, ana jiranka ka cikakkiya"""
+            )
+
+            data.update({
+                "active": True,
+                "message_id": msg.message_id,
+                "countdown_text": f"""❌ Kara duba lambarka da kyau
+Guda {length} ka bayar
+Bata cika ba, ana jiranka ka cikakkiya"""
+            })
+
+            start_countdown(user_id)
+            return
+
+        if length > 11:
+            try:
+                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
+            except:
+                pass
+
+            msg = bot.send_message(
+                chat_id,
+"""❌ Ka binciki lambar da ka bayar
+Ta wuce adadin 11
+
+Misali:
+090xxxxxx79"""
+            )
+
+            data.update({
+                "active": True,
+                "message_id": msg.message_id,
+                "countdown_text": """❌ Ka binciki lambar da ka bayar
+Ta wuce adadin 11
+
+Misali:
+090xxxxxx79"""
+            })
+
+            start_countdown(user_id)
+            return
+
+        data["phone"] = number
+
+        try:
+            bot.edit_message_text("Madallah ✅", chat_id, old_msg_id)
+        except:
+            pass
+
+        kb = InlineKeyboardMarkup()
+        kb.row(
+            InlineKeyboardButton("✅ Confirm", callback_data="confirm_data"),
+            InlineKeyboardButton("✏ Edit Number", callback_data="edit_number")
+        )
+        kb.add(
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")
+        )
+
+        bot.send_message(
+            chat_id,
+f"""Ka tabbatar wannan lambar ce babu kuskure?
+Are you sure this is correct number?
+
+Number: {number}
+Network: {data['network']}
+Plan: {data['plan_name']}
+Expire: {data['duration']}
+Amount: ₦{data['amount']/100:.2f}
+""",
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("NUMBER ERROR:", e)
+
+
+
+
+
+
+
+
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "edit_number")
+def edit_number(call):
+    try:
+        user_id = call.from_user.id
+        data = user_data_session.get(user_id)
+
+        if not data:
+            return
+
+        bot.answer_callback_query(call.id, "✏ Sake turo lamba")
+
+        # 🔥 RESET COUNTDOWN
+        data["active"] = True
+        data["message_id"] = call.message.message_id
+
+        start_countdown(user_id)
+
+    except Exception as e:
+        print("EDIT ERROR:", e)
+
+
+
+#========================================
+# CANCEL ORDER
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_order")
+def cancel_order(call):
+    try:
+        user_id = call.from_user.id
+        user_data_session.pop(user_id, None)
+        select_network(call)
+    except:
+        pass
+
+
+#========================================
+# NOOP
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "noop")
+def noop(call):
+    bot.answer_callback_query(call.id)
+
+
+#========================================
+# SELECT NETWORK
+#========================================
+@bot.callback_query_handler(func=lambda call: call.data == "data")
+def select_network(call):
+    try:
+        user_id = call.from_user.id
+        user_data_session.pop(user_id, None)
+
+        text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
+
+Dan Allah a tabbatar layin da za'a siya data babu bashi."""
+
+        kb = InlineKeyboardMarkup()
+        kb.row(
+            InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
+            InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
+        )
+        kb.row(
+            InlineKeyboardButton("🛜 Glo", callback_data="glo"),
+            InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
+        )
+        kb.add(
+            InlineKeyboardButton("⬅ Back", callback_data="back_to_d_&_a")
+        )
+
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        print("SELECT NETWORK ERROR:", e)
+
+
+
+
+
+#========================================
+# ADD DATA PLAN (ADMIN COMMAND) - SECURE
+#========================================
+
+
+@bot.message_handler(commands=['adddata'])
+def add_data_plan(message):
+
+    # ===== ADMIN ONLY (SILENT) =====
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        text = message.text.replace("/adddata", "").strip()
+
+        if not text:
+            bot.reply_to(message,
+"""❌ Format ba daidai ba
+
+Misali:
+/adddata
+MTN sme
+460mb 1day id13
+price 357
+""")
+            return
+
+        lines = text.split("\n")
+
+        if len(lines) < 3:
+            bot.reply_to(message, "❌ Ka cika duk bayanai")
+            return
+
+        # ===== LINE 1 =====
+        first = lines[0].strip().split()
+
+        if len(first) < 2:
+            bot.reply_to(message, "❌ Network da type ba daidai ba")
+            return
+
+        network = first[0].upper()
+        plan_type = first[1].upper()
+
+        # ===== HANDLE SHORT NAME =====
+        if plan_type == "COP":
+            plan_type = "CORPORATE"
+
+        # ===== LINE 2 =====
+        second = lines[1].lower().split()
+
+        if len(second) < 3:
+            bot.reply_to(message, "❌ Plan info ba daidai ba")
+            return
+
+        plan_name = second[0].upper()   # 460MB
+        duration = second[1]            # 1day
+
+        # ===== FIND API ID =====
+        api_id = None
+        for word in second:
+            if word.startswith("id"):
+                try:
+                    api_id = int(word.replace("id", ""))
+                except:
+                    pass
+
+        if not api_id:
+            bot.reply_to(message, "❌ API ID bai samu ba")
+            return
+
+        # ===== LINE 3 =====
+        third = lines[2].lower().split()
+
+        if "price" not in third:
+            bot.reply_to(message, "❌ Price ba daidai ba")
+            return
+
+        try:
+            price_naira = float(third[third.index("price") + 1])
+            price = int(price_naira * 100)
+        except:
+            bot.reply_to(message, "❌ Price error")
+            return
+
+        # ===== DB =====
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        # 🔒 CHECK DUPLICATE (SMART)
+        cur.execute("""
+        SELECT plan_name, duration 
+        FROM data_plans
+        WHERE api_id=%s 
+        AND network=%s 
+        AND plan_type=%s
+        """, (api_id, network, plan_type))
+
+        existing = cur.fetchone()
+
+        if existing:
+            old_plan, old_duration = existing
+
+            bot.reply_to(message,
+f"""⚠️ DATA YA RIGA YA WUCE
+
+📶 {network} {plan_type}
+📦 {old_plan}
+⏳ {old_duration}
+🆔 ID: {api_id}
+
+❌ Ba za a sake saka shi ba
+""")
+
+            cur.close()
+            conn.close()
+            return
+
+        # ===== INSERT =====
+        cur.execute("""
+        INSERT INTO data_plans 
+        (api_id, network, plan_type, plan_name, duration, price)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """, (api_id, network, plan_type, plan_name, duration, price))
+
+        cur.close()
+        conn.close()
+
+        # ===== SUCCESS =====
+        bot.reply_to(message,
+f"""✅ AN SAKA DATA
+
+📶 {network}
+🏷 {plan_type}
+📦 {plan_name}
+⏳ {duration}
+💰 ₦{price_naira:.2f}
+🆔 ID: {api_id}
+""")
+
+    except Exception as e:
+        print("ADD DATA ERROR:", e)
+        bot.reply_to(message, "⚠️ Error yayin saka data")
+
+
 
 
 # ================= ADMIN REMOVE MONEY FROM WALLET =================
@@ -2022,7 +3389,107 @@ def customer_pagination(c):
         pass
 
 
+#========================================
+# ADD DATA PLAN (ADMIN COMMAND)
+#========================================
 
+@bot.message_handler(commands=['adddata'])
+def add_data_plan(message):
+    try:
+        text = message.text.replace("/adddata", "").strip()
+
+        if not text:
+            bot.reply_to(message,
+"""❌ Format ba daidai ba
+
+Misali:
+/adddata
+MTN sme
+460mb 1day id13
+price 357
+""")
+            return
+
+        lines = text.split("\n")
+
+        if len(lines) < 3:
+            bot.reply_to(message, "❌ Ka cika duk bayanai (network, plan, price)")
+            return
+
+        # ===== LINE 1 =====
+        first = lines[0].strip().split()
+        if len(first) < 2:
+            bot.reply_to(message, "❌ Ka rubuta network da plan type daidai")
+            return
+
+        network = first[0].upper()
+        plan_type = first[1].upper()
+
+        # ===== LINE 2 =====
+        second = lines[1].lower().split()
+
+        if len(second) < 3:
+            bot.reply_to(message, "❌ Ka rubuta plan info daidai")
+            return
+
+        plan_name = second[0].upper()     # 460MB
+        duration = second[1]              # 1day
+
+        # find api_id
+        api_id = None
+        for word in second:
+            if word.startswith("id"):
+                api_id = int(word.replace("id", ""))
+        
+        if not api_id:
+            bot.reply_to(message, "❌ API ID bai samu ba")
+            return
+
+        # ===== LINE 3 =====
+        third = lines[2].lower().split()
+
+        if "price" not in third:
+            bot.reply_to(message, "❌ Ka saka price daidai")
+            return
+
+        price_index = third.index("price")
+
+        try:
+            price_naira = float(third[price_index + 1])
+            price = int(price_naira * 100)  # convert to kobo
+        except:
+            bot.reply_to(message, "❌ Price ba daidai ba")
+            return
+
+        # ===== INSERT INTO DB =====
+        conn = get_data_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        INSERT INTO data_plans 
+        (api_id, network, plan_type, plan_name, duration, price)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (api_id) DO NOTHING
+        """, (api_id, network, plan_type, plan_name, duration, price))
+
+        cur.close()
+        conn.close()
+
+        # ===== SUCCESS MESSAGE =====
+        bot.reply_to(message,
+f"""✅ An saka data cikin DB
+
+📶 Network: {network}
+🏷 Type: {plan_type}
+📦 Plan: {plan_name}
+⏳ Duration: {duration}
+💰 Price: ₦{price_naira:.2f}
+🆔 API ID: {api_id}
+""")
+
+    except Exception as e:
+        print("ADD DATA ERROR:", e)
+        bot.reply_to(message, "⚠️ Error yayin saka data")
 # ================= ADMIN SALLAH GIFT =================
 @bot.message_handler(commands=["sallah"])
 def send_sallah_gift(msg):
@@ -2579,7 +4046,7 @@ def vipgroup_handler(c):
         conn.commit()
 
     # ========= CREATE PAYMENT LINK =========
-    pay_url = create_kora_payment(
+    pay_url = create_paystack_payment(
         uid,
         order_id,
         VIP_PRICE,
@@ -2630,118 +4097,6 @@ Tap below to continue👇.
 
     cur.close()
     conn.close()
-
-import uuid
-from psycopg2.extras import RealDictCursor
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("ng"))
-def wallet_amount_handler(c):
-
-    bot.answer_callback_query(c.id)
-
-    uid = c.from_user.id
-    name = c.from_user.first_name or "User"
-
-    try:
-        amount = int(c.data.replace("ng",""))
-    except:
-        return
-
-    conn = get_wallet_conn()
-    if not conn:
-        return
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    # ===== CHECK PENDING WALLET ORDER =====
-    cur.execute(
-        """
-        SELECT id, amount
-        FROM wallet_deposits
-        WHERE user_id=%s
-        AND status='pending'
-        LIMIT 1
-        """,
-        (uid,)
-    )
-
-    row = cur.fetchone()
-
-    # ===== REUSE ORDER =====
-    if row:
-
-        order_id = row["id"]
-
-        if int(row["amount"]) != amount:
-
-            cur.execute(
-                """
-                UPDATE wallet_deposits
-                SET amount=%s
-                WHERE id=%s
-                """,
-                (amount, order_id)
-            )
-
-            conn.commit()
-
-    # ===== CREATE NEW ORDER =====
-    else:
-
-        order_id = str(uuid.uuid4())
-
-        cur.execute(
-            """
-            INSERT INTO wallet_deposits
-            (id, user_id, amount, type, status)
-            VALUES (%s,%s,%s,'wallet','pending')
-            """,
-            (order_id, uid, amount)
-        )
-
-        conn.commit()
-
-    cur.close()
-    conn.close()
-
-    # ===== CREATE KORAPAY LINK =====
-    pay_url = create_kora_payment(
-        uid,
-        order_id,
-        amount,
-        "Wallet Top-up"
-    )
-
-    if not pay_url:
-        return
-
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(f"💳 Top-up ₦{amount}", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet_back"))
-
-    bot.edit_message_text(
-        f"""💰 *Wallet Deposit*
-
-👤 Name: {name}
-
-💳 Amount: ₦{amount}
-
-🆔 Order ID:
-`{order_id}`
-
-Danna button da ke kasa domin biyan kudin.
-""",
-        chat_id=c.message.chat.id,
-        message_id=c.message.message_id,
-        parse_mode="Markdown",
-        reply_markup=kb
-    )
-
-    # ===== STORE MESSAGE FOR WEBHOOK DELETE =====
-    ORDER_MESSAGES[order_id] = (
-        c.message.chat.id,
-        c.message.message_id
-    )
 
 import threading  
 import time  
@@ -3529,7 +4884,117 @@ Zabi adadin da zaka deposit zuwa wallet din ka👇👇
         reply_markup=kb
     )
 
+import uuid
+from psycopg2.extras import RealDictCursor
 
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ng"))
+def wallet_amount_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    try:
+        amount = int(c.data.replace("ng",""))
+    except:
+        return
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ===== CHECK PENDING WALLET ORDER =====
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM wallet_deposits
+        WHERE user_id=%s
+        AND status='pending'
+        LIMIT 1
+        """,
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    # ===== REUSE ORDER =====
+    if row:
+
+        order_id = row["id"]
+
+        if int(row["amount"]) != amount:
+
+            cur.execute(
+                """
+                UPDATE wallet_deposits
+                SET amount=%s
+                WHERE id=%s
+                """,
+                (amount, order_id)
+            )
+
+            conn.commit()
+
+    # ===== CREATE NEW ORDER =====
+    else:
+
+        order_id = str(uuid.uuid4())
+
+        cur.execute(
+            """
+            INSERT INTO wallet_deposits
+            (id, user_id, amount, type, status)
+            VALUES (%s,%s,%s,'wallet','pending')
+            """,
+            (order_id, uid, amount)
+        )
+
+        conn.commit()
+
+    cur.close()
+    conn.close()
+
+    # ===== CREATE PAYSTACK LINK =====
+    pay_url = create_paystack_payment(
+        uid,
+        order_id,
+        amount,
+        "Wallet Top-up"
+    )
+
+    if not pay_url:
+        return
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Top-up ₦{amount}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet_back"))
+
+    bot.edit_message_text(
+        f"""💰 *Wallet Deposit*
+
+👤 Name: {name}
+
+💳 Amount: ₦{amount}
+
+🆔 Order ID:
+`{order_id}`
+
+Danna button da ke kasa domin biyan kudin.
+""",
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+    # ===== STORE MESSAGE FOR WEBHOOK DELETE =====
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
+    )
 
 
 
@@ -4792,12 +6257,15 @@ def mask_name(fullname):
 def tr_user(uid, key, default=""):
     return default
 
+
+
 #farko
 def reply_menu(uid=None):
     kb = InlineKeyboardMarkup()
 
     # ===== WALLET (TOP BUTTON) =====
-    kb.add(
+    kb.row(
+        InlineKeyboardButton("📶 Data & Airtime", callback_data="d_&_a"),
         InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")
     )
 
@@ -4853,6 +6321,7 @@ def reply_menu(uid=None):
 
     return kb
 # end
+
 
 
 def user_main_menu(uid=None):
@@ -5999,234 +7468,6 @@ def start_handler(msg):
     bot.send_message(msg.chat.id, "Welcome!")
 
 
-import uuid
-import traceback
-from psycopg2.extras import RealDictCursor
-
-# ========= PAY ALL UNPAID (SAFE | GROUP-AWARE | CLEAN VERSION) =========
-@bot.callback_query_handler(func=lambda c: c.data == "payall:")
-def pay_all_unpaid(call):
-    uid = call.from_user.id
-    user_name = call.from_user.first_name or "Customer"
-    bot.answer_callback_query(call.id)
-
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # ==================================================
-        # 1️⃣ FETCH ALL UNPAID ORDER ITEMS
-        # ==================================================
-        cur.execute(
-            """
-            SELECT
-                o.id        AS old_order_id,
-                i.id        AS item_id,
-                i.title,
-                i.price,
-                i.file_id,
-                i.group_key
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            JOIN items i ON i.id = oi.item_id
-            WHERE o.user_id=%s
-              AND o.paid=0
-            """,
-            (uid,)
-        )
-        rows = cur.fetchall()
-
-        if not rows:
-            bot.send_message(uid, "❌ No unpaid orders found.")
-            return
-
-        # ==================================================
-        # 2️⃣ REMOVE OWNED ITEMS
-        # ==================================================
-        all_item_ids = list({r["item_id"] for r in rows})
-
-        if all_item_ids:
-            cur.execute(
-                f"""
-                SELECT item_id
-                FROM user_movies
-                WHERE user_id=%s
-                  AND item_id IN ({",".join(["%s"] * len(all_item_ids))})
-                """,
-                (uid, *all_item_ids)
-            )
-            owned_ids = {r["item_id"] for r in cur.fetchall()}
-        else:
-            owned_ids = set()
-
-        if owned_ids:
-            kb_owned = InlineKeyboardMarkup()
-            kb_owned.add(
-                InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies")
-            )
-
-            bot.send_message(
-                uid,
-                "You have already purchased some of these movies.\n"
-                "You can access them anytime from your paid movies section below.",
-                reply_markup=kb_owned
-            )
-
-        items = [
-            r for r in rows
-            if r["file_id"]
-            and int(r["price"] or 0) > 0
-            and r["item_id"] not in owned_ids
-        ]
-
-        if not items:
-            bot.send_message(uid, "❌ No payable items.")
-            return
-
-        item_ids = list({i["item_id"] for i in items})
-        old_order_ids = list({i["old_order_id"] for i in items})
-
-        # ==================================================
-        # 3️⃣ GROUP KEY LOGIC
-        # ==================================================
-        groups = {}
-
-        for i in items:
-            key = i["group_key"] or f"single_{i['item_id']}"
-            if key not in groups:
-                groups[key] = {
-                    "price": int(i["price"]),
-                    "items": []
-                }
-            groups[key]["items"].append(i)
-
-        total_amount = sum(g["price"] for g in groups.values())
-
-        if total_amount <= 0:
-            bot.send_message(uid, "❌ Invalid total amount.")
-            return
-
-        # ==================================================
-        # 4️⃣ CREATE COLLECTOR ORDER
-        # ==================================================
-        order_id = str(uuid.uuid4())
-
-        cur.execute(
-            """
-            INSERT INTO orders (id, user_id, amount, paid)
-            VALUES (%s, %s, %s, 0)
-            """,
-            (order_id, uid, total_amount)
-        )
-
-        for g in groups.values():
-            for i in g["items"]:
-                cur.execute(
-                    """
-                    INSERT INTO order_items
-                    (order_id, item_id, file_id, price)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (order_id, i["item_id"], i["file_id"], g["price"])
-                )
-
-        conn.commit()
-
-        # ==================================================
-        # 5️⃣ DELETE OLD ORDERS
-        # ==================================================
-        if old_order_ids:
-            cur.execute(
-                f"""
-                DELETE FROM order_items
-                WHERE order_id IN ({",".join(["%s"] * len(old_order_ids))})
-                """,
-                tuple(old_order_ids)
-            )
-
-            cur.execute(
-                f"""
-                DELETE FROM orders
-                WHERE id IN ({",".join(["%s"] * len(old_order_ids))})
-                """,
-                tuple(old_order_ids)
-            )
-
-            conn.commit()
-
-        # ==================================================
-        # 6️⃣ PAYSTACK
-        # ==================================================
-        pay_url = create_kora_payment(
-            uid,
-            order_id,
-            total_amount,
-            "Pay All Unpaid Orders"
-        )
-
-        if not pay_url:
-            return
-
-        # ==================================================
-        # 7️⃣ DISPLAY
-        # ==================================================
-        unique_titles = []
-        seen = set()
-
-        for key, g in groups.items():
-            first_item = g["items"][0]
-            title = first_item["title"]
-            if key not in seen:
-                unique_titles.append(title)
-                seen.add(key)
-
-        kb = InlineKeyboardMarkup()
-
-        # PAY NOW
-        kb.add(
-            InlineKeyboardButton("💳 PAY NOW", url=pay_url)
-        )
-
-        # NEW WALLET BUTTON (LIKE GROUPITEM)
-        kb.row(
-            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
-        )
-
-        sent = bot.send_message(
-            uid,
-            f"""🧺 <b>PAY ALL UNPAID ORDERS</b>
-
-👤 <b>Your name is:</b> {user_name}
-
-🎬 <b>Films:</b>
-{", ".join(unique_titles)}
-
-📦 <b>Films:</b> {len(item_ids)}
-🗂 <b>G-orders:</b> {len(groups)}
-
-💵 <b>Total amount:</b> ₦{total_amount}
-
-🆔 <b>Order ID:</b>
-<code>{order_id}</code>
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
-
-    except Exception:
-        pass
-
-    finally:
-        try:
-            cur.close()
-            conn.close()
-        except:
-            pass
-
-
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
 from psycopg2.extras import RealDictCursor
 import uuid
@@ -6238,6 +7479,7 @@ def groupitem_deeplink_handler(msg):
     uid = msg.from_user.id
     user_name = msg.from_user.first_name or "Customer"
 
+    # ========= PARSE ITEM IDS + GROUP KEYS =========
     try:
         raw = msg.text.split("groupitem_", 1)[1]
         tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
@@ -6247,6 +7489,7 @@ def groupitem_deeplink_handler(msg):
     if not tokens:
         return
 
+    # ✅ SAFE CONNECTION
     conn = get_conn()
     if not conn:
         return
@@ -6256,8 +7499,12 @@ def groupitem_deeplink_handler(msg):
 
     try:
         for token in tokens:
+
+            # ==== IF ID ====
             if token.isdigit():
                 item_ids.append(int(token))
+
+            # ==== IF GROUP KEY ====
             else:
                 cur.execute(
                     "SELECT id FROM items WHERE group_key=%s",
@@ -6276,6 +7523,7 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
+    # ========= FETCH ITEMS =========
     try:
         placeholders = ",".join(["%s"] * len(item_ids))
         cur.execute(
@@ -6297,6 +7545,7 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
+    # ========= FILE_ID REQUIRED =========
     items = [i for i in items if i.get("file_id")]
     if not items:
         cur.close()
@@ -6305,6 +7554,7 @@ def groupitem_deeplink_handler(msg):
 
     item_ids_clean = [i["id"] for i in items]
 
+    # ========= OWNERSHIP CHECK =========
     try:
         cur.execute(
             f"""
@@ -6335,6 +7585,7 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
+    # ========= GROUP_KEY PRICING =========
     groups = {}
     for i in items:
         key = i["group_key"] or f"single_{i['id']}"
@@ -6349,6 +7600,7 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
+    # ========= REUSE / CREATE ORDER =========
     try:
         cur.execute(
             f"""
@@ -6394,14 +7646,16 @@ def groupitem_deeplink_handler(msg):
             conn.close()
             return
 
+    # ========= PAYSTACK =========
     display_title = f"{item_count} item(s)"
-    pay_url = create_kora_payment(uid, order_id, total, display_title)
+    pay_url = create_paystack_payment(uid, order_id, total, display_title)
 
     if not pay_url:
         cur.close()
         conn.close()
         return
 
+    # ========= FIXED TITLE DISPLAY =========
     unique_titles = [
         i["title"]
         for _, i in {
@@ -6410,12 +7664,15 @@ def groupitem_deeplink_handler(msg):
         }.items()
     ]
 
+    # ========= FINAL =========
     kb = InlineKeyboardMarkup()
 
+    # PAY NOW (TOP ROW)
     kb.add(
         InlineKeyboardButton("💳 PAY NOW", url=pay_url)
     )
 
+    # SECOND ROW
     kb.row(
         InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
         InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
@@ -6439,11 +7696,11 @@ def groupitem_deeplink_handler(msg):
         reply_markup=kb
     )
 
+    # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
     ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
 
     cur.close()
     conn.close()
-
 
 
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
@@ -6674,7 +7931,233 @@ Tura <b>/sendall</b> domin a sake tura items.""",
             conn.close()
 
 
+import uuid
+import traceback
+from psycopg2.extras import RealDictCursor
 
+# ========= PAY ALL UNPAID (SAFE | GROUP-AWARE | CLEAN VERSION) =========
+@bot.callback_query_handler(func=lambda c: c.data == "payall:")
+def pay_all_unpaid(call):
+    uid = call.from_user.id
+    user_name = call.from_user.first_name or "Customer"
+    bot.answer_callback_query(call.id)
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ==================================================
+        # 1️⃣ FETCH ALL UNPAID ORDER ITEMS
+        # ==================================================
+        cur.execute(
+            """
+            SELECT
+                o.id        AS old_order_id,
+                i.id        AS item_id,
+                i.title,
+                i.price,
+                i.file_id,
+                i.group_key
+            FROM orders o
+            JOIN order_items oi ON oi.order_id = o.id
+            JOIN items i ON i.id = oi.item_id
+            WHERE o.user_id=%s
+              AND o.paid=0
+            """,
+            (uid,)
+        )
+        rows = cur.fetchall()
+
+        if not rows:
+            bot.send_message(uid, "❌ No unpaid orders found.")
+            return
+
+        # ==================================================
+        # 2️⃣ REMOVE OWNED ITEMS
+        # ==================================================
+        all_item_ids = list({r["item_id"] for r in rows})
+
+        if all_item_ids:
+            cur.execute(
+                f"""
+                SELECT item_id
+                FROM user_movies
+                WHERE user_id=%s
+                  AND item_id IN ({",".join(["%s"] * len(all_item_ids))})
+                """,
+                (uid, *all_item_ids)
+            )
+            owned_ids = {r["item_id"] for r in cur.fetchall()}
+        else:
+            owned_ids = set()
+
+        if owned_ids:
+            kb_owned = InlineKeyboardMarkup()
+            kb_owned.add(
+                InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies")
+            )
+
+            bot.send_message(
+                uid,
+                "You have already purchased some of these movies.\n"
+                "You can access them anytime from your paid movies section below.",
+                reply_markup=kb_owned
+            )
+
+        items = [
+            r for r in rows
+            if r["file_id"]
+            and int(r["price"] or 0) > 0
+            and r["item_id"] not in owned_ids
+        ]
+
+        if not items:
+            bot.send_message(uid, "❌ No payable items.")
+            return
+
+        item_ids = list({i["item_id"] for i in items})
+        old_order_ids = list({i["old_order_id"] for i in items})
+
+        # ==================================================
+        # 3️⃣ GROUP KEY LOGIC
+        # ==================================================
+        groups = {}
+
+        for i in items:
+            key = i["group_key"] or f"single_{i['item_id']}"
+            if key not in groups:
+                groups[key] = {
+                    "price": int(i["price"]),
+                    "items": []
+                }
+            groups[key]["items"].append(i)
+
+        total_amount = sum(g["price"] for g in groups.values())
+
+        if total_amount <= 0:
+            bot.send_message(uid, "❌ Invalid total amount.")
+            return
+
+        # ==================================================
+        # 4️⃣ CREATE COLLECTOR ORDER
+        # ==================================================
+        order_id = str(uuid.uuid4())
+
+        cur.execute(
+            """
+            INSERT INTO orders (id, user_id, amount, paid)
+            VALUES (%s, %s, %s, 0)
+            """,
+            (order_id, uid, total_amount)
+        )
+
+        for g in groups.values():
+            for i in g["items"]:
+                cur.execute(
+                    """
+                    INSERT INTO order_items
+                    (order_id, item_id, file_id, price)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (order_id, i["item_id"], i["file_id"], g["price"])
+                )
+
+        conn.commit()
+
+        # ==================================================
+        # 5️⃣ DELETE OLD ORDERS
+        # ==================================================
+        if old_order_ids:
+            cur.execute(
+                f"""
+                DELETE FROM order_items
+                WHERE order_id IN ({",".join(["%s"] * len(old_order_ids))})
+                """,
+                tuple(old_order_ids)
+            )
+
+            cur.execute(
+                f"""
+                DELETE FROM orders
+                WHERE id IN ({",".join(["%s"] * len(old_order_ids))})
+                """,
+                tuple(old_order_ids)
+            )
+
+            conn.commit()
+
+        # ==================================================
+        # 6️⃣ PAYSTACK
+        # ==================================================
+        pay_url = create_paystack_payment(
+            uid,
+            order_id,
+            total_amount,
+            "Pay All Unpaid Orders"
+        )
+
+        if not pay_url:
+            return
+
+        # ==================================================
+        # 7️⃣ DISPLAY
+        # ==================================================
+        unique_titles = []
+        seen = set()
+
+        for key, g in groups.items():
+            first_item = g["items"][0]
+            title = first_item["title"]
+            if key not in seen:
+                unique_titles.append(title)
+                seen.add(key)
+
+        kb = InlineKeyboardMarkup()
+
+        # PAY NOW
+        kb.add(
+            InlineKeyboardButton("💳 PAY NOW", url=pay_url)
+        )
+
+        # NEW WALLET BUTTON (LIKE GROUPITEM)
+        kb.row(
+            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
+        )
+
+        sent = bot.send_message(
+            uid,
+            f"""🧺 <b>PAY ALL UNPAID ORDERS</b>
+
+👤 <b>Your name is:</b> {user_name}
+
+🎬 <b>Films:</b>
+{", ".join(unique_titles)}
+
+📦 <b>Films:</b> {len(item_ids)}
+🗂 <b>G-orders:</b> {len(groups)}
+
+💵 <b>Total amount:</b> ₦{total_amount}
+
+🆔 <b>Order ID:</b>
+<code>{order_id}</code>
+""",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+        # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
+        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
+
+    except Exception:
+        pass
+
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except:
+            pass
 
 import uuid
 from datetime import datetime
@@ -7068,6 +8551,7 @@ def handle_callback(c):
 
     
 
+
     from psycopg2.extras import RealDictCursor
     import uuid
 
@@ -7228,10 +8712,10 @@ def handle_callback(c):
             pass
 
         # ==================================================
-        # KORAPAY
+        # PAYSTACK
         # ==================================================
         try:
-            pay_url = create_kora_payment(
+            pay_url = create_paystack_payment(
                 uid,
                 order_id,
                 total,
@@ -7297,8 +8781,6 @@ def handle_callback(c):
 
         bot.answer_callback_query(c.id)
         return
-
-
  
 
 
