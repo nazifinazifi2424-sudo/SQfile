@@ -1,5 +1,3 @@
-
-
 ## bot.py  (PostgreSQL SAFE – FULL FIX, nothing removed)
 
 
