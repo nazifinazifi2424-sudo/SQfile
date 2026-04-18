@@ -775,8 +775,8 @@ ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Aslamtv2bot"
-CHANNEL = "@Aslammovieschannel"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+nLQP1kVfgtNiNzM0"  # saka permanent group link naka
