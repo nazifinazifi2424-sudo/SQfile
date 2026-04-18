@@ -1,6 +1,5 @@
 
 
-
 ## bot.py  (PostgreSQL SAFE – FULL FIX, nothing removed)
 
 
@@ -746,7 +745,7 @@ ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
-ADMINS = [8537505191, 5009954635] 
+ADMINS = [6210912739, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
@@ -772,12 +771,12 @@ WARNING_1_UNIT = "days"
 WARNING_2_VALUE = 32
 WARNING_2_UNIT = "days"
 
-ADMIN_ID = 8537505191
+ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@Danchirinps"
+BOT_USERNAME = "Aslamtv2bot"
+CHANNEL = "@Aslammovieschannel"
 
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+nLQP1kVfgtNiNzM0"  # saka permanent group link naka
@@ -786,13 +785,16 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is missing")
 
-# ========= PAYSTACK CONFIG =========
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
-PAYSTACK_PUBLIC = os.getenv("PAYSTACK_PUBLIC")
-PAYSTACK_REDIRECT_URL = os.getenv("PAYSTACK_REDIRECT_URL")
+
+# Flutterwave
+FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY")
+FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY")
+FLW_WEBHOOK_SECRET = os.getenv("FLW_WEBHOOK_SECRET")
+FLW_REDIRECT_URL = os.getenv("FLW_REDIRECT_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-PAYSTACK_BASE = "https://api.paystack.co"
+
+FLW_BASE = "https://api.flutterwave.com/v3"
 
 VIP_GROUP_ID = -1002780322450
 
@@ -820,40 +822,66 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
 
+
+
 import time
 
-def create_paystack_payment(user_id, order_id, amount, title):
+# ========= FLUTTERWAVE PAYMENT =========
+def create_flutterwave_payment(user_id, order_id, amount, title):
+    # Tabbatar da cewa akwai bayanan sirri (Env variables)
+    if not FLW_SECRET_KEY or not FLW_REDIRECT_URL:
+        print("❌ Flutterwave env missing")
+        return None
+
     headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET}",
+        "Authorization": f"Bearer {FLW_SECRET_KEY}",
         "Content-Type": "application/json"
     }
 
+    # ✅ FIX: Muna kara time.time() domin tx_ref ya zama unique 
+    # kamar yadda aka yi a Paystack din don gujewa "Transaction reference already exists"
+    tx_ref = f"{order_id}_{int(time.time())}"
+
     payload = {
-        "reference": f"{order_id}_{int(time.time())}",  # ✅ FIX
-        "amount": int(amount) * 100,
+        "tx_ref": tx_ref,
+        "amount": int(amount), # Flutterwave ba ta bukatar * 100
         "currency": "NGN",
-        "callback_url": PAYSTACK_REDIRECT_URL,
-        "email": f"user{user_id}@telegram.com",
-        "metadata": {
+        "redirect_url": FLW_REDIRECT_URL,
+        "customer": {
+            "email": f"user{user_id}@telegram.com",
+            "name": f"TG User {user_id}"
+        },
+        "customizations": {
+            "title": title[:50],
+            "description": f"Order {order_id}"
+        },
+        # Muna saka ainihin order_id a meta don Webhook ya gane shi cikin sauki
+        "meta": {
             "order_id": str(order_id),
-            "user_id": user_id,
-            "title": title[:50]
+            "user_id": user_id
         }
     }
 
-    r = requests.post(
-        f"{PAYSTACK_BASE}/transaction/initialize",
-        json=payload,
-        headers=headers,
-        timeout=30
-    )
+    try:
+        r = requests.post(
+            f"{FLW_BASE}/payments",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
 
-    data = r.json()
-    if not data.get("status"):
+        data = r.json()
+
+        if r.status_code != 200 or data.get("status") != "success":
+            print("❌ Flutterwave error:", data)
+            return None
+
+        # Authorization link na Flutterwave
+        return data["data"]["link"]
+
+    except Exception as e:
+        print("❌ create_flutterwave_payment error:", e)
         return None
-
-    return data["data"]["authorization_url"]
-
 
 
 
@@ -863,9 +891,10 @@ def create_paystack_payment(user_id, order_id, amount, title):
 def home():
     return "OK", 200
 
+
 # ========= CALLBACK PAGE =========
-@app.route("/paystack-callback", methods=["GET"])
-def paystack_callback():
+@app.route("/flutterwave-callback", methods=["GET"])
+def flutterwave_callback():
     return """
     <html>
     <head>
@@ -881,6 +910,8 @@ def paystack_callback():
     </body>
     </html>
     """
+
+
 # ========= FEEDBACK =========
 def send_feedback_prompt(user_id, order_id):
     try:
@@ -934,29 +965,34 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
-
-
 @app.route("/webhook", methods=["POST"])
-def paystack_webhook():
+def flutterwave_webhook():
     try:
-        # ================= SECURITY & VALIDATION =================
-        signature = request.headers.get("x-paystack-signature")
+        # ================= SECURITY & VALIDATION (FLUTTERWAVE) =================
+        # Flutterwave tana amfani da 'verif-hash' a header
+        signature = request.headers.get("verif-hash")
         if not signature: return "Missing signature", 401
-        computed = hmac.new(PAYSTACK_SECRET.encode(), request.data, hashlib.sha512).hexdigest()
-        if signature != computed: return "Invalid signature", 401
+
+        # Tabbatar da asirin webhook (Secret Hash)
+        if signature != FLW_WEBHOOK_SECRET: 
+            return "Invalid signature", 401
 
         payload = request.json or {}
-        event = payload.get("event")
-        if event != "charge.success": return "Ignored", 200
-
+        # Flutterwave tana sanya bayanan a cikin 'data' kai tsaye
         data = payload.get("data", {})
-        raw_reference = data.get("reference")
-        paid_amount = int(data.get("amount", 0) / 100)
 
-        metadata = data.get("metadata", {}) or {}
-        order_id = metadata.get("order_id")
-        if not order_id and raw_reference:
-            order_id = raw_reference.split("_")[0]
+        # Duba idan payment din yayi nasara
+        status = (data.get("status") or "").lower()
+        if status not in ("successful", "success"): 
+            return "Ignored", 200
+
+        # Flutterwave tana amfani da 'tx_ref' a matsayin reference/order_id
+        raw_reference = data.get("tx_ref")
+        paid_amount = int(float(data.get("amount", 0)))
+        currency = data.get("currency")
+
+        # ✅ GYARA: Ciro ainihin order_id ta hanyar cire timestamp (_177...)
+        order_id = raw_reference.split("_")[0] if raw_reference else None
         if not order_id: return "Missing order id", 200
 
         conn = get_conn(); cur = conn.cursor()
@@ -978,7 +1014,7 @@ def paystack_webhook():
                 wallet_cur.close(); wallet_conn.close(); cur.close(); conn.close()
                 return "Already processed", 200
 
-            # Update Wallet Tables
+            # Update Wallet Tables (Amfani da raw_reference na Flutterwave)
             wallet_cur.execute("UPDATE wallet_deposits SET status='success', paystack_ref=%s, paid_at=NOW() WHERE id=%s", (raw_reference, order_id))
             wallet_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()", (user_id, paid_amount))
             wallet_cur.execute("INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'deposit',%s,'Wallet Top-up')", (user_id, paid_amount, order_id))
@@ -1115,6 +1151,8 @@ def paystack_webhook():
 
     except Exception as e:
         print(f"Webhook Error: {e}"); return "ERROR", 500
+
+
 
 
 
@@ -5089,7 +5127,7 @@ def vip_expiry_checker():
         except:  
             pass  
 
-        time.sleep(60)  # check every 60 seconds  
+        time.sleep(43200)  # check every 60 seconds  
 
 
 threading.Thread(target=vip_expiry_checker, daemon=True).start()
@@ -5232,7 +5270,7 @@ def vip_warning_system():
         except:
             pass
 
-        time.sleep(30)  # yana duba duk 30 seconds
+        time.sleep(7200)  # yana duba duk 30 seconds
 
 
 threading.Thread(target=vip_warning_system, daemon=True).start()
@@ -6871,6 +6909,7 @@ Danna Pay now domin biya 👇👇
         cur.close()
         conn.close()
 
+
 # ======= GROUPITEM (IDS + GROUP_KEY SUPPORT | UPDATED FORMAT) =========        
 from psycopg2.extras import RealDictCursor        
 import uuid        
@@ -7033,7 +7072,8 @@ def groupitem_deeplink_handler(msg):
             return        
 
     try:        
-        pay_url = create_paystack_payment(        
+        # ✅ ZUWA FLUTTERWAVE
+        pay_url = create_flutterwave_payment(        
             uid,        
             order_id,        
             total,        
@@ -9993,7 +10033,7 @@ def sales_report_scheduler():
 
 
 
-# ▶️ START BACKGROUND REPORT THREAD
+## ▶️ START BACKGROUND REPORT THREAD
 # ================== START SERVER ==================
 if __name__ == "__main__":
 
