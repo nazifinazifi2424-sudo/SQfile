@@ -1,3 +1,4 @@
+## bot.py  (PostgreSQL SAFE – FULL FIX, nothing removed)
 
 import telebot
 from telebot import types
@@ -54,34 +55,6 @@ def get_wallet_conn():
 wallet_conn = psycopg2.connect(WALLET_DATABASE_URL)
 wallet_conn.autocommit = True
 wallet_cur = wallet_conn.cursor()
-
-
-# ======================
-# DATA DATABASE CONNECTION
-# ======================
-DATA_DATABASE_URL = os.environ.get("DATA_DATABASE_URL")
-
-if not DATA_DATABASE_URL:
-    raise RuntimeError("DATA_DATABASE_URL is not set")
-
-def get_data_conn():
-    try:
-        c = psycopg2.connect(
-            DATA_DATABASE_URL,
-            connect_timeout=5,
-            sslmode="require"
-        )
-        c.autocommit = True
-        return c
-    except Exception as e:
-        print("❌ DATA DB CONNECT ERROR:", e)
-        return None
-
-
-# GLOBAL (for table creation)
-data_conn = psycopg2.connect(DATA_DATABASE_URL)
-data_conn.autocommit = True
-data_cur = data_conn.cursor()
 
 
 # AUTO DB FIX: ENSURE invite_link COLUMN
@@ -453,80 +426,6 @@ ON wallet_withdrawals(user_id)
 
 
 # =========================
-# DATA DATABASE TABLES (PRO VERSION)
-# =========================
-
-data_cur.execute("""
-CREATE TABLE IF NOT EXISTS data_plans (
-    id SERIAL PRIMARY KEY,
-
-    api_id BIGINT UNIQUE,              -- API plan ID
-
-    network VARCHAR(20) NOT NULL,      -- MTN, GLO, AIRTEL, 9MOBILE
-    plan_type VARCHAR(50) NOT NULL,    -- SME, SME2, AWOOF, SPECIAL...
-
-    plan_name VARCHAR(50) NOT NULL,    -- 1GB, 460MB...
-    plan_desc TEXT,                    -- full description (optional)
-
-    duration VARCHAR(50) NOT NULL,     -- 1day, 7days, 30days
-
-    price BIGINT NOT NULL,             -- use kobo (e.g 30000 = ₦300)
-
-    status INTEGER DEFAULT 1,          -- 1 = ON, 0 = OFF
-
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-# ===== INDEX domin saurin query =====
-data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_data_network 
-ON data_plans(network)
-""")
-
-data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_data_type 
-ON data_plans(plan_type)
-""")
-
-data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_data_status 
-ON data_plans(status)
-""")
-
-# =========================
-# BUTTONS CONTROL TABLE (SAFE + PRO)
-# =========================
-
-data_cur.execute("""
-CREATE TABLE IF NOT EXISTS data_buttons (
-    id SERIAL PRIMARY KEY,
-
-    name TEXT NOT NULL,              -- SME, CORPORATE, GIFTING (no limit)
-    network TEXT NOT NULL,           -- MTN, GLO, AIRTEL, 9MOBILE
-
-    callback TEXT NOT NULL,          -- sme, corporate, gifting
-
-    position INTEGER DEFAULT 1,      -- sorting
-
-    status INTEGER DEFAULT 1,        -- 1 = show, 0 = hidden
-
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-# ===== INDEX =====
-data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_network 
-ON data_buttons(network)
-""")
-
-data_cur.execute("""
-CREATE INDEX IF NOT EXISTS idx_btn_status 
-ON data_buttons(status)
-""")
-# =========================
 # DATABASE TABLES (SAFE)
 # =========================
 
@@ -861,9 +760,8 @@ import hashlib
 ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
-user_data_session = {}
 # --- Admins configuration ---
-ADMINS = [8537505191]
+ADMINS = [6603268127]
 
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -881,51 +779,42 @@ WARNING_1_UNIT = "days"
 
 WARNING_2_VALUE = 32
 WARNING_2_UNIT = "days"
-ADMIN_ID = 8537505191
+ADMIN_ID = 6603268127
 OTP_ADMIN_ID = 6603268127
 
-BOT_USERNAME = "Danchirinbot"
-CHANNEL = "@Danchirinps"
+
+# ==========================================
+WARNING_1_VALUE = 5  # Misali: Kwana 5 kafin expire
+WARNING_2_VALUE = 2  # Misali: Kwana 2 kafin expire
+
+
+
+BOT_USERNAME = "Algaitabot"
+CHANNEL = "@Algaitamoviestore"
 
 COUNTDOWN_SECONDS = 70
-VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
+VIP_LINK = "https://t.me/+sRDID76KGO1lMTc8"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is missing")
-# ========= PAYSTACK CONFIG =========
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
-PAYSTACK_PUBLIC = os.getenv("PAYSTACK_PUBLIC")
-PAYSTACK_REDIRECT_URL = os.getenv("PAYSTACK_REDIRECT_URL")
+
+# Flutterwave
+FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY")
+FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY")
+FLW_WEBHOOK_SECRET = os.getenv("FLW_WEBHOOK_SECRET")
+FLW_REDIRECT_URL = os.getenv("FLW_REDIRECT_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-PAYSTACK_BASE = "https://api.paystack.co"
+FLW_BASE = "https://api.flutterwave.com/v3"
 
-LEGIT_URL = "https://legitdata.com.ng/api/user/"
-
-LEGIT_TOKEN = "ba5e0d85c11376ffa9389b86f58ba2717acbb930"
-
-#========================================
-# 🔐 LOCK SYSTEM
-#========================================
-LOCK_MTN = [1, 1, 1, 1, 1, 1, 1]  
-# SME, Gifting, Data Share, Corporate, Awoof, SME2, Special
-
-LOCK_AIRTEL = [1, 1, 1, 1]  
-# Gifting, SME, Corporate, Special
-
-LOCK_GLO = [1, 1, 1, 1]  
-# Special, Gifting, SME, Corporate
-
-LOCK_9MOBILE = [1, 1]  
-# SME, Corporate
 
 
 VIP_GROUP_ID = -1003656360408
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003769342354
-STORAGE_CHANNEL =  -1003794258511
+PAYMENT_NOTIFY_GROUP = -1003555015230
+STORAGE_CHANNEL = -1003520788779
 
 PAYMENT_NOTIFY_GROUP_WALLET = -1003803657269
 
@@ -950,39 +839,62 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 # ========= FLASK =========
 app = Flask(__name__)
 
-import time
 
-def create_paystack_payment(user_id, order_id, amount, title):
+import time
+import requests
+
+def create_flutterwave_payment(user_id, order_id, amount, title):
+    # ================= HEADERS =================
     headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET}",
+        "Authorization": f"Bearer {FLW_SECRET_KEY}",
         "Content-Type": "application/json"
     }
 
+    # ================= PAYLOAD (FLUTTERWAVE FORMAT) =================
     payload = {
-        "reference": f"{order_id}_{int(time.time())}",  # ✅ FIX
-        "amount": int(amount) * 100,
+        "tx_ref": f"{order_id}_{int(time.time())}",  # ✅ Kamar yadda muka yi a baya
+        "amount": str(amount),
         "currency": "NGN",
-        "callback_url": PAYSTACK_REDIRECT_URL,
-        "email": f"user{user_id}@telegram.com",
-        "metadata": {
+        "redirect_url": FLW_REDIRECT_URL,
+        "payment_options": "card,ussd,banktransfer",
+        "customer": {
+            "email": f"user{user_id}@engrservice.com",
+            "name": f"User {user_id}"
+        },
+        "customizations": {
+            "title": "Payment for " + title[:40],
+            "description": f"Order ID: {order_id}"
+        },
+        "meta": {
             "order_id": str(order_id),
             "user_id": user_id,
             "title": title[:50]
         }
     }
 
-    r = requests.post(
-        f"{PAYSTACK_BASE}/transaction/initialize",
-        json=payload,
-        headers=headers,
-        timeout=30
-    )
+    # ================= REQUEST =================
+    try:
+        r = requests.post(
+            "https://api.flutterwave.com/v3/payments",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+        
+        data = r.json()
+        
+        # Duba idan komai yayi nasara
+        if data.get("status") != "success":
+            print(f"Flutterwave Error: {data.get('message')}")
+            return None
 
-    data = r.json()
-    if not data.get("status"):
+        # Flutterwave tana dawo da link din a 'data' -> 'link'
+        return data["data"]["link"]
+        
+    except Exception as e:
+        print(f"Request Error: {e}")
         return None
 
-    return data["data"]["authorization_url"]
 
 
 
@@ -992,20 +904,73 @@ def home():
     return "OK", 200
 
 
-# ========= CALLBACK PAGE =========
-@app.route("/paystack-callback", methods=["GET"])
-def paystack_callback():
+# ========= FLUTTERWAVE CALLBACK PAGE =========
+@app.route("/flutterwave-callback", methods=["GET"])
+def flutterwave_callback():
     return """
     <html>
     <head>
         <title>Payment Successful</title>
-        <meta http-equiv="refresh" content="5;url=https://t.me/Aslamtv2bot">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="refresh" content="5;url=https://t.me/Algaitabot">
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                background-color: #f4f7f6;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            }
+            .card {
+                background: white;
+                padding: 40px;
+                border-radius: 20px;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                text-align: center;
+                width: 90%;
+                max-width: 400px;
+            }
+            .icon {
+                font-size: 70px;
+                color: #2ecc71;
+                margin-bottom: 20px;
+            }
+            h2 {
+                color: #2c3e50;
+                margin-bottom: 10px;
+            }
+            p {
+                color: #7f8c8d;
+                font-size: 18px;
+                line-height: 1.6;
+            }
+            .btn {
+                display: inline-block;
+                margin-top: 25px;
+                padding: 12px 30px;
+                background-color: #0088cc;
+                color: white;
+                text-decoration: none;
+                border-radius: 50px;
+                font-weight: bold;
+                transition: background 0.3s;
+            }
+            .btn:hover {
+                background-color: #0077b5;
+            }
+        </style>
     </head>
-    <body style="font-family: Arial; text-align: center; padding-top: 150px; font-size: 22px;">
-        <h2>✅ Payment Successful</h2>
-        <p>An tabbatar da biyan ka.</p>
-        <p>Kashe browser ka koma telegram</p>
-        <a href="https://t.me/Algaitabot">Komawa Telegram yanzu</a>
+    <body>
+        <div class="card">
+            <div class="icon">✅</div>
+            <h2>BIYA YA NASARA</h2>
+            <p>An tabbatar da biyan ka cikin nasara.</p>
+            <p>Zaka iya rufe browser ka koma Telegram yanzu.</p>
+            <a href="https://t.me/Algaitabot" class="btn">KOMawa TELEGRAM</a>
+        </div>
     </body>
     </html>
     """
@@ -1058,157 +1023,247 @@ def send_feedback_prompt(user_id, order_id):
         print("FEEDBACK SEND ERROR:", e)
 
 
-
 @app.route("/webhook", methods=["POST"])
-def paystack_webhook():
+def flutterwave_webhook():
+    try:
+        # ================= SECURITY & VALIDATION (FLUTTERWAVE) =================
+        signature = request.headers.get("verif-hash")
+        if not signature: 
+            return "Missing signature", 401
+        
+        if signature != FLW_WEBHOOK_SECRET: 
+            return "Invalid signature", 401
 
-    # ================= SIGNATURE =================
-    signature = request.headers.get("x-paystack-signature")
+        # ================= PAYLOAD =================
+        payload = request.json or {}
+        data = payload.get("data", {})
+        
+        status = (data.get("status") or "").lower()
+        if status not in ("successful", "success"): 
+            return "Ignored", 200
 
-    if not signature:
-        return "Missing signature", 401
+        raw_reference = data.get("tx_ref")
+        currency = data.get("currency")
+        
+        # Safe amount conversion
+        try:
+            paid_amount = int(float(data.get("amount", 0)))
+        except:
+            paid_amount = 0
 
-    computed = hmac.new(
-        PAYSTACK_SECRET.encode(),
-        request.data,
-        hashlib.sha512
-    ).hexdigest()
+        # ✅ FIX REFERENCE: Ciro order_id ta hanyar split (kamar yadda aka gyara maka)
+        order_id = raw_reference.split("_")[0] if raw_reference else None
 
-    if signature != computed:
-        return "Invalid signature", 401
+        if not order_id:
+            return "Order ID missing", 200
 
-    # ================= PAYLOAD =================
-    payload = request.json or {}
+        # ================= DB =================
+        conn = get_conn()
+        cur = conn.cursor()
 
-    event = payload.get("event")
-    if event != "charge.success":
-        return "Ignored", 200
-
-    data = payload.get("data", {})
-
-    raw_reference = data.get("reference")
-    currency = data.get("currency")
-    paid_amount = int(data.get("amount", 0) / 100)
-
-    # ================= FIX REFERENCE =================
-    metadata = data.get("metadata", {}) or {}
-    order_id = metadata.get("order_id")
-
-    if not order_id and raw_reference:
-        order_id = raw_reference.split("_")[0]
-
-    if not order_id:
-        return "Order ID missing", 200
-
-    # ================= DB =================
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT user_id, amount, paid, type
-        FROM orders
-        WHERE id=%s
-        """,
-        (order_id,)
-    )
-    row = cur.fetchone()
-
-    if row:
-        user_id, expected_amount, paid, order_type = row
-    else:
-        order_type = None
-
-    # =====================================================
-    # ================= WALLET TOPUP ======================
-    # =====================================================
-
-    if not row:
-
-        wallet_conn = get_wallet_conn()
-        wallet_cur = wallet_conn.cursor()
-
-        wallet_cur.execute(
+        cur.execute(
             """
-            SELECT user_id, amount, status
-            FROM wallet_deposits
+            SELECT user_id, amount, paid, type
+            FROM orders
             WHERE id=%s
             """,
             (order_id,)
         )
+        row = cur.fetchone()
 
-        dep = wallet_cur.fetchone()
+        if row:
+            user_id, expected_amount, paid, order_type = row
+        else:
+            order_type = None
 
-        if not dep:
+        # =====================================================
+        # ================= WALLET TOPUP ======================
+        # =====================================================
+
+        if not row:
+            wallet_conn = get_wallet_conn()
+            wallet_cur = wallet_conn.cursor()
+
+            wallet_cur.execute(
+                """
+                SELECT user_id, amount, status
+                FROM wallet_deposits
+                WHERE id=%s
+                """,
+                (order_id,)
+            )
+
+            dep = wallet_cur.fetchone()
+
+            if not dep:
+                wallet_cur.close()
+                wallet_conn.close()
+                cur.close()
+                conn.close()
+                return "Order not found", 200
+
+            user_id, expected_amount, status = dep
+
+            if status == "success":
+                wallet_cur.close()
+                wallet_conn.close()
+                cur.close()
+                conn.close()
+                return "Already processed", 200
+
+            # ✅ GYARA: Maimakon != expected_amount, mun yi amfani da < domin amincewa da biya
+            if paid_amount < expected_amount or currency != "NGN":
+                wallet_cur.close()
+                wallet_conn.close()
+                cur.close()
+                conn.close()
+                return "Wrong payment", 200
+
+            wallet_cur.execute(
+                """
+                UPDATE wallet_deposits
+                SET status='success',
+                    paystack_ref=%s,
+                    paid_at=NOW()
+                WHERE id=%s
+                """,
+                (raw_reference, order_id)
+            )
+
+            wallet_cur.execute(
+                """
+                INSERT INTO wallet_balance (user_id, balance)
+                VALUES (%s,%s)
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                balance = wallet_balance.balance + EXCLUDED.balance,
+                updated_at = NOW()
+                """,
+                (user_id, paid_amount)
+            )
+
+            wallet_cur.execute(
+                """
+                INSERT INTO wallet_transactions
+                (user_id, amount, type, reference, description)
+                VALUES (%s,%s,'deposit',%s,'Wallet Top-up')
+                """,
+                (user_id, paid_amount, order_id)
+            )
+
+            wallet_conn.commit()
             wallet_cur.close()
             wallet_conn.close()
+
+            # ================= DELETE ORIGINAL ORDER MESSAGE =================
+            if order_id in ORDER_MESSAGES:
+                chat_id, message_id = ORDER_MESSAGES[order_id]
+                try:
+                    bot.delete_message(chat_id, message_id)
+                except:
+                    pass
+                del ORDER_MESSAGES[order_id]
+
+            # ================= USER INFO =================
+            cur.execute(
+                """
+                SELECT first_name, last_name
+                FROM visited_users
+                WHERE user_id=%s
+                """,
+                (user_id,)
+            )
+            u = cur.fetchone()
+
+            if u and (u[0] or u[1]):
+                full_name = f"{u[0] or ''} {u[1] or ''}".strip()
+            else:
+                try:
+                    chat = bot.get_chat(user_id)
+                    full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
+                except:
+                    full_name = "User"
+
+            try:
+                chat = bot.get_chat(user_id)
+                tg_username = f"@{chat.username}" if chat.username else "unknown"
+            except:
+                tg_username = "unknown"
+
+            wallet_kb = InlineKeyboardMarkup()
+            wallet_kb.add(
+                InlineKeyboardButton(
+                    "🏦MY WALLET💵",
+                    callback_data="wallet"
+                )
+            )
+
+            bot.send_message(
+                user_id,
+                f"""🎉 <b>CONGRATULATIONS MALAM {full_name}</b>
+
+💰 <b>Your wallet credited:</b> ₦{paid_amount}
+
+🗃 <b>Order ID:</b> <code>{order_id}</code>
+
+Your deposit was successful.
+
+Use the button below to open your wallet.
+""",
+                parse_mode="HTML",
+                reply_markup=wallet_kb
+            )
+
+            if PAYMENT_NOTIFY_GROUP:
+                from datetime import datetime, timedelta
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""💰 <b>TOP-UP SUCCESSFUL</b>
+
+👤 <b>Name:</b> {full_name}
+🔗 <b>Username:</b> {tg_username}
+🆔 <b>User ID:</b> <code>{user_id}</code>
+
+💳 <b>Top-up:</b> ₦{paid_amount}
+
+🗃 <b>Order ID:</b> <code>{order_id}</code>
+📊 <b>Status:</b> success
+
+⏰ <b>Time:</b> {now}
+""",
+                    parse_mode="HTML"
+                )
+
             cur.close()
             conn.close()
-            return "Order not found", 200
+            return "OK", 200
 
-        user_id, expected_amount, status = dep
-
-        if status == "success":
-            wallet_cur.close()
-            wallet_conn.close()
+        if paid == 1:
             cur.close()
             conn.close()
             return "Already processed", 200
 
-        if paid_amount != expected_amount or currency != "NGN":
-            wallet_cur.close()
-            wallet_conn.close()
+        # ✅ GYARA: Maimakon != expected_amount, mun yi amfani da < domin amincewa da biya
+        if paid_amount < expected_amount or currency != "NGN":
             cur.close()
             conn.close()
             return "Wrong payment", 200
 
-        wallet_cur.execute(
-            """
-            UPDATE wallet_deposits
-            SET status='success',
-                paystack_ref=%s,
-                paid_at=NOW()
-            WHERE id=%s
-            """,
-            (raw_reference, order_id)
+        # ================= MARK AS PAID =================
+        cur.execute(
+            "UPDATE orders SET paid=1 WHERE id=%s",
+            (order_id,)
         )
-
-        wallet_cur.execute(
-            """
-            INSERT INTO wallet_balance (user_id, balance)
-            VALUES (%s,%s)
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-            balance = wallet_balance.balance + EXCLUDED.balance,
-            updated_at = NOW()
-            """,
-            (user_id, paid_amount)
-        )
-
-        wallet_cur.execute(
-            """
-            INSERT INTO wallet_transactions
-            (user_id, amount, type, reference, description)
-            VALUES (%s,%s,'deposit',%s,'Wallet Top-up')
-            """,
-            (user_id, paid_amount, order_id)
-        )
-
-        wallet_conn.commit()
-
-        wallet_cur.close()
-        wallet_conn.close()
 
         # ================= DELETE ORIGINAL ORDER MESSAGE =================
         if order_id in ORDER_MESSAGES:
-
             chat_id, message_id = ORDER_MESSAGES[order_id]
-
             try:
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
-
             del ORDER_MESSAGES[order_id]
 
         # ================= USER INFO =================
@@ -1237,211 +1292,103 @@ def paystack_webhook():
         except:
             tg_username = "unknown"
 
-        wallet_kb = InlineKeyboardMarkup()
-        wallet_kb.add(
-            InlineKeyboardButton(
-                "🏦MY WALLET💵",
-                callback_data="wallet"
-            )
-        )
-
-        bot.send_message(
-            user_id,
-            f"""🎉 <b>CONGRATULATIONS MALAM {full_name}</b>
-
-💰 <b>Your wallet credited:</b> ₦{paid_amount}
-
-🗃 <b>Order ID:</b> <code>{order_id}</code>
-
-Your deposit was successful.
-
-Use the button below to open your wallet.
-""",
-            parse_mode="HTML",
-            reply_markup=wallet_kb
-        )
-
-        if PAYMENT_NOTIFY_GROUP:
-            from datetime import datetime, timedelta
-            now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-
-            bot.send_message(
-                PAYMENT_NOTIFY_GROUP,
-                f"""💰 <b>TOP-UP SUCCESSFUL</b>
-
-👤 <b>Name:</b> {full_name}
-🔗 <b>Username:</b> {tg_username}
-🆔 <b>User ID:</b> <code>{user_id}</code>
-
-💳 <b>Top-up:</b> ₦{paid_amount}
-
-🗃 <b>Order ID:</b> <code>{order_id}</code>
-📊 <b>Status:</b> success
-
-⏰ <b>Time:</b> {now}
-""",
-                parse_mode="HTML"
-            )
-
-        cur.close()
-        conn.close()
-
-        return "OK", 200
-
-    if paid == 1:
-        cur.close()
-        conn.close()
-        return "Already processed", 200
-
-    if paid_amount != expected_amount or currency != "NGN":
-        cur.close()
-        conn.close()
-        return "Wrong payment", 200
-
-    # ================= MARK AS PAID =================
-    cur.execute(
-        "UPDATE orders SET paid=1 WHERE id=%s",
-        (order_id,)
-    )
-
-    # ================= DELETE ORIGINAL ORDER MESSAGE =================
-    if order_id in ORDER_MESSAGES:
-
-        chat_id, message_id = ORDER_MESSAGES[order_id]
-
-        try:
-            bot.delete_message(chat_id, message_id)
-        except:
-            pass
-
-        del ORDER_MESSAGES[order_id]
-
-    # ================= USER INFO =================
-    cur.execute(
-        """
-        SELECT first_name, last_name
-        FROM visited_users
-        WHERE user_id=%s
-        """,
-        (user_id,)
-    )
-    u = cur.fetchone()
-
-    if u and (u[0] or u[1]):
-        full_name = f"{u[0] or ''} {u[1] or ''}".strip()
-    else:
-        try:
-            chat = bot.get_chat(user_id)
-            full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
-        except:
-            full_name = "User"
-
-    try:
-        chat = bot.get_chat(user_id)
-        tg_username = f"@{chat.username}" if chat.username else "unknown"
-    except:
-        tg_username = "unknown"
-
-    # =====================================================
-    # ================== FILM ORDER =======================
-    # =====================================================
-    if order_type == "film":
-
-        cur.execute(
-            """
-            SELECT i.title, i.group_key
-            FROM order_items oi
-            JOIN items i ON i.id = oi.item_id
-            WHERE oi.order_id=%s
-            """,
-            (order_id,)
-        )
-        rows = cur.fetchall()
-
-        if not rows:
-            cur.close()
-            conn.close()
-            return "Empty order", 200
-
-        groups = {}
-
-        for title, group_key in rows:
-            key = group_key or f"single_{title}"
-            if key not in groups:
-                groups[key] = {"title": title, "count": 0}
-            groups[key]["count"] += 1
-
-        lines = []
-        for g in groups.values():
-            if g["count"] > 1:
-                lines.append(f"{g['title']} ({g['count']})")
-            else:
-                lines.append(f"{g['title']}")
-
-        titles_text = ", ".join(lines) if lines else "N/A"
-
-
-        # ================= CASHBACK REWARD =================
-        cashback = (paid_amount // 200) * CASHBACK
-        if cashback > 200:
-            cashback = 200
-
-        if cashback > 0:
-            wallet_conn = get_wallet_conn()
-            wallet_cur = wallet_conn.cursor()
-
-            wallet_cur.execute(
+        # =====================================================
+        # ================== FILM ORDER =======================
+        # =====================================================
+        if order_type == "film":
+            cur.execute(
                 """
-                INSERT INTO wallet_balance (user_id, balance)
-                VALUES (%s,%s)
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                balance = wallet_balance.balance + EXCLUDED.balance,
-                updated_at = NOW()
+                SELECT i.title, i.group_key
+                FROM order_items oi
+                JOIN items i ON i.id = oi.item_id
+                WHERE oi.order_id=%s
                 """,
-                (user_id, cashback)
+                (order_id,)
             )
+            rows = cur.fetchall()
 
-            wallet_cur.execute(
-                """
-                INSERT INTO wallet_transactions
-                (user_id, amount, type, reference, description)
-                VALUES (%s,%s,'cashback',%s,'Movie Cashback Reward')
-                """,
-                (user_id, cashback, order_id)
-            )
+            if not rows:
+                cur.close()
+                conn.close()
+                return "Empty order", 200
 
-            wallet_conn.commit()
-            wallet_cur.close()
-            wallet_conn.close()
+            groups = {}
+            for title, group_key in rows:
+                key = group_key or f"single_{title}"
+                if key not in groups:
+                    groups[key] = {"title": title, "count": 0}
+                groups[key]["count"] += 1
 
-            bot.send_message(
-                user_id,
-                f"""🎁 Cashback Reward🎉
+            lines = []
+            for g in groups.values():
+                if g["count"] > 1:
+                    lines.append(f"{g['title']} ({g['count']})")
+                else:
+                    lines.append(f"{g['title']}")
+
+            titles_text = ", ".join(lines) if lines else "N/A"
+
+            # ================= CASHBACK REWARD =================
+            cashback = (paid_amount // 200) * CASHBACK
+            if cashback > 200:
+                cashback = 200
+
+            if cashback > 0:
+                wallet_conn = get_wallet_conn()
+                wallet_cur = wallet_conn.cursor()
+
+                wallet_cur.execute(
+                    """
+                    INSERT INTO wallet_balance (user_id, balance)
+                    VALUES (%s,%s)
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                    balance = wallet_balance.balance + EXCLUDED.balance,
+                    updated_at = NOW()
+                    """,
+                    (user_id, cashback)
+                )
+
+                wallet_cur.execute(
+                    """
+                    INSERT INTO wallet_transactions
+                    (user_id, amount, type, reference, description)
+                    VALUES (%s,%s,'cashback',%s,'Movie Cashback Reward')
+                    """,
+                    (user_id, cashback, order_id)
+                )
+
+                wallet_conn.commit()
+                wallet_cur.close()
+                wallet_conn.close()
+
+                bot.send_message(
+                    user_id,
+                    f"""🎁 Cashback Reward🎉
 
 Wallet ID: <code>{user_id}</code>
 
 You received ₦{cashback} cashback,  
 
 Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
-                parse_mode="HTML"
+                    parse_mode="HTML"
+                )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            kb = InlineKeyboardMarkup()
+            kb.add(
+                InlineKeyboardButton(
+                    "⬇️ DOWNLOAD NOW",
+                    callback_data=f"deliver:{order_id}"
+                )
             )
 
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "⬇️ DOWNLOAD NOW",
-                callback_data=f"deliver:{order_id}"
-            )
-        )
-
-        bot.send_message(
-            user_id,
-            f"""🎉 <b>PAYMENT SUCCESSFUL</b>
+            bot.send_message(
+                user_id,
+                f"""🎉 <b>PAYMENT SUCCESSFUL</b>
 
 👤 <b>Name:</b> {full_name}
 🆔 <b>User ID:</b> <code>{user_id}</code>
@@ -1453,17 +1400,17 @@ Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
 
 ⬇️ Click the button below to download your files.
 """,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+                parse_mode="HTML",
+                reply_markup=kb
+            )
 
-        if PAYMENT_NOTIFY_GROUP:
-            from datetime import datetime, timedelta
-            now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            if PAYMENT_NOTIFY_GROUP:
+                from datetime import datetime, timedelta
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-            bot.send_message(
-                PAYMENT_NOTIFY_GROUP,
-                f"""✅ <b>NEW PAYMENT RECEIVED</b>
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""✅ <b>NEW PAYMENT RECEIVED</b>
 
 👤 <b>Name:</b> {full_name}
 🔗 <b>Username:</b> {tg_username}
@@ -1475,63 +1422,61 @@ Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
 💰 <b>Amount:</b> ₦{paid_amount}
 ⏰ <b>Time:</b> {now}
 """,
-                parse_mode="HTML"
+                    parse_mode="HTML"
+                )
+
+            return "OK", 200
+
+        # =====================================================
+        # ================== VIP ORDER ========================
+        # =====================================================
+        elif order_type == "vip":
+            from datetime import datetime, timedelta
+
+            start_date = datetime.now()
+            end_date = start_date + (
+                timedelta(minutes=VIP_DURATION_VALUE)
+                if VIP_DURATION_UNIT == "minutes"
+                else timedelta(days=VIP_DURATION_VALUE)
             )
 
-        return "OK", 200
+            start_local = start_date + timedelta(hours=1)
+            end_local = end_date + timedelta(hours=1)
 
-    # =====================================================
-    # ================== VIP ORDER ========================
-    # =====================================================
-    elif order_type == "vip":
-
-        from datetime import datetime, timedelta
-
-        start_date = datetime.now()
-        end_date = start_date + (
-            timedelta(minutes=VIP_DURATION_VALUE)
-            if VIP_DURATION_UNIT == "minutes"
-            else timedelta(days=VIP_DURATION_VALUE)
-        )
-
-        start_local = start_date + timedelta(hours=1)
-        end_local = end_date + timedelta(hours=1)
-
-        already_in_group = False
-        try:
-            member = bot.get_chat_member(VIP_GROUP_ID, user_id)
-            if member.status in ["member", "administrator", "creator"]:
-                already_in_group = True
-        except:
             already_in_group = False
+            try:
+                member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+                if member.status in ["member", "administrator", "creator"]:
+                    already_in_group = True
+            except:
+                already_in_group = False
 
-        if already_in_group:
+            if already_in_group:
+                cur.execute(
+                    """
+                    INSERT INTO vip_members
+                    (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                    VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        order_id = EXCLUDED.order_id,
+                        join_date = EXCLUDED.join_date,
+                        expire_at = EXCLUDED.expire_at,
+                        status = 'active',
+                        warn1_sent = FALSE,
+                        warn2_sent = FALSE,
+                        payment_date = NOW()
+                    """,
+                    (user_id, order_id, start_date, end_date)
+                )
 
-            cur.execute(
-                """
-                INSERT INTO vip_members
-                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    order_id = EXCLUDED.order_id,
-                    join_date = EXCLUDED.join_date,
-                    expire_at = EXCLUDED.expire_at,
-                    status = 'active',
-                    warn1_sent = FALSE,
-                    warn2_sent = FALSE,
-                    payment_date = NOW()
-                """,
-                (user_id, order_id, start_date, end_date)
-            )
+                conn.commit()
+                cur.close()
+                conn.close()
 
-            conn.commit()
-            cur.close()
-            conn.close()
-
-            bot.send_message(
-                user_id,
-                f"""💎 <b>AN SABUNTA VIP NAKA</b>
+                bot.send_message(
+                    user_id,
+                    f"""💎 <b>AN SABUNTA VIP NAKA</b>
 
 Muna tayaka murnar sabunta biyan VIP ɗinka.
 
@@ -1542,15 +1487,15 @@ ci gaba da ziyartar VIP Group kawai.
 ⏳ <b>Sake biya aranar ko kafin:</b> {end_local.strftime("%Y-%m-%d")}
 
 Na gode da kasancewa tare da mu 🙏""",
-                parse_mode="HTML"
-            )
+                    parse_mode="HTML"
+                )
 
-            if PAYMENT_NOTIFY_GROUP:
-                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+                if PAYMENT_NOTIFY_GROUP:
+                    now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-                bot.send_message(
-                    PAYMENT_NOTIFY_GROUP,
-                    f"""💎 <b>VIP RENEWAL PAYMENT</b>
+                    bot.send_message(
+                        PAYMENT_NOTIFY_GROUP,
+                        f"""💎 <b>VIP RENEWAL PAYMENT</b>
 
 👤 <b>Name:</b> {full_name}
 🔗 <b>Username:</b> {tg_username}
@@ -1561,52 +1506,51 @@ Na gode da kasancewa tare da mu 🙏""",
 💰 <b>Amount:</b> ₦{paid_amount}
 ⏰ <b>Time:</b> {now}
 """,
-                    parse_mode="HTML"
+                        parse_mode="HTML"
+                    )
+
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"🔔 VIP RENEWAL\n\n👤 {full_name}\n🆔 {user_id}\n💰 ₦{paid_amount}\n\nYa sabunta VIP dinsa."
+                    )
+                except:
+                    pass
+
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO vip_members
+                    (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
+                    VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        order_id = EXCLUDED.order_id,
+                        join_date = NULL,
+                        expire_at = NULL,
+                        status = 'active',
+                        warn1_sent = FALSE,
+                        warn2_sent = FALSE,
+                        payment_date = NOW()
+                    """,
+                    (user_id, order_id)
                 )
 
-            try:
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                vip_kb = InlineKeyboardMarkup()
+                vip_kb.add(
+                    InlineKeyboardButton(
+                        "🔐 JOIN VIP GROUP",
+                        callback_data=f"vipnow:{order_id}"
+                    )
+                )
+
                 bot.send_message(
-                    ADMIN_ID,
-                    f"🔔 VIP RENEWAL\n\n👤 {full_name}\n🆔 {user_id}\n💰 ₦{paid_amount}\n\nYa sabunta VIP dinsa."
-                )
-            except:
-                pass
-
-        else:
-
-            cur.execute(
-                """
-                INSERT INTO vip_members
-                (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date)
-                VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW())
-                ON CONFLICT (user_id)
-                DO UPDATE SET
-                    order_id = EXCLUDED.order_id,
-                    join_date = NULL,
-                    expire_at = NULL,
-                    status = 'active',
-                    warn1_sent = FALSE,
-                    warn2_sent = FALSE,
-                    payment_date = NOW()
-                """,
-                (user_id, order_id)
-            )
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-            vip_kb = InlineKeyboardMarkup()
-            vip_kb.add(
-                InlineKeyboardButton(
-                    "🔐 JOIN VIP GROUP",
-                    callback_data=f"vipnow:{order_id}"
-                )
-            )
-
-            bot.send_message(
-                user_id,
-                f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
+                    user_id,
+                    f"""💎 <b>VIP SUBSCRIPTION ACTIVATED</b>
 
 👤 <b>Name:</b> {full_name}
 🆔 <b>User ID:</b> <code>{user_id}</code>
@@ -1618,16 +1562,16 @@ Na gode da kasancewa tare da mu 🙏""",
 
 🔐 Click the button below to join the VIP Group.
 """,
-                parse_mode="HTML",
-                reply_markup=vip_kb
-            )
+                    parse_mode="HTML",
+                    reply_markup=vip_kb
+                )
 
-            if PAYMENT_NOTIFY_GROUP:
-                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+                if PAYMENT_NOTIFY_GROUP:
+                    now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
-                bot.send_message(
-                    PAYMENT_NOTIFY_GROUP,
-                    f"""💎 <b>NEW VIP SUBSCRIPTION</b>
+                    bot.send_message(
+                        PAYMENT_NOTIFY_GROUP,
+                        f"""💎 <b>NEW VIP SUBSCRIPTION</b>
 
 👤 <b>Name:</b> {full_name}
 🔗 <b>Username:</b> {tg_username}
@@ -1641,10 +1585,13 @@ Na gode da kasancewa tare da mu 🙏""",
                     parse_mode="HTML"
                 )
 
+            return "OK", 200
+
         return "OK", 200
 
-    return "OK", 200
-
+    except Exception as e:
+        print(f"Webhook Error: {e}")
+        return "Internal Error", 500
 
 
 
@@ -1824,1029 +1771,6 @@ def deliver_items(call):
     )
 
     send_feedback_prompt(user_id, order_id)
-
-# --- [ COMMAND: /price ID ] ---
-@bot.message_handler(commands=['price'])
-def get_price_details(message):
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "❌ Shigar da ID: `/price 414`", parse_mode="Markdown")
-        return
-    
-    plan_id = args[1]
-    # Wannan shi ne asalin URL din da documentation dinka ya nuna
-    PRICE_API = "https://legitdata.com.ng/api/network/Plans" 
-    
-    headers = {
-        'Authorization': f'Token {LEGIT_TOKEN}',
-        'Content-Type': 'application/json'
-    }
-
-    try:
-        bot.send_chat_action(message.chat.id, 'typing')
-        response = requests.get(PRICE_API, headers=headers)
-        
-        if response.status_code == 200:
-            plans = response.json()
-            
-            # Nemo plan din da yayi daidai da ID
-            # Mun saita shi ya duba kowane irin tsarin JSON ya dawo
-            data_list = plans.get('results', plans) if isinstance(plans, dict) else plans
-            
-            target = next((p for p in data_list if str(p.get('id')) == plan_id), None)
-            
-            if target:
-                network = target.get('network_name') or "Babu"
-                p_type = target.get('plan_type') or "Babu"
-                size = target.get('plan_size') or "Babu"
-                amount = target.get('plan_amount') or "0.00"
-                month = target.get('month_validate') or "Babu"
-                
-                sako = (f"🔍 **Bayanan Farashi (ID: {plan_id})**\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"📶 Network: *{network}*\n"
-                        f"🏷️ Nau'i: *{p_type}*\n"
-                        f"📦 Girma: *{size}*\n"
-                        f"💰 Farashi: *₦{amount}*\n"
-                        f"⏳ Tsawon Lokaci: *{month}*\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"✅ An samo bayanan daga asalin API kofar.")
-                bot.reply_to(message, sako, parse_mode="Markdown")
-            else:
-                bot.reply_to(message, f"❌ Ban samu plan mai ID `{plan_id}` ba. Tabbatar ID din yana cikin Price List dinka.")
-        else:
-            bot.reply_to(message, f"❌ Kuskure: API ya ki budewa (Status: {response.status_code})")
-            
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Matsala ta faru: {str(e)}")
-
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "d_&_a")
-def open_data_airtime(call):
-    text = """📶 Data & Airtime  
-Zaku iya siyan:  
-📡 Data mai araha (MTN, Airtel, Glo, 9mobile)  
-📞 Katin kira (Airtime)  
-⚡ Kuma a tura muku nan take (instant delivery)  
-
-🎬 Idan kuna son sauke fim cikin sauƙi, Data mai sauri, zaku iya siya yanzu.
-"""
-
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("📡 Buy Data", callback_data="data"),
-        InlineKeyboardButton("📞 Buy Airtime", callback_data="airtime")
-    )
-
-    bot.send_message(
-        call.message.chat.id,
-        text,
-        reply_markup=kb
-    )
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "back_to_d_&_a")
-def back_to_data_airtime(call):
-    text = """📶 Data & Airtime  
-Zaku iya siyan:  
-📡 Data mai araha (MTN, Airtel, Glo, 9mobile)  
-📞 Katin kira (Airtime)  
-⚡ Ana turawa nan take (instant delivery)  
-
-🎬 Idan kuna son sauke fim cikin sauƙi, Data mai sauri, zaku iya siya yanzu.
-"""
-
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("📡 Buy Data", callback_data="data"),
-        InlineKeyboardButton("📞 Buy Airtime", callback_data="airtime")
-    )
-
-    bot.edit_message_text(
-        text,
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=kb
-    )
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "airtime")
-def select_airtime_network(call):
-    text = "📞 Zaɓi network ɗin da kake son saya airtime:"
-
-    kb = InlineKeyboardMarkup()
-
-    # ===== NETWORK BUTTONS =====
-    kb.row(
-        InlineKeyboardButton("🛜 MTN", callback_data="airtel_mtn"),
-        InlineKeyboardButton("🛜 Airtel", callback_data="airtel_airtel")
-    )
-
-    kb.row(
-        InlineKeyboardButton("🛜 Glo", callback_data="airtel_glo"),
-        InlineKeyboardButton("🛜 9mobile", callback_data="airtel_9mobile")
-    )
-
-    # ===== BACK BUTTON =====
-    kb.add(
-        InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
-    )
-
-    bot.edit_message_text(
-        text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=kb
-    )
-
-@bot.callback_query_handler(func=lambda call: call.data == "data")
-def select_network(call):
-    text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
-
-Dan Allah a tabbatar layin da za'a siya data babu bashi.
-"""
-
-    kb = InlineKeyboardMarkup()
-
-    # ===== NETWORK BUTTONS =====
-    kb.row(
-        InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
-        InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
-    )
-
-    kb.row(
-        InlineKeyboardButton("🛜 Glo", callback_data="glo"),
-        InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
-    )
-
-    # ===== BACK BUTTON =====
-    kb.add(
-        InlineKeyboardButton("◀ Back", callback_data="back_to_d_&_a")
-    )
-
-    bot.edit_message_text(
-        text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=kb
-    )
-
-
-
-
-
-#========================================
-# HANDLE NETWORK TYPES (CUSTOM)
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data in [
-    "mtn", "airtel", "glo", "9mobile",
-    "mtn_more", "mtn_back"
-])
-def handle_network_types(call):
-    try:
-        user_id = call.from_user.id
-
-        # =========================
-        # DETERMINE NETWORK + PAGE
-        # =========================
-        if call.data in ["mtn", "airtel", "glo", "9mobile"]:
-            network = call.data
-            page = 1
-        else:
-            if user_id not in user_data_session:
-                return
-
-            network = user_data_session[user_id]["network"]
-
-            if call.data == "mtn_more":
-                page = 2
-            else:
-                page = 1
-
-        # SAVE SESSION
-        user_data_session[user_id] = {
-            "network": network,
-            "page": page
-        }
-
-        text = f"🛜 {network.upper()} - Zaɓi nau'in data:"
-
-        kb = InlineKeyboardMarkup()
-
-        # =========================
-        # 9MOBILE
-        # =========================
-        if network == "9mobile":
-            if LOCK_9MOBILE[0]:
-                btn1 = InlineKeyboardButton("📶 SME", callback_data="type_9mobile_sme")
-            else:
-                btn1 = None
-
-            if LOCK_9MOBILE[1]:
-                btn2 = InlineKeyboardButton("📶 Corporate", callback_data="type_9mobile_corporate")
-            else:
-                btn2 = None
-
-            row = [b for b in [btn1, btn2] if b]
-            if row:
-                kb.row(*row)
-
-            kb.add(
-                InlineKeyboardButton("⬅ Back", callback_data="data")
-            )
-
-        # =========================
-        # AIRTEL
-        # =========================
-        elif network == "airtel":
-            row1 = []
-            if LOCK_AIRTEL[0]:
-                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_airtel_gifting"))
-            if LOCK_AIRTEL[1]:
-                row1.append(InlineKeyboardButton("📶 SME", callback_data="type_airtel_sme"))
-            if row1:
-                kb.row(*row1)
-
-            row2 = []
-            if LOCK_AIRTEL[2]:
-                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_airtel_corporate"))
-            if LOCK_AIRTEL[3]:
-                row2.append(InlineKeyboardButton("📶 Special", callback_data="type_airtel_special"))
-            if row2:
-                kb.row(*row2)
-
-            kb.add(
-                InlineKeyboardButton("⬅ Back", callback_data="data")
-            )
-
-        # =========================
-        # GLO
-        # =========================
-        elif network == "glo":
-            row1 = []
-            if LOCK_GLO[0]:
-                row1.append(InlineKeyboardButton("📶 Special", callback_data="type_glo_special"))
-            if LOCK_GLO[1]:
-                row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_glo_gifting"))
-            if row1:
-                kb.row(*row1)
-
-            row2 = []
-            if LOCK_GLO[2]:
-                row2.append(InlineKeyboardButton("📶 SME", callback_data="type_glo_sme"))
-            if LOCK_GLO[3]:
-                row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_glo_corporate"))
-            if row2:
-                kb.row(*row2)
-
-            kb.add(
-                InlineKeyboardButton("⬅ Back", callback_data="data")
-            )
-
-        # =========================
-        # MTN (WITH PAGINATION)
-        # =========================
-        elif network == "mtn":
-
-            # ===== PAGE 1 =====
-            if page == 1:
-                row1 = []
-                if LOCK_MTN[0]:
-                    row1.append(InlineKeyboardButton("📶 SME", callback_data="type_mtn_sme"))
-                if LOCK_MTN[1]:
-                    row1.append(InlineKeyboardButton("📶 Gifting", callback_data="type_mtn_gifting"))
-                if row1:
-                    kb.row(*row1)
-
-                row2 = []
-                if LOCK_MTN[2]:
-                    row2.append(InlineKeyboardButton("📶 Data Share", callback_data="type_mtn_datashare"))
-                if LOCK_MTN[3]:
-                    row2.append(InlineKeyboardButton("📶 Corporate", callback_data="type_mtn_corporate"))
-                if row2:
-                    kb.row(*row2)
-
-                kb.row(
-                    InlineKeyboardButton("⬅ Back", callback_data="data"),
-                    InlineKeyboardButton("More ▶", callback_data="mtn_more")
-                )
-
-            # ===== PAGE 2 =====
-            else:
-                row1 = []
-                if LOCK_MTN[4]:
-                    row1.append(InlineKeyboardButton("📶 MTN Awoof", callback_data="type_mtn_awoof"))
-                if LOCK_MTN[5]:
-                    row1.append(InlineKeyboardButton("📶 SME2", callback_data="type_mtn_sme2"))
-                if row1:
-                    kb.row(*row1)
-
-                if LOCK_MTN[6]:
-                    kb.add(
-                        InlineKeyboardButton("📶 Special", callback_data="type_mtn_special")
-                    )
-
-                kb.add(
-                    InlineKeyboardButton("⬅ Back", callback_data="mtn_back")
-                )
-
-        # =========================
-        # EDIT MESSAGE
-        # =========================
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb
-        )
-
-    except Exception as e:
-        print("NETWORK TYPES ERROR:", e)
-
-
-
-#========================================
-# HANDLE MTN TYPE → DURATION (CUSTOM)
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("type_mtn_"))
-def handle_mtn_duration(call):
-    try:
-        dtype = call.data.split("_")[2]  # sme, gifting, corporate
-
-        kb = InlineKeyboardMarkup()
-
-        # =========================
-        # GIFTING
-        # =========================
-        if dtype == "gifting":
-
-            kb.row(
-                InlineKeyboardButton("1Day", callback_data="mtngifting_1d"),
-                InlineKeyboardButton("2Days", callback_data="mtngifting_2d"),
-                InlineKeyboardButton("1Week", callback_data="mtngifting_7d")
-            )
-
-            kb.add(
-                InlineKeyboardButton("30Days", callback_data="mtngifting_30d")
-            )
-
-            kb.add(
-                InlineKeyboardButton("⬅ Back", callback_data="mtn")
-            )
-
-        # =========================
-        # SME
-        # =========================
-        elif dtype == "sme":
-
-            kb.row(
-                InlineKeyboardButton("1Day", callback_data="mtnsme_1d"),
-                InlineKeyboardButton("7Days", callback_data="mtnsme_7d")
-            )
-
-            kb.add(
-                InlineKeyboardButton("30Days", callback_data="mtnsme_30d")
-            )
-
-            kb.add(
-                InlineKeyboardButton("⬅ Back", callback_data="mtn")
-            )
-
-        # =========================
-        # CORPORATE
-        # =========================
-        elif dtype == "corporate":
-
-            kb.row(
-                InlineKeyboardButton("2Days", callback_data="mtncorporate_2d"),
-                InlineKeyboardButton("1Day", callback_data="mtncorporate_1d"),
-                InlineKeyboardButton("30Days", callback_data="mtncorporate_30d")
-            )
-
-            kb.add(
-                InlineKeyboardButton("1Week", callback_data="mtncorporate_7d")
-            )
-
-            kb.add(
-                InlineKeyboardButton("⬅ Back", callback_data="mtn")
-            )
-
-        text = f"🛜 MTN {dtype.upper()} - Zaɓi duration:"
-
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb
-        )
-
-    except Exception as e:
-        print("MTN DURATION ERROR:", e)
-
-#========================================
-# MTN SME 1DAY (FIXED PAGINATION)
-#========================================
-
-PLANS_PER_PAGE = 4
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("mtnsme_1d"))
-def handle_mtn_sme_1day(call):
-    try:
-        parts = call.data.split("_")
-
-        # ===== FIX PAGE =====
-        if len(parts) == 2:
-            page = 0
-        else:
-            page = int(parts[2])
-
-        conn = get_data_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-        SELECT api_id, plan_name, price
-        FROM data_plans
-        WHERE network=%s 
-        AND plan_type=%s 
-        AND duration=%s 
-        AND status=1
-        ORDER BY price ASC
-        """, ("MTN", "SME", "1day"))
-
-        plans = cur.fetchall()
-
-        start = page * PLANS_PER_PAGE
-        end = start + PLANS_PER_PAGE
-        current = plans[start:end]
-
-        kb = InlineKeyboardMarkup(row_width=2)
-
-        if current:
-            for i in range(0, len(current), 2):
-                row = []
-                for j in range(2):
-                    if i + j < len(current):
-                        api_id, name, price = current[i + j]
-                        text = f"{name}\n₦{price/100:.2f}"
-                        row.append(
-                            InlineKeyboardButton(
-                                text,
-                                callback_data=f"buydata_{api_id}"
-                            )
-                        )
-                kb.row(*row)
-        else:
-            kb.add(InlineKeyboardButton("❌ Babu data", callback_data="noop"))
-
-        # ===== NAVIGATION =====
-        nav = []
-
-        if page > 0:
-            nav.append(
-                InlineKeyboardButton("⏪ Previous", callback_data=f"mtnsme_1d_{page-1}")
-            )
-
-        if end < len(plans):
-            nav.append(
-                InlineKeyboardButton("More ▶", callback_data=f"mtnsme_1d_{page+1}")
-            )
-
-        if nav:
-            kb.row(*nav)
-
-        kb.row(
-            InlineKeyboardButton("◀ Back", callback_data="type_mtn_sme")
-        )
-
-        text = """📡 *MTN SME - 1DAY*
-
-Wannan data yana expire cikin awa 24  
-This data is valid for 24 hours  
-
-Zaɓi plan ɗin da kake so 👇"""
-
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-
-        cur.close()
-        conn.close()
-
-    except Exception as e:
-        print("ERROR:", e)
-        bot.answer_callback_query(call.id, "⚠️ Error loading data")
-
-
-
-
-import uuid
-import threading
-import time
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# TEMP STORAGE
-user_data_session = {}
-
-#========================================
-# HANDLE BUY DATA
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buydata_"))
-def handle_buy_data(call):
-    try:
-        user_id = call.from_user.id
-        api_id = int(call.data.split("_")[1])
-
-        user_data_session.pop(user_id, None)
-
-        conn = get_data_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-        SELECT network, plan_name, duration, price, status
-        FROM data_plans
-        WHERE api_id=%s
-        """, (api_id,))
-
-        plan = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if not plan:
-            return
-
-        network, plan_name, duration, price, status = plan
-
-        if status == 0:
-            bot.answer_callback_query(call.id, "⚠️ Network busy", show_alert=True)
-            return
-
-        order_id = str(uuid.uuid4())
-
-        user_data_session[user_id] = {
-            "order_id": order_id,
-            "api_id": api_id,
-            "network": network,
-            "plan_name": plan_name,
-            "duration": duration,
-            "amount": price,
-            "active": True,
-            "chat_id": call.message.chat.id,
-            "message_id": call.message.message_id
-        }
-
-        start_countdown(user_id)
-
-    except Exception as e:
-        print(e)
-
-#========================================
-# COUNTDOWN FUNCTION (FIXED 100%)
-#========================================
-def start_countdown(user_id):
-    def run():
-        if user_id not in user_data_session:
-            return
-
-        data = user_data_session[user_id]
-        current_msg_id = data["message_id"]
-
-        for sec in range(60, -1, -1):
-
-            if user_id not in user_data_session:
-                return
-
-            data = user_data_session[user_id]
-
-            if data["message_id"] != current_msg_id:
-                return
-
-            if not data.get("active"):
-                return
-
-            try:
-                kb = InlineKeyboardMarkup()
-                kb.add(
-                    InlineKeyboardButton(f"Waiting... {sec}s", callback_data="noop")
-                )
-
-                if "countdown_text" in data:
-                    text = f"""{data['countdown_text']}
-
-⏳ Waiting... {sec}s"""
-                else:
-                    text = f"""📲 *Shigar da lambar {data['network']} ɗinka, Lamba kawai zaka turo*
-Misali:
-`080xxxxxx24, Wannan shine data da zaka siya👇`
-Network: {data['network']}
-Plan: {data['plan_name']}
-Expire: {data['duration']}
-Amount: ₦{data['amount']/100:.2f}
-
-⚠️ Ka turo lamba kafin lokaci ya fita"""
-
-                bot.edit_message_text(
-                    text,
-                    data["chat_id"],
-                    data["message_id"],
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-
-            time.sleep(1)
-
-        # TIMEOUT (FIXED 👉 yanzu yana kiran select_network)
-        if user_id in user_data_session:
-            data = user_data_session[user_id]
-
-            chat_id = data["chat_id"]
-            msg_id = data["message_id"]
-
-            user_data_session.pop(user_id, None)
-
-            try:
-                class FakeCall:
-                    pass
-
-                fake = FakeCall()
-                fake.from_user = type('', (), {'id': user_id})()
-                fake.message = type('', (), {
-                    'chat': type('', (), {'id': chat_id})(),
-                    'message_id': msg_id
-                })()
-
-                select_network(fake)
-            except:
-                pass
-
-    threading.Thread(target=run).start()
-
-#========================================
-# HANDLE NUMBER INPUT (FINAL PERFECT)
-#========================================
-@bot.message_handler(func=lambda message: message.from_user.id in user_data_session)
-def handle_number(message):
-    try:
-        user_id = message.from_user.id
-        data = user_data_session.get(user_id)
-
-        if not data:
-            return
-
-        number = message.text.strip().replace(" ", "")
-
-        chat_id = data["chat_id"]
-        old_msg_id = data["message_id"]
-
-        data["active"] = False
-
-        if not number.isdigit():
-            try:
-                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
-            except:
-                pass
-
-            msg = bot.send_message(chat_id, "❌ Lambar ba daidai ba")
-
-            data.update({
-                "active": True,
-                "message_id": msg.message_id,
-                "countdown_text": "❌ Lambar ba daidai ba\n\nDa fatan a sake turo daidai"
-            })
-
-            start_countdown(user_id)
-            return
-
-        length = len(number)
-
-        if length < 11:
-            try:
-                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
-            except:
-                pass
-
-            msg = bot.send_message(
-                chat_id,
-f"""❌ Karma duba lambarka da kyau
-Guda {length} ka bayar
-Bata cika ba, ana jiranka ka cikakkiya"""
-            )
-
-            data.update({
-                "active": True,
-                "message_id": msg.message_id,
-                "countdown_text": f"""❌ Karma duba lambarka da kyau
-Guda {length} ka bayar
-Bata cika ba, ana jiranka ka cikakkiya"""
-            })
-
-            start_countdown(user_id)
-            return
-
-        if length > 11:
-            try:
-                bot.edit_message_text("❌ An samu kuskure", chat_id, old_msg_id)
-            except:
-                pass
-
-            msg = bot.send_message(
-                chat_id,
-"""❌ Ka binciki lambar da ka bayar
-Ta wuce adadin 11
-
-Misali:
-090xxxxxx79"""
-            )
-
-            data.update({
-                "active": True,
-                "message_id": msg.message_id,
-                "countdown_text": """❌ Ka binciki lambar da ka bayar
-Ta wuce adadin 11
-
-Misali:
-090xxxxxx79"""
-            })
-
-            start_countdown(user_id)
-            return
-
-        data["phone"] = number
-
-        try:
-            bot.edit_message_text("Madallah ✅", chat_id, old_msg_id)
-        except:
-            pass
-
-        kb = InlineKeyboardMarkup()
-        kb.row(
-            InlineKeyboardButton("✅ Confirm", callback_data="confirm_data"),
-            InlineKeyboardButton("✏ Edit Number", callback_data="edit_number")
-        )
-        kb.add(
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_order")
-        )
-
-        bot.send_message(
-            chat_id,
-f"""Ka tabbatar wannan lambar ce babu kuskure?
-Are you sure this is correct number?
-
-Number: {number}
-Network: {data['network']}
-Plan: {data['plan_name']}
-Expire: {data['duration']}
-Amount: ₦{data['amount']/100:.2f}
-""",
-            reply_markup=kb
-        )
-
-    except Exception as e:
-        print("NUMBER ERROR:", e)
-
-
-
-
-
-
-
-
-
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "edit_number")
-def edit_number(call):
-    try:
-        user_id = call.from_user.id
-        data = user_data_session.get(user_id)
-
-        if not data:
-            return
-
-        bot.answer_callback_query(call.id, "✏ Sake turo lamba")
-
-        # 🔥 RESET COUNTDOWN
-        data["active"] = True
-        data["message_id"] = call.message.message_id
-
-        start_countdown(user_id)
-
-    except Exception as e:
-        print("EDIT ERROR:", e)
-
-
-
-#========================================
-# CANCEL ORDER
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_order")
-def cancel_order(call):
-    try:
-        user_id = call.from_user.id
-        user_data_session.pop(user_id, None)
-        select_network(call)
-    except:
-        pass
-
-
-#========================================
-# NOOP
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data == "noop")
-def noop(call):
-    bot.answer_callback_query(call.id)
-
-
-#========================================
-# SELECT NETWORK
-#========================================
-@bot.callback_query_handler(func=lambda call: call.data == "data")
-def select_network(call):
-    try:
-        user_id = call.from_user.id
-        user_data_session.pop(user_id, None)
-
-        text = """⚠️ Kar ku tura data a alayin da ake binku bashi  
-
-Dan Allah a tabbatar layin da za'a siya data babu bashi."""
-
-        kb = InlineKeyboardMarkup()
-        kb.row(
-            InlineKeyboardButton("🛜 MTN", callback_data="mtn"),
-            InlineKeyboardButton("🛜 Airtel", callback_data="airtel")
-        )
-        kb.row(
-            InlineKeyboardButton("🛜 Glo", callback_data="glo"),
-            InlineKeyboardButton("🛜 9mobile", callback_data="9mobile")
-        )
-        kb.add(
-            InlineKeyboardButton("⬅ Back", callback_data="back_to_d_&_a")
-        )
-
-        bot.edit_message_text(
-            text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb
-        )
-
-    except Exception as e:
-        print("SELECT NETWORK ERROR:", e)
-
-
-
-
-
-#========================================
-# ADD DATA PLAN (ADMIN COMMAND) - SECURE
-#========================================
-
-
-@bot.message_handler(commands=['adddata'])
-def add_data_plan(message):
-
-    # ===== ADMIN ONLY (SILENT) =====
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    try:
-        text = message.text.replace("/adddata", "").strip()
-
-        if not text:
-            bot.reply_to(message,
-"""❌ Format ba daidai ba
-
-Misali:
-/adddata
-MTN sme
-460mb 1day id13
-price 357
-""")
-            return
-
-        lines = text.split("\n")
-
-        if len(lines) < 3:
-            bot.reply_to(message, "❌ Ka cika duk bayanai")
-            return
-
-        # ===== LINE 1 =====
-        first = lines[0].strip().split()
-
-        if len(first) < 2:
-            bot.reply_to(message, "❌ Network da type ba daidai ba")
-            return
-
-        network = first[0].upper()
-        plan_type = first[1].upper()
-
-        # ===== HANDLE SHORT NAME =====
-        if plan_type == "COP":
-            plan_type = "CORPORATE"
-
-        # ===== LINE 2 =====
-        second = lines[1].lower().split()
-
-        if len(second) < 3:
-            bot.reply_to(message, "❌ Plan info ba daidai ba")
-            return
-
-        plan_name = second[0].upper()   # 460MB
-        duration = second[1]            # 1day
-
-        # ===== FIND API ID =====
-        api_id = None
-        for word in second:
-            if word.startswith("id"):
-                try:
-                    api_id = int(word.replace("id", ""))
-                except:
-                    pass
-
-        if not api_id:
-            bot.reply_to(message, "❌ API ID bai samu ba")
-            return
-
-        # ===== LINE 3 =====
-        third = lines[2].lower().split()
-
-        if "price" not in third:
-            bot.reply_to(message, "❌ Price ba daidai ba")
-            return
-
-        try:
-            price_naira = float(third[third.index("price") + 1])
-            price = int(price_naira * 100)
-        except:
-            bot.reply_to(message, "❌ Price error")
-            return
-
-        # ===== DB =====
-        conn = get_data_conn()
-        cur = conn.cursor()
-
-        # 🔒 CHECK DUPLICATE (SMART)
-        cur.execute("""
-        SELECT plan_name, duration 
-        FROM data_plans
-        WHERE api_id=%s 
-        AND network=%s 
-        AND plan_type=%s
-        """, (api_id, network, plan_type))
-
-        existing = cur.fetchone()
-
-        if existing:
-            old_plan, old_duration = existing
-
-            bot.reply_to(message,
-f"""⚠️ DATA YA RIGA YA WUCE
-
-📶 {network} {plan_type}
-📦 {old_plan}
-⏳ {old_duration}
-🆔 ID: {api_id}
-
-❌ Ba za a sake saka shi ba
-""")
-
-            cur.close()
-            conn.close()
-            return
-
-        # ===== INSERT =====
-        cur.execute("""
-        INSERT INTO data_plans 
-        (api_id, network, plan_type, plan_name, duration, price)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        """, (api_id, network, plan_type, plan_name, duration, price))
-
-        cur.close()
-        conn.close()
-
-        # ===== SUCCESS =====
-        bot.reply_to(message,
-f"""✅ AN SAKA DATA
-
-📶 {network}
-🏷 {plan_type}
-📦 {plan_name}
-⏳ {duration}
-💰 ₦{price_naira:.2f}
-🆔 ID: {api_id}
-""")
-
-    except Exception as e:
-        print("ADD DATA ERROR:", e)
-        bot.reply_to(message, "⚠️ Error yayin saka data")
-
-
 
 
 # ================= ADMIN REMOVE MONEY FROM WALLET =================
@@ -3147,107 +2071,7 @@ def customer_pagination(c):
         pass
 
 
-#========================================
-# ADD DATA PLAN (ADMIN COMMAND)
-#========================================
 
-@bot.message_handler(commands=['adddata'])
-def add_data_plan(message):
-    try:
-        text = message.text.replace("/adddata", "").strip()
-
-        if not text:
-            bot.reply_to(message,
-"""❌ Format ba daidai ba
-
-Misali:
-/adddata
-MTN sme
-460mb 1day id13
-price 357
-""")
-            return
-
-        lines = text.split("\n")
-
-        if len(lines) < 3:
-            bot.reply_to(message, "❌ Ka cika duk bayanai (network, plan, price)")
-            return
-
-        # ===== LINE 1 =====
-        first = lines[0].strip().split()
-        if len(first) < 2:
-            bot.reply_to(message, "❌ Ka rubuta network da plan type daidai")
-            return
-
-        network = first[0].upper()
-        plan_type = first[1].upper()
-
-        # ===== LINE 2 =====
-        second = lines[1].lower().split()
-
-        if len(second) < 3:
-            bot.reply_to(message, "❌ Ka rubuta plan info daidai")
-            return
-
-        plan_name = second[0].upper()     # 460MB
-        duration = second[1]              # 1day
-
-        # find api_id
-        api_id = None
-        for word in second:
-            if word.startswith("id"):
-                api_id = int(word.replace("id", ""))
-        
-        if not api_id:
-            bot.reply_to(message, "❌ API ID bai samu ba")
-            return
-
-        # ===== LINE 3 =====
-        third = lines[2].lower().split()
-
-        if "price" not in third:
-            bot.reply_to(message, "❌ Ka saka price daidai")
-            return
-
-        price_index = third.index("price")
-
-        try:
-            price_naira = float(third[price_index + 1])
-            price = int(price_naira * 100)  # convert to kobo
-        except:
-            bot.reply_to(message, "❌ Price ba daidai ba")
-            return
-
-        # ===== INSERT INTO DB =====
-        conn = get_data_conn()
-        cur = conn.cursor()
-
-        cur.execute("""
-        INSERT INTO data_plans 
-        (api_id, network, plan_type, plan_name, duration, price)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (api_id) DO NOTHING
-        """, (api_id, network, plan_type, plan_name, duration, price))
-
-        cur.close()
-        conn.close()
-
-        # ===== SUCCESS MESSAGE =====
-        bot.reply_to(message,
-f"""✅ An saka data cikin DB
-
-📶 Network: {network}
-🏷 Type: {plan_type}
-📦 Plan: {plan_name}
-⏳ Duration: {duration}
-💰 Price: ₦{price_naira:.2f}
-🆔 API ID: {api_id}
-""")
-
-    except Exception as e:
-        print("ADD DATA ERROR:", e)
-        bot.reply_to(message, "⚠️ Error yayin saka data")
 # ================= ADMIN SALLAH GIFT =================
 @bot.message_handler(commands=["sallah"])
 def send_sallah_gift(msg):
@@ -3395,19 +2219,15 @@ Za mu ci gaba da baka kyauta a duk lokacin da muka raba 🎬🔥
 from telebot.apihelper import ApiTelegramException
 import time
 
-EID_MESSAGE = """🌙✨ Barka da Sallah!
-
-Allah ya karɓi ibadunmu 🤲
-
-Mun gode da goyon bayan ku ❤️
-
-🎉 Ga wani albishir! A wannan Sallah ba za mu barku haka ba — dole sai mun faranta ran wasu daga cikin ku saboda yadda kuka dage da siyan fina-finai a gurinmu 🎬
-
-🎁 Kyaututtuka na kuɗi za su shiga kai tsaye wallet ɗinku 💰 Yawan siyayyarka zai ƙayyade girman kyautarka 😉
-
-— Algaita Movie Store  
-CEO: Nazifi Ibrahim  
-🤖 @CEOalgaitabot
+EID_MESSAGE = """🌙✨ *BARKA DA BABBAR SALLAH* ✨🌙
+ 
+Assalamu Alaikum dear customer 🤍
+ 
+A wannan lokaci na Babbar Sallah, muna mika godiya ta musamman gareku bisa goyon baya da yarda da kuka nuna mana ta hanyar siyan fina-finai a bot ɗinmu. Allah Ya saka muku da alkhairi 🤲
+ 
+Muna yi muku fatan Sallah mai albarka, lafiya, farin ciki da tsawon rayuwa domin ganin shekarun da ke tafe. Allah Ya gafarta mana baki ɗaya, Ya karɓi ibadunmu, Ya kuma sa mu ci albarkacin wannan rana mai albarka, Ameen 🤲
+ 
+Mun gode da kasancewa tare da mu 💖 *Eid Mubarak!* 🐐🎉
 """
 
 
@@ -3451,7 +2271,7 @@ def send_eid_broadcast(msg):
 
         while True:
             try:
-                bot.send_message(user_id, EID_MESSAGE)
+                bot.send_message(user_id, EID_MESSAGE, parse_mode="Markdown")
                 return True
 
             except ApiTelegramException as e:
@@ -3500,6 +2320,7 @@ def send_eid_broadcast(msg):
 👥 Total: {len(users)}
 """
     )
+
 
 
 # ================= ADMIN SAVE SYSTEM =================
@@ -3803,8 +2624,9 @@ def vipgroup_handler(c):
         )
         conn.commit()
 
-    # ========= CREATE PAYMENT LINK =========
-    pay_url = create_paystack_payment(
+    # ========= CREATE PAYMENT LINK (Flutterwave) =========
+    # Mun sauya daga create_paystack_payment zuwa create_flutterwave_payment
+    pay_url = create_flutterwave_payment(
         uid,
         order_id,
         VIP_PRICE,
@@ -3812,6 +2634,7 @@ def vipgroup_handler(c):
     )
 
     if not pay_url:
+        bot.send_message(uid, "❌ Sorry, payment gateway is down. Try again later.")
         cur.close()
         conn.close()
         return
@@ -3855,6 +2678,119 @@ Tap below to continue👇.
 
     cur.close()
     conn.close()
+
+
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ng"))
+def wallet_amount_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    try:
+        amount = int(c.data.replace("ng",""))
+    except:
+        return
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ===== CHECK PENDING WALLET ORDER =====
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM wallet_deposits
+        WHERE user_id=%s
+        AND status='pending'
+        LIMIT 1
+        """,
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    # ===== REUSE ORDER =====
+    if row:
+
+        order_id = row["id"]
+
+        if int(row["amount"]) != amount:
+
+            cur.execute(
+                """
+                UPDATE wallet_deposits
+                SET amount=%s
+                WHERE id=%s
+                """,
+                (amount, order_id)
+            )
+
+            conn.commit()
+
+    # ===== CREATE NEW ORDER =====
+    else:
+
+        order_id = str(uuid.uuid4())
+
+        cur.execute(
+            """
+            INSERT INTO wallet_deposits
+            (id, user_id, amount, type, status)
+            VALUES (%s,%s,%s,'wallet','pending')
+            """,
+            (order_id, uid, amount)
+        )
+
+        conn.commit()
+
+    cur.close()
+    conn.close()
+
+    # ===== CREATE FLUTTERWAVE LINK =====
+    pay_url = create_flutterwave_payment(
+        uid,
+        order_id,
+        amount,
+        "Wallet Top-up"
+    )
+
+    if not pay_url:
+        return
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Top-up ₦{amount}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet_back"))
+
+    bot.edit_message_text(
+        f"""💰 *Wallet Deposit*
+
+👤 Name: {name}
+
+💳 Amount: ₦{amount}
+
+🆔 Order ID:
+`{order_id}`
+
+Danna button da ke kasa domin biyan kudin.
+""",
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+    # ===== STORE MESSAGE FOR WEBHOOK DELETE =====
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
+    )
 
 import threading  
 import time  
@@ -4094,8 +3030,9 @@ def vip_expiry_checker():
   
 threading.Thread(target=vip_expiry_checker, daemon=True).start()
 
+
 # ==========================================
-# VIP WARNING SYSTEM (HAUSA VERSION)
+# VIP WARNING SYSTEM (SMART VERSION)
 # ==========================================
 
 import threading
@@ -4103,19 +3040,14 @@ import time
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-
 def vip_warning_system():
-
     while True:
         try:
             conn = get_conn()
             cur = conn.cursor()
-
             now = datetime.now()
 
-            # ===============================
-            # GET ALL ACTIVE USERS
-            # ===============================
+            # Muna dauko user_id, expire_at da flags
             cur.execute("""
                 SELECT user_id, expire_at, warn1_sent, warn2_sent
                 FROM vip_members
@@ -4126,115 +3058,69 @@ def vip_warning_system():
             users = cur.fetchall()
 
             for user_id, expire_at, warn1_sent, warn2_sent in users:
-
-                if not expire_at:
-                    continue
-
+                
                 remaining = expire_at - now
-                remaining_seconds = remaining.total_seconds()
-
-                if remaining_seconds <= 0:
-                    continue
+                remaining_days = remaining.days
 
                 # =================================
-                # CONVERT WARNING 1 THRESHOLD
+                # WARNING 1 (GARGADI NA FARKO)
                 # =================================
-                if WARNING_1_UNIT == "minutes":
-                    threshold1 = timedelta(minutes=WARNING_1_VALUE)
-                    time_left_value = int(remaining_seconds // 60)
-                    unit_text = "minti"
-                else:
-                    threshold1 = timedelta(days=WARNING_1_VALUE)
-                    time_left_value = remaining.days
-                    unit_text = "kwana"
-
-                # =================================
-                # WARNING 1
-                # =================================
-                if not warn1_sent and remaining <= threshold1:
-
+                # Zai duba idan kwanaki sun yi daidai da WARNING_1_VALUE
+                if remaining_days == WARNING_1_VALUE and not warn1_sent:
                     try:
                         kb = InlineKeyboardMarkup()
-                        kb.add(
-                            InlineKeyboardButton(
-                                "💳REPAY NOW",
-                                callback_data="subvip"
-                            )
-                        )
+                        kb.add(InlineKeyboardButton("💳REPAY NOW", callback_data="subvip"))
 
                         bot.send_message(
                             user_id,
                             f"⏳ TUNATARWA ZANYI MAKA\n\n"
-                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value} {unit_text}.\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {WARNING_1_VALUE} kwana.\n\n"
                             f"Muna matuƙar godiya da kasancewarka tare da mu ❤️\n"
                             f"Da fatan za ka sabunta kafin lokacin ya ƙare domin cigaba da more VIP group.",
                             reply_markup=kb
                         )
 
-                        cur.execute("""
-                            UPDATE vip_members
-                            SET warn1_sent=TRUE
-                            WHERE user_id=%s
-                        """, (user_id,))
+                        # Update database domin hana double sending
+                        cur.execute("UPDATE vip_members SET warn1_sent=TRUE WHERE user_id=%s", (user_id,))
                         conn.commit()
-
                     except:
                         pass
 
                 # =================================
-                # CONVERT WARNING 2 THRESHOLD
+                # WARNING 2 (GARGADI NA KARSHE)
                 # =================================
-                if WARNING_2_UNIT == "minutes":
-                    threshold2 = timedelta(minutes=WARNING_2_VALUE)
-                    time_left_value2 = int(remaining_seconds // 60)
-                    unit_text2 = "minti"
-                else:
-                    threshold2 = timedelta(days=WARNING_2_VALUE)
-                    time_left_value2 = remaining.days
-                    unit_text2 = "kwana"
-
-                # =================================
-                # WARNING 2 (FINAL)
-                # =================================
-                if not warn2_sent and remaining <= threshold2:
-
+                # Zai duba idan kwanaki sun yi daidai da WARNING_2_VALUE
+                elif remaining_days == WARNING_2_VALUE and not warn2_sent:
                     try:
                         kb = InlineKeyboardMarkup()
-                        kb.add(
-                            InlineKeyboardButton(
-                                "💳REPAY NOW",
-                                callback_data="subvip"
-                            )
-                        )
+                        kb.add(InlineKeyboardButton("💳REPAY NOW", callback_data="subvip"))
 
                         bot.send_message(
                             user_id,
                             f"⚠NAZO NA SANAR DAKAI\n\n"
-                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value2} {unit_text2}.\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {WARNING_2_VALUE} kwana.\n\n"
                             f"Idan ba ka sabunta ba kafin lokacin ya cika, za a cire ka daga VIP group.\n"
                             f"Da fatan za ka sabunta yanzu domin kada a cire ka.",
                             reply_markup=kb
                         )
 
-                        cur.execute("""
-                            UPDATE vip_members
-                            SET warn2_sent=TRUE
-                            WHERE user_id=%s
-                        """, (user_id,))
+                        # Update database
+                        cur.execute("UPDATE vip_members SET warn2_sent=TRUE WHERE user_id=%s", (user_id,))
                         conn.commit()
-
                     except:
                         pass
 
             cur.close()
             conn.close()
 
-        except:
+        except Exception as e:
+            # print(f"Error: {e}") # Zaka iya barin sa a kashe
             pass
 
-        time.sleep(7200)  # yana duba duk 30 seconds
+        # Yana duba duk bayan awa 12 domin ya kama kwanakin daidai
+        time.sleep(43200)
 
-
+# Kunna system din a gefe
 threading.Thread(target=vip_warning_system, daemon=True).start()
 
 
@@ -4642,117 +3528,7 @@ Zabi adadin da zaka deposit zuwa wallet din ka👇👇
         reply_markup=kb
     )
 
-import uuid
-from psycopg2.extras import RealDictCursor
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("ng"))
-def wallet_amount_handler(c):
-
-    bot.answer_callback_query(c.id)
-
-    uid = c.from_user.id
-    name = c.from_user.first_name or "User"
-
-    try:
-        amount = int(c.data.replace("ng",""))
-    except:
-        return
-
-    conn = get_wallet_conn()
-    if not conn:
-        return
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    # ===== CHECK PENDING WALLET ORDER =====
-    cur.execute(
-        """
-        SELECT id, amount
-        FROM wallet_deposits
-        WHERE user_id=%s
-        AND status='pending'
-        LIMIT 1
-        """,
-        (uid,)
-    )
-
-    row = cur.fetchone()
-
-    # ===== REUSE ORDER =====
-    if row:
-
-        order_id = row["id"]
-
-        if int(row["amount"]) != amount:
-
-            cur.execute(
-                """
-                UPDATE wallet_deposits
-                SET amount=%s
-                WHERE id=%s
-                """,
-                (amount, order_id)
-            )
-
-            conn.commit()
-
-    # ===== CREATE NEW ORDER =====
-    else:
-
-        order_id = str(uuid.uuid4())
-
-        cur.execute(
-            """
-            INSERT INTO wallet_deposits
-            (id, user_id, amount, type, status)
-            VALUES (%s,%s,%s,'wallet','pending')
-            """,
-            (order_id, uid, amount)
-        )
-
-        conn.commit()
-
-    cur.close()
-    conn.close()
-
-    # ===== CREATE PAYSTACK LINK =====
-    pay_url = create_paystack_payment(
-        uid,
-        order_id,
-        amount,
-        "Wallet Top-up"
-    )
-
-    if not pay_url:
-        return
-
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(f"💳 Top-up ₦{amount}", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet_back"))
-
-    bot.edit_message_text(
-        f"""💰 *Wallet Deposit*
-
-👤 Name: {name}
-
-💳 Amount: ₦{amount}
-
-🆔 Order ID:
-`{order_id}`
-
-Danna button da ke kasa domin biyan kudin.
-""",
-        chat_id=c.message.chat.id,
-        message_id=c.message.message_id,
-        parse_mode="Markdown",
-        reply_markup=kb
-    )
-
-    # ===== STORE MESSAGE FOR WEBHOOK DELETE =====
-    ORDER_MESSAGES[order_id] = (
-        c.message.chat.id,
-        c.message.message_id
-    )
 
 
 
@@ -6015,15 +4791,12 @@ def mask_name(fullname):
 def tr_user(uid, key, default=""):
     return default
 
-
-
 #farko
 def reply_menu(uid=None):
     kb = InlineKeyboardMarkup()
 
     # ===== WALLET (TOP BUTTON) =====
-    kb.row(
-        InlineKeyboardButton("📶 Data & Airtime", callback_data="d_&_a"),
+    kb.add(
         InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")
     )
 
@@ -6079,7 +4852,6 @@ def reply_menu(uid=None):
 
     return kb
 # end
-
 
 
 def user_main_menu(uid=None):
@@ -7257,7 +6029,6 @@ def groupitem_deeplink_handler(msg):
 
     try:
         for token in tokens:
-
             # ==== IF ID ====
             if token.isdigit():
                 item_ids.append(int(token))
@@ -7386,7 +6157,7 @@ def groupitem_deeplink_handler(msg):
         order_id = str(uuid.uuid4())
         try:
             cur.execute(
-                "INSERT INTO orders (id, user_id, amount, paid) VALUES (%s,%s,%s,0)",
+                "INSERT INTO orders (id, user_id, amount, paid, type) VALUES (%s,%s,%s,0,'film')",
                 (order_id, uid, total)
             )
             for i in items:
@@ -7404,11 +6175,13 @@ def groupitem_deeplink_handler(msg):
             conn.close()
             return
 
-    # ========= PAYSTACK =========
-    display_title = f"{item_count} item(s)"
-    pay_url = create_paystack_payment(uid, order_id, total, display_title)
+    # ========= FLUTTERWAVE (An sauya daga Paystack) =========
+    display_title = f"{item_count} film(s)"
+    # Mun kira sabon function din mu na Flutterwave
+    pay_url = create_flutterwave_payment(uid, order_id, total, display_title)
 
     if not pay_url:
+        bot.send_message(uid, "❌ Sorry, payment gateway is down. Try again later.")
         cur.close()
         conn.close()
         return
@@ -7422,7 +6195,7 @@ def groupitem_deeplink_handler(msg):
         }.items()
     ]
 
-    # ========= FINAL =========
+    # ========= FINAL UI =========
     kb = InlineKeyboardMarkup()
 
     # PAY NOW (TOP ROW)
@@ -7454,11 +6227,14 @@ def groupitem_deeplink_handler(msg):
         reply_markup=kb
     )
 
-    # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
+    # ===== STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
     ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
 
     cur.close()
     conn.close()
+
+
+   
 
 
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
@@ -7689,6 +6465,8 @@ Tura <b>/sendall</b> domin a sake tura items.""",
             conn.close()
 
 
+
+
 import uuid
 import traceback
 from psycopg2.extras import RealDictCursor
@@ -7801,10 +6579,11 @@ def pay_all_unpaid(call):
         # ==================================================
         order_id = str(uuid.uuid4())
 
+        # Mun saka type='film' domin webhook ya gane
         cur.execute(
             """
-            INSERT INTO orders (id, user_id, amount, paid)
-            VALUES (%s, %s, %s, 0)
+            INSERT INTO orders (id, user_id, amount, paid, type)
+            VALUES (%s, %s, %s, 0, 'film')
             """,
             (order_id, uid, total_amount)
         )
@@ -7845,9 +6624,9 @@ def pay_all_unpaid(call):
             conn.commit()
 
         # ==================================================
-        # 6️⃣ PAYSTACK
+        # 6️⃣ FLUTTERWAVE (An sauya daga Paystack)
         # ==================================================
-        pay_url = create_paystack_payment(
+        pay_url = create_flutterwave_payment(
             uid,
             order_id,
             total_amount,
@@ -7855,6 +6634,7 @@ def pay_all_unpaid(call):
         )
 
         if not pay_url:
+            bot.send_message(uid, "❌ Error generating payment link. Please try again.")
             return
 
         # ==================================================
@@ -7904,10 +6684,12 @@ def pay_all_unpaid(call):
             reply_markup=kb
         )
 
-        # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
+        # ===== STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
         ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
 
     except Exception:
+        # Don kiyaye bot din daga tsayawa idan akwai error
+        print(traceback.format_exc())
         pass
 
     finally:
@@ -7916,6 +6698,7 @@ def pay_all_unpaid(call):
             conn.close()
         except:
             pass
+
 
 import uuid
 from datetime import datetime
@@ -8429,8 +7212,9 @@ def handle_callback(c):
             conn = get_conn()
             cur = conn.cursor(cursor_factory=RealDictCursor)
 
+            # Mun kara type='film' domin Flutterwave Webhook ya gane
             cur.execute(
-                "INSERT INTO orders (id,user_id,amount,paid) VALUES (%s,%s,%s,0)",
+                "INSERT INTO orders (id,user_id,amount,paid,type) VALUES (%s,%s,%s,0,'film')",
                 (order_id, uid, total)
             )
 
@@ -8470,10 +7254,11 @@ def handle_callback(c):
             pass
 
         # ==================================================
-        # PAYSTACK
+        # FLUTTERWAVE (An sauya daga Paystack)
         # ==================================================
         try:
-            pay_url = create_paystack_payment(
+            # An yi amfani da create_flutterwave_payment yadda ka bukata
+            pay_url = create_flutterwave_payment(
                 uid,
                 order_id,
                 total,
@@ -8539,7 +7324,8 @@ def handle_callback(c):
 
         bot.answer_callback_query(c.id)
         return
- 
+
+
 
 
     
