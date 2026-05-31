@@ -7,6 +7,11 @@ import psycopg2
 import time
 import os
 
+import imaplib
+import email
+
+
+
 # ======================
 # DATABASE CONNECTION
 # ======================
@@ -787,7 +792,10 @@ OTP_ADMIN_ID = 6603268127
 WARNING_1_VALUE = 5  # Misali: Kwana 5 kafin expire
 WARNING_2_VALUE = 2  # Misali: Kwana 2 kafin expire
 
-
+EMAIL_USER = "nazifinazifi222@gmail.com"
+EMAIL_PASS = "mfbs qknn ttfo urf"
+IMAP_SERVER = "imap.gmail.com"
+IMAP_PORT = 993
 
 BOT_USERNAME = "Algaitabot"
 CHANNEL = "@Danchirinps"
