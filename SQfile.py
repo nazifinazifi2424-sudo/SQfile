@@ -852,7 +852,7 @@ EMAIL_PASS = "mfbs qknn ttfo urf"
 IMAP_SERVER = "imap.gmail.com"
 IMAP_PORT = 993
 
-BOT_USERNAME = "Algaitabot"
+BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 70
