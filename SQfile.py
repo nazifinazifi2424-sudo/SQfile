@@ -748,6 +748,59 @@ CREATE TABLE IF NOT EXISTS how_to_buy (
 )
 """)
 
+# ================= G_ORDERS =================
+cur.execute("""
+CREATE TABLE IF NOT EXISTS g_orders (
+    id TEXT PRIMARY KEY,
+    user_id BIGINT,
+    amount INTEGER,
+    paid INTEGER DEFAULT 0,
+    remark TEXT UNIQUE NOT NULL,
+    status TEXT DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMP
+)
+""")
+
+# ================= G_ORDER_ITEMS =================
+cur.execute("""
+CREATE TABLE IF NOT EXISTS g_order_items (
+    id SERIAL PRIMARY KEY,
+    order_id TEXT,
+    item_id INTEGER,
+    price INTEGER,
+    file_id TEXT
+)
+""")
+
+# ================= G_USER_MOVIES =================
+cur.execute("""
+CREATE TABLE IF NOT EXISTS g_user_movies (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    item_id INTEGER,
+    order_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# ================= G_EMAIL_LOGS =================
+cur.execute("""
+CREATE TABLE IF NOT EXISTS g_email_logs (
+    id SERIAL PRIMARY KEY,
+    email_uid TEXT UNIQUE,
+    sender TEXT,
+    subject TEXT,
+    remark TEXT,
+    amount INTEGER,
+    processed BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+
+
+
 print("✅ DATABASE READY — BIGINT FIX APPLIED")
 import uuid
 import re
@@ -763,6 +816,8 @@ import hmac
 import hashlib
 # Store order message temporarily in memory
 ORDER_MESSAGES = {}
+G_ORDER_MESSAGES = {}
+
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
@@ -2366,6 +2421,323 @@ def save_note(msg):
     finally:
         cur.close()
         conn.close()
+
+
+# ========= G_BUYD (ITEM ONLY | DEEP LINK → DM | PALMPAY) =========
+from psycopg2.extras import RealDictCursor
+import uuid
+import re
+import random
+import string
+
+# ===== MESSAGE MEMORY =====
+
+
+# ===== GENERATE 10-CHAR REMARK =====
+def generate_g_remark():
+    return ''.join(
+        random.choices(
+            string.ascii_uppercase + string.digits,
+            k=10
+        )
+    )
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
+def g_groupitem_deeplink_handler(msg):
+
+    uid = msg.from_user.id
+    user_name = msg.from_user.first_name or "Customer"
+
+    # ========= PARSE ITEM IDS + GROUP KEYS =========
+    try:
+        raw = msg.text.split("groupitem_", 1)[1]
+        tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
+    except:
+        return
+
+    if not tokens:
+        return
+
+    conn = get_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    item_ids = []
+
+    try:
+        for token in tokens:
+
+            # ===== ID =====
+            if token.isdigit():
+                item_ids.append(int(token))
+
+            # ===== GROUP KEY =====
+            else:
+                cur.execute(
+                    "SELECT id FROM items WHERE group_key=%s",
+                    (token,)
+                )
+                rows = cur.fetchall()
+                item_ids.extend([r["id"] for r in rows])
+
+    except:
+        cur.close()
+        conn.close()
+        return
+
+    if not item_ids:
+        cur.close()
+        conn.close()
+        return
+
+    # ========= FETCH ITEMS =========
+    try:
+        placeholders = ",".join(["%s"] * len(item_ids))
+
+        cur.execute(
+            f"""
+            SELECT id,title,price,file_id,group_key
+            FROM items
+            WHERE id IN ({placeholders})
+            """,
+            tuple(item_ids)
+        )
+
+        items = cur.fetchall()
+
+    except:
+        cur.close()
+        conn.close()
+        return
+
+    if not items:
+        cur.close()
+        conn.close()
+        return
+
+    # ========= FILE REQUIRED =========
+    items = [i for i in items if i.get("file_id")]
+
+    if not items:
+        cur.close()
+        conn.close()
+        return
+
+    item_ids_clean = [i["id"] for i in items]
+
+    # ========= OWNERSHIP CHECK =========
+    try:
+        cur.execute(
+            f"""
+            SELECT 1
+            FROM g_user_movies
+            WHERE user_id=%s
+            AND item_id IN ({",".join(["%s"]*len(item_ids_clean))})
+            LIMIT 1
+            """,
+            (uid,*item_ids_clean)
+        )
+
+        owned = cur.fetchone()
+
+    except:
+        cur.close()
+        conn.close()
+        return
+
+    if owned:
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "📽 PAID MOVIES",
+                callback_data="my_movies"
+            )
+        )
+
+        bot.send_message(
+            uid,
+            "✅ You already purchased this movie.",
+            reply_markup=kb
+        )
+
+        cur.close()
+        conn.close()
+        return
+
+    # ========= GROUP KEY PRICE =========
+    groups = {}
+
+    for i in items:
+        key = i["group_key"] or f"single_{i['id']}"
+
+        if key not in groups:
+            groups[key] = int(i["price"] or 0)
+
+    total = sum(groups.values())
+    item_count = len(items)
+
+    if total <= 0:
+        cur.close()
+        conn.close()
+        return
+
+    # ========= UNIQUE TITLES =========
+    unique_titles = [
+        i["title"]
+        for _, i in {
+            (i["group_key"] or f"single_{i['id']}"): i
+            for i in items
+        }.items()
+    ]
+
+    # ========= REUSE / CREATE =========
+    try:
+
+        cur.execute(
+            f"""
+            SELECT g.id
+            FROM g_orders g
+            JOIN g_order_items gi
+            ON gi.order_id=g.id
+            WHERE g.user_id=%s
+            AND g.paid=0
+            AND gi.item_id IN ({",".join(["%s"]*len(item_ids_clean))})
+            GROUP BY g.id
+            HAVING COUNT(DISTINCT gi.item_id)=%s
+            LIMIT 1
+            """,
+            (uid,*item_ids_clean,len(item_ids_clean))
+        )
+
+        row = cur.fetchone()
+
+    except:
+        cur.close()
+        conn.close()
+        return
+
+    if row:
+
+        order_id = row["id"]
+
+        cur.execute(
+            "SELECT remark FROM g_orders WHERE id=%s",
+            (order_id,)
+        )
+
+        remark = cur.fetchone()["remark"]
+
+    else:
+
+        order_id = str(uuid.uuid4())
+
+        while True:
+
+            remark = generate_g_remark()
+
+            cur.execute(
+                "SELECT 1 FROM g_orders WHERE remark=%s",
+                (remark,)
+            )
+
+            if not cur.fetchone():
+                break
+
+        try:
+
+            cur.execute(
+                """
+                INSERT INTO g_orders
+                (id,user_id,amount,paid,remark,status)
+                VALUES (%s,%s,%s,0,%s,'pending')
+                """,
+                (
+                    order_id,
+                    uid,
+                    total,
+                    remark
+                )
+            )
+
+            for i in items:
+
+                cur.execute(
+                    """
+                    INSERT INTO g_order_items
+                    (order_id,item_id,file_id,price)
+                    VALUES (%s,%s,%s,%s)
+                    """,
+                    (
+                        order_id,
+                        i["id"],
+                        i["file_id"],
+                        int(i["price"] or 0)
+                    )
+                )
+
+            conn.commit()
+
+        except:
+            conn.rollback()
+            cur.close()
+            conn.close()
+            return
+
+    # ========= FINAL MESSAGE =========
+    sent = bot.send_message(
+        uid,
+        f"""🧺 <b>ORDER CREATED 🎉</b>
+
+👤 <b>Malam {user_name}</b>
+
+🎬 <b>You will buy:</b>
+{", ".join(unique_titles)}
+
+📦 <b>Films:</b> {item_count}
+💵 <b>Total:</b> ₦{total}
+
+━━━━━━━━━━
+🏦 <b>PAYMENT DETAILS</b>
+
+💳 <b>Acc:</b>
+<code>8900720965</code>
+
+🏦 <b>Bank:</b> Palmpay
+👤 <b>Name:</b> Nazifi Ibrahim
+━━━━━━━━━━
+
+📝 <b>Remark:</b>
+
+<code>{remark}</code>
+
+⚠️ <b>IMPORTANT</b>
+
+Ni ba mutum bane 🤖
+
+Domin in gane biyanka kai tsaye,
+dole ka copy wannan <b>Remark</b>
+ka saka a <b>Narration / Remark</b>
+lokacin transfer.
+
+❌ Idan baka saka shi ba,
+ba zan iya gane biyanka ba.
+
+⏳ <b>20 mins remaining</b>
+""",
+        parse_mode="HTML"
+    )
+
+    # ========= MEMORY =========
+    G_ORDER_MESSAGES[order_id] = (
+        sent.chat.id,
+        sent.message_id
+    )
+
+    cur.close()
+    conn.close()
 
 
 # -------- VIEW ALL --------
