@@ -2429,9 +2429,12 @@ import uuid
 import re
 import random
 import string
+import time
+import threading
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== MESSAGE MEMORY =====
-
+G_ORDER_MESSAGES = {}
 
 # ===== GENERATE 10-CHAR REMARK =====
 def generate_g_remark():
@@ -2441,6 +2444,82 @@ def generate_g_remark():
             k=10
         )
     )
+
+# ===== COUNTDOWN TIMER FUNCTION =====
+def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, item_count, total, remark):
+    duration = 20 * 60  # Minti 20 an maida su sakan (1200 seconds)
+    
+    while duration > 0:
+        # Duba idan an riga an biya ko an soke order daga wani gurin kafin lokaci ya kare
+        try:
+            conn = get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT status FROM g_orders WHERE id=%s", (order_id,))
+            order_status = cur.fetchone()
+            cur.close()
+            conn.close()
+            
+            # Idan order ta riga ta zama paid ko an soke ta da maballin cancel, tsayar da countdown
+            if order_status and order_status['status'] != 'pending':
+                return
+        except:
+            pass
+
+        time.sleep(1)
+        duration -= 1
+        
+        # Muna edit din sako duk bayan sakan 30 ne kawai don gudun Telegram Rate Limit (Hana bot din tsayawa)
+        if duration % 30 == 0 and duration > 0:
+            minutes = duration // 60
+            seconds = duration % 60
+            time_text = f"{minutes:02d}:{seconds:02d} remaining"
+            
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
+            
+            updated_text = (
+                f"📦 <b>ORDER CREATED</b>\n"
+                f"👤 <b>Customer:</b> <code>{user_name}</code>\n"
+                f"🎬 <b>Items ({item_count}):</b> <code>{', '.join(unique_titles)}</code>\n"
+                f"💵 <b>Total Amount:</b> <code>₦{total}</code>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"🏦 <b>TRANSFER DETAILS</b>\n"
+                f"🏛️ <b>Bank:</b> Palmpay\n"
+                f"💳 <b>Account:</b> <code>8900720965</code>\n"
+                f"👤 <b>Name:</b> Nazifi Ibrahim\n"
+                f"📝 <b>Remark:</b> <code>{remark}</code>\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"⚠️ <b>Tabbatar ka saka remark lokacin tura kudi wannan dole ne!</b>\n\n"
+                f"⏳ <b>{time_text}</b>"
+            )
+            
+            try:
+                bot.edit_message_text(updated_text, chat_id=uid, message_id=message_id, parse_mode="HTML", reply_markup=kb)
+            except:
+                pass
+
+    # ======= IDAN LOKACI YA KARE (TIMEOUT) =======
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Canza status din order a DB zuwa cancelled
+        cur.execute("UPDATE g_orders SET status='cancelled' WHERE id=%s AND status='pending'", (order_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Edit din sakon Telegram zuwa soke order
+        bot.edit_message_text(
+            f"❌ <b>An soke wannan order sakamakon rashin biya dawuri.</b>\n\n"
+            f"🎬 Film: <code>{', '.join(unique_titles)}</code>\n"
+            f"💰 Idan kana so zaka iya sake oda.",
+            chat_id=uid,
+            message_id=message_id,
+            parse_mode="HTML"
+        )
+    except:
+        pass
+
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
 def g_groupitem_deeplink_handler(msg):
@@ -2686,48 +2765,31 @@ def g_groupitem_deeplink_handler(msg):
             conn.close()
             return
 
-    # ========= FINAL MESSAGE =========
+    # ========= PRO COMPACT FINAL MESSAGE =========
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
+
+    message_text = (
+        f"📦 <b>ORDER CREATED</b>\n"
+        f"👤 <b>Customer:</b> <code>{user_name}</code>\n"
+        f"🎬 <b>Items ({item_count}):</b> <code>{', '.join(unique_titles)}</code>\n"
+        f"💵 <b>Total Amount:</b> <code>₦{total}</code>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🏦 <b>TRANSFER DETAILS</b>\n"
+        f"🏛️ <b>Bank:</b> Palmpay\n"
+        f"💳 <b>Account:</b> <code>8900720965</code>\n"
+        f"👤 <b>Name:</b> Nazifi Ibrahim\n"
+        f"📝 <b>Remark:</b> <code>{remark}</code>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"⚠️ <b>Tabbatar ka saka remark lokacin tura kudi wannan dole ne!</b>\n\n"
+        f"⏳ <b>20:00 remaining</b>"
+    )
+
     sent = bot.send_message(
         uid,
-        f"""🧺 <b>ORDER CREATED 🎉</b>
-
-👤 <b>Malam {user_name}</b>
-
-🎬 <b>You will buy:</b>
-{", ".join(unique_titles)}
-
-📦 <b>Films:</b> {item_count}
-💵 <b>Total:</b> ₦{total}
-
-━━━━━━━━━━
-🏦 <b>PAYMENT DETAILS</b>
-
-💳 <b>Acc:</b>
-<code>8900720965</code>
-
-🏦 <b>Bank:</b> Palmpay
-👤 <b>Name:</b> Nazifi Ibrahim
-━━━━━━━━━━
-
-📝 <b>Remark:</b>
-
-<code>{remark}</code>
-
-⚠️ <b>IMPORTANT</b>
-
-Ni ba mutum bane 🤖
-
-Domin in gane biyanka kai tsaye,
-dole ka copy wannan <b>Remark</b>
-ka saka a <b>Narration / Remark</b>
-lokacin transfer.
-
-❌ Idan baka saka shi ba,
-ba zan iya gane biyanka ba.
-
-⏳ <b>20 mins remaining</b>
-""",
-        parse_mode="HTML"
+        message_text,
+        parse_mode="HTML",
+        reply_markup=kb
     )
 
     # ========= MEMORY =========
@@ -2738,6 +2800,15 @@ ba zan iya gane biyanka ba.
 
     cur.close()
     conn.close()
+
+    # ========= RUN COUNTDOWN IN BACKGROUND =========
+    # Muna kunna agogon lissafin a boye (Thread) domin karka tsayar da bot din ga sauran mutane
+    threading.Thread(
+        target=start_countdown, 
+        args=(bot, uid, sent.message_id, order_id, user_name, unique_titles, item_count, total, remark),
+        daemon=True
+    ).start()
+
 
 
 # -------- VIEW ALL --------
