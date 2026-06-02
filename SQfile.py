@@ -2814,6 +2814,558 @@ def g_groupitem_deeplink_handler(msg):
     ).start()
 
 
+# ========= GMAIL CHECKER (G_ORDERS | PALMPAY) =========
+import imaplib
+import email
+import re
+import time
+import threading
+from email.header import decode_header
+
+GMAIL_CHECKER_RUNNING = False
+
+def start_gmail_checker():
+
+    global GMAIL_CHECKER_RUNNING
+
+    if GMAIL_CHECKER_RUNNING:
+        return
+
+    GMAIL_CHECKER_RUNNING = True
+
+    def checker_loop():
+
+        global GMAIL_CHECKER_RUNNING
+
+        while True:
+
+            try:
+
+                # ===== CHECK PENDING ORDERS =====
+                conn = get_conn()
+                cur = conn.cursor()
+
+                cur.execute("""
+                    SELECT id, user_id, remark, amount
+                    FROM g_orders
+                    WHERE paid=0
+                    AND status='pending'
+                    AND created_at >= NOW() - INTERVAL '20 minutes'
+                    LIMIT 1
+                """)
+
+                pending = cur.fetchone()
+
+                if not pending:
+
+                    cur.close()
+                    conn.close()
+
+                    try:
+                        bot.send_message(
+                            ADMIN_ID,
+                            "📭 No pending G_orders.\nGmail checker sleeping."
+                        )
+                    except:
+                        pass
+
+                    GMAIL_CHECKER_RUNNING = False
+                    return
+
+                cur.close()
+                conn.close()
+
+                # ===== LOGIN GMAIL =====
+                try:
+
+                    mail = imaplib.IMAP4_SSL(
+                        IMAP_SERVER,
+                        IMAP_PORT
+                    )
+
+                    mail.login(
+                        EMAIL_USER,
+                        EMAIL_PASS
+                    )
+
+                    mail.select("inbox")
+
+                except Exception as e:
+
+                    retry = 60
+
+                    print("GMAIL LOGIN ERROR:", e)
+
+                    try:
+                        bot.send_message(
+                            ADMIN_ID,
+                            f"""⚠️ GMAIL LOGIN ERROR
+
+<code>{str(e)}</code>
+
+Checker bai tsaya ba.
+
+Retry:
+{retry} sec
+""",
+                            parse_mode="HTML"
+                        )
+                    except:
+                        pass
+
+                    time.sleep(retry)
+                    continue
+
+                # ===== SEARCH EMAIL =====
+                result, data = mail.search(
+                    None,
+                    "UNSEEN"
+                )
+
+                mail_ids = data[0].split()
+
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"📩 Gmail checker active\nUnread mails: {len(mail_ids)}"
+                    )
+                except:
+                    pass
+
+                for num in reversed(mail_ids):
+
+                    try:
+
+                        result, msg_data = mail.fetch(
+                            num,
+                            "(RFC822)"
+                        )
+
+                        raw_email = msg_data[0][1]
+
+                        msg = email.message_from_bytes(
+                            raw_email
+                        )
+
+                        email_uid = str(
+                            num.decode()
+                        )
+
+                        # ===== DUPLICATE BLOCK =====
+                        conn = get_conn()
+                        cur = conn.cursor()
+
+                        cur.execute(
+                            """
+                            SELECT 1
+                            FROM g_email_logs
+                            WHERE email_uid=%s
+                            """,
+                            (email_uid,)
+                        )
+
+                        if cur.fetchone():
+
+                            cur.close()
+                            conn.close()
+                            continue
+
+                        sender = msg.get(
+                            "From",
+                            ""
+                        )
+
+                        subject = msg.get(
+                            "Subject",
+                            ""
+                        )
+
+                        decoded_subject = ""
+
+                        try:
+
+                            decoded_subject = decode_header(
+                                subject
+                            )[0][0]
+
+                            if isinstance(
+                                decoded_subject,
+                                bytes
+                            ):
+                                decoded_subject = decoded_subject.decode()
+
+                        except:
+                            decoded_subject = subject
+
+                        # ===== BODY =====
+                        body = ""
+
+                        if msg.is_multipart():
+
+                            for part in msg.walk():
+
+                                ctype = part.get_content_type()
+
+                                if ctype == "text/plain":
+
+                                    try:
+                                        body += part.get_payload(
+                                            decode=True
+                                        ).decode(
+                                            errors="ignore"
+                                        )
+                                    except:
+                                        pass
+                        else:
+                            try:
+                                body = msg.get_payload(
+                                    decode=True
+                                ).decode(
+                                    errors="ignore"
+                                )
+                            except:
+                                pass
+
+                        full_text = (
+                            decoded_subject
+                            + "\n" +
+                            body
+                        )
+
+                        # ===== FIND ORDER MATCH =====
+                        cur.execute("""
+                            SELECT
+                            id,
+                            user_id,
+                            amount,
+                            remark
+                            FROM g_orders
+                            WHERE paid=0
+                            AND status='pending'
+                        """)
+
+                        orders = cur.fetchall()
+
+                        matched = None
+
+                        for o in orders:
+
+                            order_id = o[0]
+                            user_id = o[1]
+                            expected_amount = o[2]
+                            remark = o[3]
+
+                            if remark and remark in full_text:
+
+                                amount_match = re.search(
+                                    r'₦?([\d,]+)',
+                                    full_text
+                                )
+
+                                paid_amount = 0
+
+                                if amount_match:
+
+                                    try:
+                                        paid_amount = int(
+                                            amount_match.group(1)
+                                            .replace(",", "")
+                                        )
+                                    except:
+                                        paid_amount = 0
+
+                                if paid_amount >= expected_amount:
+
+                                    matched = (
+                                        order_id,
+                                        user_id,
+                                        expected_amount,
+                                        remark
+                                    )
+                                    break
+
+                        # ===== SAVE EMAIL LOG =====
+                        cur.execute("""
+                            INSERT INTO g_email_logs
+                            (
+                                email_uid,
+                                sender,
+                                subject,
+                                processed
+                            )
+                            VALUES
+                            (%s,%s,%s,FALSE)
+                            ON CONFLICT
+                            (email_uid)
+                            DO NOTHING
+                        """,
+                        (
+                            email_uid,
+                            sender,
+                            decoded_subject
+                        ))
+
+                        conn.commit()
+
+                        if not matched:
+
+                            cur.close()
+                            conn.close()
+                            continue
+
+                        order_id,user_id,amount,remark = matched
+
+                        # ===== MARK ORDER PAID =====
+                        cur.execute("""
+                            UPDATE g_orders
+                            SET
+                            paid=1,
+                            status='success',
+                            paid_at=NOW()
+                            WHERE id=%s
+                        """,
+                        (
+                            order_id,
+                        ))
+
+                        # ===== UPDATE EMAIL LOG =====
+                        cur.execute("""
+                            UPDATE g_email_logs
+                            SET
+                            processed=TRUE,
+                            remark=%s,
+                            amount=%s
+                            WHERE email_uid=%s
+                        """,
+                        (
+                            remark,
+                            amount,
+                            email_uid
+                        ))
+
+                        conn.commit()
+
+                        # ===== GET TITLES =====
+                        cur.execute("""
+                            SELECT
+                            i.title,
+                            i.group_key
+                            FROM g_order_items gi
+                            JOIN items i
+                            ON i.id=gi.item_id
+                            WHERE gi.order_id=%s
+                        """,
+                        (
+                            order_id,
+                        ))
+
+                        rows = cur.fetchall()
+
+                        groups = {}
+
+                        for title,group_key in rows:
+
+                            key = group_key or title
+
+                            if key not in groups:
+                                groups[key] = title
+
+                        titles_text = ", ".join(
+                            groups.values()
+                        )
+
+                        # ===== DELETE OLD PAYMENT MSG =====
+                        if order_id in G_ORDER_MESSAGES:
+
+                            chat_id,message_id = (
+                                G_ORDER_MESSAGES[
+                                    order_id
+                                ]
+                            )
+
+                            try:
+                                bot.delete_message(
+                                    chat_id,
+                                    message_id
+                                )
+                            except:
+                                pass
+
+                            del G_ORDER_MESSAGES[
+                                order_id
+                            ]
+
+                        # ===== SUCCESS UI =====
+                        kb = InlineKeyboardMarkup()
+
+                        kb.add(
+                            InlineKeyboardButton(
+                                "⬇️ DOWNLOAD NOW",
+                                callback_data=f"g_deliver:{order_id}"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"""🎉 <b>PAYMENT SUCCESSFUL</b>
+
+🎬 <b>Items:</b>
+{titles_text}
+
+🗃 <b>Order ID:</b>
+<code>{order_id}</code>
+
+💰 <b>Amount Paid:</b>
+₦{amount}
+
+⬇️ Click button below to download.
+""",
+                            parse_mode="HTML",
+                            reply_markup=kb
+                        )
+
+                        try:
+                            bot.send_message(
+                                ADMIN_ID,
+                                f"""✅ G_PAYMENT SUCCESS
+
+User:
+<code>{user_id}</code>
+
+Order:
+<code>{order_id}</code>
+
+Amount:
+₦{amount}
+
+Remark:
+<code>{remark}</code>
+""",
+                                parse_mode="HTML"
+                            )
+                        except:
+                            pass
+
+                        cur.close()
+                        conn.close()
+
+                    except Exception as e:
+
+                        print(
+                            "EMAIL PROCESS ERROR:",
+                            e
+                        )
+
+                        try:
+                            bot.send_message(
+                                ADMIN_ID,
+                                f"""⚠️ EMAIL PROCESS ERROR
+
+<code>{str(e)}</code>
+""",
+                                parse_mode="HTML"
+                            )
+                        except:
+                            pass
+
+                        continue
+
+                mail.logout()
+
+            except imaplib.IMAP4.abort as e:
+
+                retry = 60
+
+                print(
+                    "GMAIL ABORT:",
+                    e
+                )
+
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"""⚠️ GMAIL TEMP ERROR
+
+Temporary Gmail issue.
+
+<code>{str(e)}</code>
+
+Waiting:
+{retry} sec
+""",
+                        parse_mode="HTML"
+                    )
+                except:
+                    pass
+
+                time.sleep(retry)
+                continue
+
+            except imaplib.IMAP4.error as e:
+
+                retry = 60
+
+                print(
+                    "GMAIL IMAP ERROR:",
+                    e
+                )
+
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"""⚠️ GMAIL IMAP ERROR
+
+<code>{str(e)}</code>
+
+Retry:
+{retry} sec
+""",
+                        parse_mode="HTML"
+                    )
+                except:
+                    pass
+
+                time.sleep(retry)
+                continue
+
+            except Exception as e:
+
+                retry = 30
+
+                print(
+                    "GMAIL CHECKER ERROR:",
+                    e
+                )
+
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"""⚠️ GMAIL CHECKER ERROR
+
+<code>{str(e)}</code>
+
+Checker alive.
+
+Retry:
+{retry} sec
+""",
+                        parse_mode="HTML"
+                    )
+                except:
+                    pass
+
+                time.sleep(retry)
+                continue
+
+            # ===== NORMAL CHECK =====
+            time.sleep(2)
+
+    threading.Thread(
+        target=checker_loop,
+        daemon=True
+    ).start()
+
+
 # -------- VIEW ALL --------
 @bot.message_handler(commands=["mysave"])
 def view_notes(msg):
