@@ -2423,6 +2423,7 @@ def save_note(msg):
         conn.close()
 
 
+
 # ========= G_BUYD (ITEM ONLY | DEEP LINK → DM | PALMPAY) =========
 from psycopg2.extras import RealDictCursor
 import uuid
@@ -2447,10 +2448,9 @@ def generate_g_remark():
 
 # ===== COUNTDOWN TIMER FUNCTION =====
 def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, item_count, total, remark):
-    duration = 20 * 60  # Minti 20 an maida su sakan (1200 seconds)
+    duration = 20 * 60  # Minti 20 (1200 seconds)
     
     while duration > 0:
-        # Duba idan an riga an biya ko an soke order daga wani gurin kafin lokaci ya kare
         try:
             conn = get_conn()
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -2459,7 +2459,6 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
             cur.close()
             conn.close()
             
-            # Idan order ta riga ta zama paid ko an soke ta da maballin cancel, tsayar da countdown
             if order_status and order_status['status'] != 'pending':
                 return
         except:
@@ -2468,7 +2467,7 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
         time.sleep(1)
         duration -= 1
         
-        # Muna edit din sako duk bayan sakan 30 ne kawai don gudun Telegram Rate Limit (Hana bot din tsayawa)
+        # Edit din sako duk bayan sakan 30
         if duration % 30 == 0 and duration > 0:
             minutes = duration // 60
             seconds = duration % 60
@@ -2477,11 +2476,12 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
             
+            # ANAN MA NA CIRE CODE DAGA JIKIN SUNAYEN DOMIN KAR SU SAKE CANZAWA YA RADDI EDIT
             updated_text = (
                 f"📦 <b>ORDER CREATED</b>\n"
-                f"👤 <b>Customer:</b> <code>{user_name}</code>\n"
-                f"🎬 <b>Items ({item_count}):</b> <code>{', '.join(unique_titles)}</code>\n"
-                f"💵 <b>Total Amount:</b> <code>₦{total}</code>\n"
+                f"👤 <b>Customer:</b> {user_name}\n"
+                f"🎬 <b>Items ({item_count}):</b> {', '.join(unique_titles)}\n"
+                f"💵 <b>Total Amount:</b> ₦{total}\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"🏦 <b>TRANSFER DETAILS</b>\n"
                 f"🏛️ <b>Bank:</b> Palmpay\n"
@@ -2494,7 +2494,13 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
             )
             
             try:
-                bot.edit_message_text(updated_text, chat_id=uid, message_id=message_id, parse_mode="HTML", reply_markup=kb)
+                bot.edit_message_text(
+                    text=updated_text, 
+                    chat_id=uid, 
+                    message_id=message_id, 
+                    parse_mode="HTML", 
+                    reply_markup=kb
+                )
             except:
                 pass
 
@@ -2502,17 +2508,15 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
     try:
         conn = get_conn()
         cur = conn.cursor()
-        # Canza status din order a DB zuwa cancelled
         cur.execute("UPDATE g_orders SET status='cancelled' WHERE id=%s AND status='pending'", (order_id,))
         conn.commit()
         cur.close()
         conn.close()
         
-        # Edit din sakon Telegram zuwa soke order
         bot.edit_message_text(
-            f"❌ <b>An soke wannan order sakamakon rashin biya dawuri.</b>\n\n"
-            f"🎬 Film: <code>{', '.join(unique_titles)}</code>\n"
-            f"💰 Idan kana so zaka iya sake oda.",
+            text=f"❌ <b>An soke wannan order sakamakon rashin biya dawuri.</b>\n\n"
+                 f"🎬 Film: {', '.join(unique_titles)}\n"
+                 f"💰 Idan kana so zaka iya sake oda.",
             chat_id=uid,
             message_id=message_id,
             parse_mode="HTML"
@@ -2769,11 +2773,12 @@ def g_groupitem_deeplink_handler(msg):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
 
+    # ANAN MA NA CURE <CODE> DAGA JIKIN SUNAYEN MAI SIYA DA FIM
     message_text = (
         f"📦 <b>ORDER CREATED</b>\n"
-        f"👤 <b>Customer:</b> <code>{user_name}</code>\n"
-        f"🎬 <b>Items ({item_count}):</b> <code>{', '.join(unique_titles)}</code>\n"
-        f"💵 <b>Total Amount:</b> <code>₦{total}</code>\n"
+        f"👤 <b>Customer:</b> {user_name}\n"
+        f"🎬 <b>Items ({item_count}):</b> {', '.join(unique_titles)}\n"
+        f"💵 <b>Total Amount:</b> ₦{total}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"🏦 <b>TRANSFER DETAILS</b>\n"
         f"🏛️ <b>Bank:</b> Palmpay\n"
@@ -2802,13 +2807,11 @@ def g_groupitem_deeplink_handler(msg):
     conn.close()
 
     # ========= RUN COUNTDOWN IN BACKGROUND =========
-    # Muna kunna agogon lissafin a boye (Thread) domin karka tsayar da bot din ga sauran mutane
     threading.Thread(
         target=start_countdown, 
         args=(bot, uid, sent.message_id, order_id, user_name, unique_titles, item_count, total, remark),
         daemon=True
     ).start()
-
 
 
 # -------- VIEW ALL --------
