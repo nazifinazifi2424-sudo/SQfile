@@ -2133,7 +2133,127 @@ def customer_pagination(c):
     except:
         pass
 
+# ========= GMAIL TEST COMMAND =========
+import imaplib
+import email
+from email.header import decode_header
 
+@bot.message_handler(commands=['g'])
+def gmail_test(msg):
+
+    if msg.from_user.id != ADMIN_ID:
+        return
+
+    bot.reply_to(
+        msg,
+        "🔍 Checking Gmail..."
+    )
+
+    try:
+
+        # ===== LOGIN =====
+        mail = imaplib.IMAP4_SSL(
+            IMAP_SERVER,
+            IMAP_PORT
+        )
+
+        mail.login(
+            EMAIL_USER,
+            EMAIL_PASS
+        )
+
+        mail.select("inbox")
+
+        # ===== SEARCH =====
+        result, data = mail.search(
+            None,
+            "ALL"
+        )
+
+        mail_ids = data[0].split()
+
+        total = len(mail_ids)
+
+        latest_subject = "N/A"
+        latest_sender = "N/A"
+
+        if mail_ids:
+
+            latest_id = mail_ids[-1]
+
+            result, msg_data = mail.fetch(
+                latest_id,
+                "(RFC822)"
+            )
+
+            raw_email = msg_data[0][1]
+
+            em = email.message_from_bytes(
+                raw_email
+            )
+
+            latest_sender = em.get(
+                "From",
+                "Unknown"
+            )
+
+            subject = em.get(
+                "Subject",
+                ""
+            )
+
+            try:
+
+                decoded = decode_header(
+                    subject
+                )[0][0]
+
+                if isinstance(
+                    decoded,
+                    bytes
+                ):
+                    latest_subject = decoded.decode(
+                        errors="ignore"
+                    )
+                else:
+                    latest_subject = decoded
+
+            except:
+                latest_subject = subject
+
+        mail.logout()
+
+        bot.send_message(
+            msg.chat.id,
+            f"""✅ <b>GMAIL CONNECTED</b>
+
+📧 <b>Email:</b>
+<code>{EMAIL_USER}</code>
+
+📥 <b>Total Emails:</b>
+{total}
+
+👤 <b>Latest Sender:</b>
+{latest_sender}
+
+📝 <b>Latest Subject:</b>
+{latest_subject}
+
+✅ Gmail login successful.
+""",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+
+        bot.send_message(
+            msg.chat.id,
+            f"""❌ <b>GMAIL ERROR</b>
+
+<code>{str(e)}</code>
+""",
+            parse_mode="HTML"
+        )
 
 # ================= ADMIN SALLAH GIFT =================
 @bot.message_handler(commands=["sallah"])
