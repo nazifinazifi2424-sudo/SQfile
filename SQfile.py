@@ -743,7 +743,7 @@ ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
-ADMINS = [6210912739, 5009954635] 
+ADMINS = [8537505191, 5009954635] 
 
   # add more admin IDs here
 # ========= CONFIG =========
@@ -773,12 +773,12 @@ WARNING_2_UNIT = "days"
 WARNING_1_VALUE = 5  # Kwanakin da za a tura gargadi na farko
 WARNING_2_VALUE = 2  # Kwanakin da za a tura gargadi na karshe
 
-ADMIN_ID = 6210912739
-OTP_ADMIN_ID = 6603268127
+ADMIN_ID = 8537505191
+OTP_ADMIN_ID = 8537505191
 
 
-BOT_USERNAME = "Aslamtv2bot"
-CHANNEL = "@Aslammovieschannel"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+nWd53i86zJ0xOWU8"  # saka permanent group link naka
@@ -803,8 +803,8 @@ VIP_GROUP_ID = -1003142478702
 PAYMENT_NOTIFY_GROUP_WALLET = -1003733762941
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003553575069
-STORAGE_CHANNEL = -1003478646839
+PAYMENT_NOTIFY_GROUP = -1003769342354
+STORAGE_CHANNEL =  -1003794258511
 SEND_ADMIN_PAYMENT_NOTIF = False
 ADMIN_USERNAME = "Aslamtv1"
 
