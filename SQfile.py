@@ -8579,6 +8579,181 @@ def handle_callback(c):
 
 
 
+    from psycopg2.extras import RealDictCursor    
+    import uuid    
+
+    # ==================================================    
+    # CHECKOUT (CART)    
+    # ==================================================    
+    if data == "checkout":    
+
+        try:
+            bot.send_message(ADMIN_ID, f"🔍 CALLBACK DEBUG: Mutum {uid} ya danna button na checkout. An fara aiki...")
+        except:
+            pass
+
+        rows = get_cart(uid)    
+        if not rows:    
+            try: bot.send_message(ADMIN_ID, f"⚠️ CALLBACK DEBUG: get_cart({uid}) bai dawo da komai ba (Empty rows).")
+            except: pass
+            bot.answer_callback_query(c.id, "❌ Cart ɗinka babu komai.")    
+            return    
+
+        groups = {}    
+        total = 0    
+
+        for item_id, title, price, file_id, group_key in rows:    
+
+            if not file_id:    
+                try: bot.send_message(ADMIN_ID, f"⚠️ CALLBACK DEBUG: An samu item babu file_id (item_id: {item_id})")
+                except: pass
+                continue    
+
+            p = int(price or 0)    
+            if p <= 0:    
+                try: bot.send_message(ADMIN_ID, f"⚠️ CALLBACK DEBUG: An samu item farashi 0 ko kasa da haka (item_id: {item_id})")
+                except: pass
+                continue    
+
+            key = group_key if group_key else f"single_{item_id}"    
+
+            if key not in groups:    
+                groups[key] = {    
+                    "price": p,    
+                    "items": []    
+                }    
+
+            groups[key]["items"].append((item_id, title, file_id))    
+
+        if not groups:    
+            try: bot.send_message(ADMIN_ID, f"⚠️ CALLBACK DEBUG: Bayan tacewa, groups sun fito empty (Uid: {uid}).")
+            except: pass
+            bot.answer_callback_query(c.id, "❌ Babu item mai delivery a cart.")    
+            return    
+
+        for g in groups.values():    
+            total += g["price"]    
+
+        if total <= 0:    
+            try: bot.send_message(ADMIN_ID, f"⚠️ CALLBACK DEBUG: Total price ya zama 0 ko kasa da haka: {total}")
+            except: pass
+            bot.answer_callback_query(c.id, "❌ Farashi bai dace ba.")    
+            return    
+
+        order_id = str(uuid.uuid4())    
+
+        conn = None    
+        cur = None    
+
+        try:    
+            conn = get_conn()    
+            cur = conn.cursor(cursor_factory=RealDictCursor)    
+
+            cur.execute(    
+                "INSERT INTO orders (id,user_id,amount,paid) VALUES (%s,%s,%s,0)",    
+                (order_id, uid, total)    
+            )    
+
+            for g in groups.values():    
+                for item_id, title, file_id in g["items"]:    
+                    cur.execute(    
+                        """    
+                        INSERT INTO order_items    
+                        (order_id,item_id,file_id,price)    
+                        VALUES (%s,%s,%s,%s)    
+                        """,    
+                        (order_id, item_id, file_id, g["price"])    
+                    )    
+
+            conn.commit()    
+            try: bot.send_message(ADMIN_ID, f"⚡ CALLBACK DEBUG: DB commit anyi nasara! Order_ID: {order_id}")
+            except: pass
+
+        except Exception as db_err:    
+            if conn:    
+                conn.rollback()    
+            try: bot.send_message(ADMIN_ID, f"❌ CALLBACK DEBUG: Matsalar Database (DB Error): {str(db_err)}")
+            except: pass
+            bot.answer_callback_query(c.id, "❌ Checkout failed.")    
+            return    
+
+        finally:    
+            if cur:    
+                cur.close()    
+            if conn:    
+                conn.close()    
+
+        clear_cart(uid)    
+        try: bot.send_message(ADMIN_ID, f"🧹 CALLBACK DEBUG: An goge cart na user {uid}. Ana kokarin samar da payment link...")
+        except: pass
+
+        try:
+            pay_url = create_paystack_payment(uid, order_id, total, "Cart Order")    
+        except Exception as pay_err:
+            try: bot.send_message(ADMIN_ID, f"❌ CALLBACK DEBUG: Kuskure wajen kiran create_paystack_payment: {str(pay_err)}")
+            except: pass
+            pay_url = None
+
+        if not pay_url:    
+            try: bot.send_message(ADMIN_ID, f"❌ CALLBACK DEBUG: `pay_url` ya dawo da None ko fanko (API na Flutterwave/Paystack bai bada link ba).")
+            except: pass
+            return    
+
+        try:
+            kb = InlineKeyboardMarkup()    
+            kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))    
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))    
+            kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))    
+
+            first_name = c.from_user.first_name or ""    
+            last_name = c.from_user.last_name or ""    
+            full_name = f"{first_name} {last_name}".strip()    
+
+            first_title = None    
+            for g in groups.values():    
+                if g["items"]:    
+                    first_title = g["items"][0][1]    
+                    break    
+
+            item_count = sum(len(g["items"]) for g in groups.values())    
+
+            msg_text = f"""🧾 <b>Order Created</b>    
+👤 Name: {full_name}
+🎬 You will buy this film
+
+🎥 {first_title}
+📦 Films: {item_count}
+
+💵 Total: ₦{total}
+🆔 Order ID:
+{order_id}
+Danna Pay now domin biya 👇👇
+
+"""
+            try: bot.send_message(ADMIN_ID, f"🚀 CALLBACK DEBUG: An hada rubutun saqo lafiya. Ana kokarin tura saƙon karshe zuwa ga User ta Telegram...")
+            except: pass
+
+            msg = bot.send_message(    
+                uid,    
+                msg_text,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+            
+            # ✅ SAVE MESSAGE ID  
+            ORDER_MESSAGES[order_id] = (msg.chat.id, msg.message_id)  
+            
+            try: bot.send_message(ADMIN_ID, f"✅ CALLBACK DEBUG: SUCCESS! Bot ya tura saƙon order zuwa ga user lafiya lau.")
+            except: pass
+
+        except Exception as tg_err:
+            try: bot.send_message(ADMIN_ID, f"❌ CALLBACK DEBUG: Kuskure daga Telegram wajen gina/tura saƙo (TG Error): {str(tg_err)}")
+            except: pass
+            return
+
+        bot.answer_callback_query(c.id)    
+        return
+
     # =====================
     # VIEW CART
     # =====================
