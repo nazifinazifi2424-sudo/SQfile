@@ -2132,9 +2132,11 @@ def customer_pagination(c):
     except:
         pass
 
+
 # ========= GMAIL TEST COMMAND =========
 import imaplib
 import email
+import html  # Mun shigo da wannan don gyara matsalar alamomin < da >
 from email.header import decode_header
 
 @bot.message_handler(commands=['g'])
@@ -2222,6 +2224,11 @@ def gmail_test(msg):
 
         mail.logout()
 
+        # ===== GYARAN PARSING ERROR NA TELEGRAM =====
+        # Wannan sashen yana canza < da > su dawo text na gaskiya domin Telegram ya karanta su
+        safe_sender = html.escape(str(latest_sender))
+        safe_subject = html.escape(str(latest_subject))
+
         bot.send_message(
             msg.chat.id,
             f"""✅ <b>GMAIL CONNECTED</b>
@@ -2233,10 +2240,10 @@ def gmail_test(msg):
 {total}
 
 👤 <b>Latest Sender:</b>
-{latest_sender}
+{safe_sender}
 
 📝 <b>Latest Subject:</b>
-{latest_subject}
+{safe_subject}
 
 ✅ Gmail login successful.
 """,
@@ -2249,10 +2256,12 @@ def gmail_test(msg):
             msg.chat.id,
             f"""❌ <b>GMAIL ERROR</b>
 
-<code>{str(e)}</code>
+<code>{html.escape(str(e))}</code>
 """,
             parse_mode="HTML"
         )
+
+
 
 # ================= ADMIN SALLAH GIFT =================
 @bot.message_handler(commands=["sallah"])
