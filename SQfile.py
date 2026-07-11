@@ -847,7 +847,7 @@ WARNING_1_VALUE = 5  # Misali: Kwana 5 kafin expire
 WARNING_2_VALUE = 2  # Misali: Kwana 2 kafin expire
 
 EMAIL_USER = "nazifinazifi222@gmail.com"
-EMAIL_PASS = "mfbsqknnttfourf"
+EMAIL_PASS = "ekhfnhzjdkpbqxeo"
 IMAP_SERVER = "imap.gmail.com"
 IMAP_PORT = 993
 
