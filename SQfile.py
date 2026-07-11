@@ -2560,6 +2560,10 @@ import random
 import string
 import time
 import threading
+import html
+import imaplib
+import email
+from email.header import decode_header
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== MESSAGE MEMORY =====
@@ -2577,7 +2581,7 @@ def generate_g_remark():
 # ===== COUNTDOWN TIMER FUNCTION =====
 def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, item_count, total, remark):
     duration = 20 * 60  # Minti 20 (1200 seconds)
-    
+
     while duration > 0:
         try:
             conn = get_conn()
@@ -2586,7 +2590,7 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
             order_status = cur.fetchone()
             cur.close()
             conn.close()
-            
+
             if order_status and order_status['status'] != 'pending':
                 return
         except:
@@ -2594,21 +2598,20 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
 
         time.sleep(1)
         duration -= 1
-        
+
         # Edit din sako duk bayan sakan 30
         if duration % 30 == 0 and duration > 0:
             minutes = duration // 60
             seconds = duration % 60
             time_text = f"{minutes:02d}:{seconds:02d} remaining"
-            
+
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
-            
-            # ANAN MA NA CIRE CODE DAGA JIKIN SUNAYEN DOMIN KAR SU SAKE CANZAWA YA RADDI EDIT
+
             updated_text = (
                 f"📦 <b>ORDER CREATED</b>\n"
-                f"👤 <b>Customer:</b> {user_name}\n"
-                f"🎬 <b>Items ({item_count}):</b> {', '.join(unique_titles)}\n"
+                f"👤 <b>Customer:</b> {html.escape(str(user_name))}\n"
+                f"🎬 <b>Items ({item_count}):</b> {html.escape(', '.join(unique_titles))}\n"
                 f"💵 <b>Total Amount:</b> ₦{total}\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"🏦 <b>TRANSFER DETAILS</b>\n"
@@ -2620,7 +2623,7 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
                 f"⚠️ <b>Tabbatar ka saka remark lokacin tura kudi wannan dole ne!</b>\n\n"
                 f"⏳ <b>{time_text}</b>"
             )
-            
+
             try:
                 bot.edit_message_text(
                     text=updated_text, 
@@ -2640,10 +2643,10 @@ def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, it
         conn.commit()
         cur.close()
         conn.close()
-        
+
         bot.edit_message_text(
             text=f"❌ <b>An soke wannan order sakamakon rashin biya dawuri.</b>\n\n"
-                 f"🎬 Film: {', '.join(unique_titles)}\n"
+                 f"🎬 Film: {html.escape(', '.join(unique_titles))}\n"
                  f"💰 Idan kana so zaka iya sake oda.",
             chat_id=uid,
             message_id=message_id,
@@ -2659,7 +2662,6 @@ def g_groupitem_deeplink_handler(msg):
     uid = msg.from_user.id
     user_name = msg.from_user.first_name or "Customer"
 
-    # ========= PARSE ITEM IDS + GROUP KEYS =========
     try:
         raw = msg.text.split("groupitem_", 1)[1]
         tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
@@ -2674,25 +2676,16 @@ def g_groupitem_deeplink_handler(msg):
         return
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
-
     item_ids = []
 
     try:
         for token in tokens:
-
-            # ===== ID =====
             if token.isdigit():
                 item_ids.append(int(token))
-
-            # ===== GROUP KEY =====
             else:
-                cur.execute(
-                    "SELECT id FROM items WHERE group_key=%s",
-                    (token,)
-                )
+                cur.execute("SELECT id FROM items WHERE group_key=%s", (token,))
                 rows = cur.fetchall()
                 item_ids.extend([r["id"] for r in rows])
-
     except:
         cur.close()
         conn.close()
@@ -2703,10 +2696,8 @@ def g_groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= FETCH ITEMS =========
     try:
         placeholders = ",".join(["%s"] * len(item_ids))
-
         cur.execute(
             f"""
             SELECT id,title,price,file_id,group_key
@@ -2715,9 +2706,7 @@ def g_groupitem_deeplink_handler(msg):
             """,
             tuple(item_ids)
         )
-
         items = cur.fetchall()
-
     except:
         cur.close()
         conn.close()
@@ -2728,9 +2717,7 @@ def g_groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= FILE REQUIRED =========
     items = [i for i in items if i.get("file_id")]
-
     if not items:
         cur.close()
         conn.close()
@@ -2738,7 +2725,6 @@ def g_groupitem_deeplink_handler(msg):
 
     item_ids_clean = [i["id"] for i in items]
 
-    # ========= OWNERSHIP CHECK =========
     try:
         cur.execute(
             f"""
@@ -2748,42 +2734,25 @@ def g_groupitem_deeplink_handler(msg):
             AND item_id IN ({",".join(["%s"]*len(item_ids_clean))})
             LIMIT 1
             """,
-            (uid,*item_ids_clean)
+            (uid, *item_ids_clean)
         )
-
         owned = cur.fetchone()
-
     except:
         cur.close()
         conn.close()
         return
 
     if owned:
-
         kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "📽 PAID MOVIES",
-                callback_data="my_movies"
-            )
-        )
-
-        bot.send_message(
-            uid,
-            "✅ You already purchased this movie.",
-            reply_markup=kb
-        )
-
+        kb.add(InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies"))
+        bot.send_message(uid, "✅ You already purchased this movie.", reply_markup=kb)
         cur.close()
         conn.close()
         return
 
-    # ========= GROUP KEY PRICE =========
     groups = {}
-
     for i in items:
         key = i["group_key"] or f"single_{i['id']}"
-
         if key not in groups:
             groups[key] = int(i["price"] or 0)
 
@@ -2795,7 +2764,6 @@ def g_groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= UNIQUE TITLES =========
     unique_titles = [
         i["title"]
         for _, i in {
@@ -2804,9 +2772,7 @@ def g_groupitem_deeplink_handler(msg):
         }.items()
     ]
 
-    # ========= REUSE / CREATE =========
     try:
-
         cur.execute(
             f"""
             SELECT g.id
@@ -2820,92 +2786,56 @@ def g_groupitem_deeplink_handler(msg):
             HAVING COUNT(DISTINCT gi.item_id)=%s
             LIMIT 1
             """,
-            (uid,*item_ids_clean,len(item_ids_clean))
+            (uid, *item_ids_clean, len(item_ids_clean))
         )
-
         row = cur.fetchone()
-
     except:
         cur.close()
         conn.close()
         return
 
     if row:
-
         order_id = row["id"]
-
-        cur.execute(
-            "SELECT remark FROM g_orders WHERE id=%s",
-            (order_id,)
-        )
-
+        cur.execute("SELECT remark FROM g_orders WHERE id=%s", (order_id,))
         remark = cur.fetchone()["remark"]
-
     else:
-
         order_id = str(uuid.uuid4())
-
         while True:
-
             remark = generate_g_remark()
-
-            cur.execute(
-                "SELECT 1 FROM g_orders WHERE remark=%s",
-                (remark,)
-            )
-
+            cur.execute("SELECT 1 FROM g_orders WHERE remark=%s", (remark,))
             if not cur.fetchone():
                 break
 
         try:
-
             cur.execute(
                 """
-                INSERT INTO g_orders
-                (id,user_id,amount,paid,remark,status)
+                INSERT INTO g_orders (id,user_id,amount,paid,remark,status)
                 VALUES (%s,%s,%s,0,%s,'pending')
                 """,
-                (
-                    order_id,
-                    uid,
-                    total,
-                    remark
-                )
+                (order_id, uid, total, remark)
             )
-
             for i in items:
-
                 cur.execute(
                     """
-                    INSERT INTO g_order_items
-                    (order_id,item_id,file_id,price)
+                    INSERT INTO g_order_items (order_id,item_id,file_id,price)
                     VALUES (%s,%s,%s,%s)
                     """,
-                    (
-                        order_id,
-                        i["id"],
-                        i["file_id"],
-                        int(i["price"] or 0)
-                    )
+                    (order_id, i["id"], i["file_id"], int(i["price"] or 0))
                 )
-
             conn.commit()
-
         except:
             conn.rollback()
             cur.close()
             conn.close()
             return
 
-    # ========= PRO COMPACT FINAL MESSAGE =========
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
 
-    # ANAN MA NA CURE <CODE> DAGA JIKIN SUNAYEN MAI SIYA DA FIM
     message_text = (
         f"📦 <b>ORDER CREATED</b>\n"
-        f"👤 <b>Customer:</b> {user_name}\n"
-        f"🎬 <b>Items ({item_count}):</b> {', '.join(unique_titles)}\n"
+        f"👤 <b>Customer:</b> {html.escape(str(user_name))}\n"
+        f"🎬 <b>Items ({item_count}):</b> {html.escape(', '.join(unique_titles))}\n"
         f"💵 <b>Total Amount:</b> ₦{total}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"🏦 <b>TRANSFER DETAILS</b>\n"
@@ -2918,23 +2848,12 @@ def g_groupitem_deeplink_handler(msg):
         f"⏳ <b>20:00 remaining</b>"
     )
 
-    sent = bot.send_message(
-        uid,
-        message_text,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-    # ========= MEMORY =========
-    G_ORDER_MESSAGES[order_id] = (
-        sent.chat.id,
-        sent.message_id
-    )
+    sent = bot.send_message(uid, message_text, parse_mode="HTML", reply_markup=kb)
+    G_ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
 
     cur.close()
     conn.close()
 
-    # ========= RUN COUNTDOWN IN BACKGROUND =========
     threading.Thread(
         target=start_countdown, 
         args=(bot, uid, sent.message_id, order_id, user_name, unique_titles, item_count, total, remark),
@@ -2943,36 +2862,22 @@ def g_groupitem_deeplink_handler(msg):
 
 
 # ========= GMAIL CHECKER (G_ORDERS | PALMPAY) =========
-import imaplib
-import email
-import re
-import time
-import threading
-from email.header import decode_header
-
 GMAIL_CHECKER_RUNNING = False
 
 def start_gmail_checker():
-
     global GMAIL_CHECKER_RUNNING
-
     if GMAIL_CHECKER_RUNNING:
         return
 
     GMAIL_CHECKER_RUNNING = True
 
     def checker_loop():
-
         global GMAIL_CHECKER_RUNNING
 
         while True:
-
             try:
-
-                # ===== CHECK PENDING ORDERS =====
                 conn = get_conn()
                 cur = conn.cursor()
-
                 cur.execute("""
                     SELECT id, user_id, remark, amount
                     FROM g_orders
@@ -2981,22 +2886,11 @@ def start_gmail_checker():
                     AND created_at >= NOW() - INTERVAL '20 minutes'
                     LIMIT 1
                 """)
-
                 pending = cur.fetchone()
 
                 if not pending:
-
                     cur.close()
                     conn.close()
-
-                    try:
-                        bot.send_message(
-                            ADMIN_ID,
-                            "📭 No pending G_orders.\nGmail checker sleeping."
-                        )
-                    except:
-                        pass
-
                     GMAIL_CHECKER_RUNNING = False
                     return
 
@@ -3005,370 +2899,172 @@ def start_gmail_checker():
 
                 # ===== LOGIN GMAIL =====
                 try:
-
-                    mail = imaplib.IMAP4_SSL(
-                        IMAP_SERVER,
-                        IMAP_PORT
-                    )
-
-                    mail.login(
-                        EMAIL_USER,
-                        EMAIL_PASS
-                    )
-
+                    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+                    mail.login(EMAIL_USER, EMAIL_PASS)
                     mail.select("inbox")
-
                 except Exception as e:
-
-                    retry = 60
-
                     print("GMAIL LOGIN ERROR:", e)
-
-                    try:
-                        bot.send_message(
-                            ADMIN_ID,
-                            f"""⚠️ GMAIL LOGIN ERROR
-
-<code>{str(e)}</code>
-
-Checker bai tsaya ba.
-
-Retry:
-{retry} sec
-""",
-                            parse_mode="HTML"
-                        )
-                    except:
-                        pass
-
-                    time.sleep(retry)
+                    time.sleep(30)
                     continue
 
-                # ===== SEARCH EMAIL =====
-                result, data = mail.search(
-                    None,
-                    "UNSEEN"
-                )
-
+                # ===== GYARA 1: Duba duka sakonni (ALL) domin ko ka bude imel din a wayarka bot ya gani =====
+                result, data = mail.search(None, "ALL")
                 mail_ids = data[0].split()
 
-                try:
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"📩 Gmail checker active\nUnread mails: {len(mail_ids)}"
-                    )
-                except:
-                    pass
-
-                for num in reversed(mail_ids):
-
+                # Mu duba sakonni 15 na karshe kawai domin gudun jinkiri
+                for num in reversed(mail_ids[-15:]):
                     try:
-
-                        result, msg_data = mail.fetch(
-                            num,
-                            "(RFC822)"
-                        )
-
+                        result, msg_data = mail.fetch(num, "(RFC822)")
                         raw_email = msg_data[0][1]
+                        msg = email.message_from_bytes(raw_email)
+                        email_uid = str(num.decode())
 
-                        msg = email.message_from_bytes(
-                            raw_email
-                        )
-
-                        email_uid = str(
-                            num.decode()
-                        )
-
-                        # ===== DUPLICATE BLOCK =====
+                        # ===== DUPLICATE CHECK =====
                         conn = get_conn()
                         cur = conn.cursor()
-
-                        cur.execute(
-                            """
-                            SELECT 1
-                            FROM g_email_logs
-                            WHERE email_uid=%s
-                            """,
-                            (email_uid,)
-                        )
-
+                        cur.execute("SELECT 1 FROM g_email_logs WHERE email_uid=%s", (email_uid,))
                         if cur.fetchone():
-
                             cur.close()
                             conn.close()
                             continue
 
-                        sender = msg.get(
-                            "From",
-                            ""
-                        )
-
-                        subject = msg.get(
-                            "Subject",
-                            ""
-                        )
-
+                        sender = msg.get("From", "")
+                        subject = msg.get("Subject", "")
                         decoded_subject = ""
-
                         try:
-
-                            decoded_subject = decode_header(
-                                subject
-                            )[0][0]
-
-                            if isinstance(
-                                decoded_subject,
-                                bytes
-                            ):
-                                decoded_subject = decoded_subject.decode()
-
+                            decoded = decode_header(subject)[0][0]
+                            if isinstance(decoded, bytes):
+                                decoded_subject = decoded.decode(errors="ignore")
+                            else:
+                                decoded_subject = decoded
                         except:
                             decoded_subject = subject
 
-                        # ===== BODY =====
+                        # ===== GET BODY =====
                         body = ""
-
                         if msg.is_multipart():
-
                             for part in msg.walk():
-
-                                ctype = part.get_content_type()
-
-                                if ctype == "text/plain":
-
+                                if part.get_content_type() == "text/plain":
                                     try:
-                                        body += part.get_payload(
-                                            decode=True
-                                        ).decode(
-                                            errors="ignore"
-                                        )
+                                        body += part.get_payload(decode=True).decode(errors="ignore")
                                     except:
                                         pass
                         else:
                             try:
-                                body = msg.get_payload(
-                                    decode=True
-                                ).decode(
-                                    errors="ignore"
-                                )
+                                body = msg.get_payload(decode=True).decode(errors="ignore")
                             except:
                                 pass
 
-                        full_text = (
-                            decoded_subject
-                            + "\n" +
-                            body
-                        )
+                        full_text = decoded_subject + "\n" + body
 
-                        # ===== FIND ORDER MATCH =====
+                        # ===== FIND PENDING ORDERS AGAIN =====
                         cur.execute("""
-                            SELECT
-                            id,
-                            user_id,
-                            amount,
-                            remark
+                            SELECT id, user_id, amount, remark
                             FROM g_orders
                             WHERE paid=0
                             AND status='pending'
                         """)
-
                         orders = cur.fetchall()
-
                         matched = None
 
                         for o in orders:
+                            order_id, user_id, expected_amount, remark = o
 
-                            order_id = o[0]
-                            user_id = o[1]
-                            expected_amount = o[2]
-                            remark = o[3]
-
+                            # 1. Tabbatar Remark din yana cikin imel din tukunna
                             if remark and remark in full_text:
-
-                                amount_match = re.search(
-                                    r'₦?([\d,]+)',
-                                    full_text
-                                )
+                                # ===== GYARA 2: Regex mafi inganci domin kwashe kudi bayan alamar N ko kalmar Amount =====
+                                amount_match = re.search(r'(?:Amount|💸|₦)\s*:?\s*₦?\s*([\d,]+(?:\.\d+)?)', full_text, re.IGNORECASE)
+                                if not amount_match:
+                                    amount_match = re.search(r'₦\s*([\d,]+Resource(?:\.\d+)?)', full_text)
 
                                 paid_amount = 0
-
                                 if amount_match:
-
                                     try:
-                                        paid_amount = int(
-                                            amount_match.group(1)
-                                            .replace(",", "")
-                                        )
+                                        # Dauko kudin kuma cire commas ko decimals idan suna da kwabo (e.g 9.88 -> 9)
+                                        raw_amt = amount_match.group(1).replace(",", "")
+                                        paid_amount = int(float(raw_amt))
                                     except:
                                         paid_amount = 0
 
-                                if paid_amount >= expected_amount:
-
-                                    matched = (
-                                        order_id,
-                                        user_id,
-                                        expected_amount,
-                                        remark
-                                    )
+                                # 2. An yi amfani da duka hanyoyin biyu a nan:
+                                # - Idan paid_amount ya yi daidai ko ya dara expected_amount
+                                # - KO KUMA idan tazarar da banki suka cire (expected_amount - paid_amount) ba ta wuce ₦5 ba
+                                if paid_amount >= expected_amount or (expected_amount - paid_amount) <= 5:
+                                    matched = (order_id, user_id, expected_amount, remark)
                                     break
 
                         # ===== SAVE EMAIL LOG =====
                         cur.execute("""
-                            INSERT INTO g_email_logs
-                            (
-                                email_uid,
-                                sender,
-                                subject,
-                                processed
-                            )
-                            VALUES
-                            (%s,%s,%s,FALSE)
-                            ON CONFLICT
-                            (email_uid)
-                            DO NOTHING
-                        """,
-                        (
-                            email_uid,
-                            sender,
-                            decoded_subject
-                        ))
-
+                            INSERT INTO g_email_logs (email_uid, sender, subject, processed)
+                            VALUES (%s, %s, %s, FALSE)
+                            ON CONFLICT (email_uid) DO NOTHING
+                        """, (email_uid, sender, decoded_subject))
                         conn.commit()
 
                         if not matched:
-
                             cur.close()
                             conn.close()
                             continue
 
-                        order_id,user_id,amount,remark = matched
+                        order_id, user_id, amount, remark = matched
 
                         # ===== MARK ORDER PAID =====
                         cur.execute("""
                             UPDATE g_orders
-                            SET
-                            paid=1,
-                            status='success',
-                            paid_at=NOW()
+                            SET paid=1, status='success', paid_at=NOW()
                             WHERE id=%s
-                        """,
-                        (
-                            order_id,
-                        ))
+                        """, (order_id,))
 
                         # ===== UPDATE EMAIL LOG =====
                         cur.execute("""
                             UPDATE g_email_logs
-                            SET
-                            processed=TRUE,
-                            remark=%s,
-                            amount=%s
+                            SET processed=TRUE, remark=%s, amount=%s
                             WHERE email_uid=%s
-                        """,
-                        (
-                            remark,
-                            amount,
-                            email_uid
-                        ))
-
+                        """, (remark, amount, email_uid))
                         conn.commit()
 
-                        # ===== GET TITLES =====
+                        # ===== GET FILM TITLES =====
                         cur.execute("""
-                            SELECT
-                            i.title,
-                            i.group_key
+                            SELECT i.title, i.group_key
                             FROM g_order_items gi
-                            JOIN items i
-                            ON i.id=gi.item_id
+                            JOIN items i ON i.id=gi.item_id
                             WHERE gi.order_id=%s
-                        """,
-                        (
-                            order_id,
-                        ))
-
+                        """, (order_id,))
                         rows = cur.fetchall()
 
                         groups = {}
-
-                        for title,group_key in rows:
-
+                        for title, group_key in rows:
                             key = group_key or title
-
                             if key not in groups:
                                 groups[key] = title
 
-                        titles_text = ", ".join(
-                            groups.values()
-                        )
+                        titles_text = ", ".join(groups.values())
 
                         # ===== DELETE OLD PAYMENT MSG =====
                         if order_id in G_ORDER_MESSAGES:
-
-                            chat_id,message_id = (
-                                G_ORDER_MESSAGES[
-                                    order_id
-                                ]
-                            )
-
+                            chat_id, message_id = G_ORDER_MESSAGES[order_id]
                             try:
-                                bot.delete_message(
-                                    chat_id,
-                                    message_id
-                                )
+                                bot.delete_message(chat_id, message_id)
                             except:
                                 pass
+                            del G_ORDER_MESSAGES[order_id]
 
-                            del G_ORDER_MESSAGES[
-                                order_id
-                            ]
-
-                        # ===== SUCCESS UI =====
+                        # ===== SUCCESS UI FOR CUSTOMER =====
                         kb = InlineKeyboardMarkup()
-
-                        kb.add(
-                            InlineKeyboardButton(
-                                "⬇️ DOWNLOAD NOW",
-                                callback_data=f"g_deliver:{order_id}"
-                            )
-                        )
+                        kb.add(InlineKeyboardButton("⬇️ DOWNLOAD NOW", callback_data=f"g_deliver:{order_id}"))
 
                         bot.send_message(
                             user_id,
-                            f"""🎉 <b>PAYMENT SUCCESSFUL</b>
-
-🎬 <b>Items:</b>
-{titles_text}
-
-🗃 <b>Order ID:</b>
-<code>{order_id}</code>
-
-💰 <b>Amount Paid:</b>
-₦{amount}
-
-⬇️ Click button below to download.
-""",
+                            f"""🎉 <b>PAYMENT SUCCESSFUL</b>\n\n🎬 <b>Items:</b>\n{html.escape(titles_text)}\n\n🗃 <b>Order ID:</b>\n<code>{order_id}</code>\n\n💰 <b>Amount Paid:</b>\n₦{amount}\n\n⬇️ Click button below to download.""",
                             parse_mode="HTML",
                             reply_markup=kb
                         )
 
+                        # ===== NOTIFY ADMIN =====
                         try:
                             bot.send_message(
                                 ADMIN_ID,
-                                f"""✅ G_PAYMENT SUCCESS
-
-User:
-<code>{user_id}</code>
-
-Order:
-<code>{order_id}</code>
-
-Amount:
-₦{amount}
-
-Remark:
-<code>{remark}</code>
-""",
+                                f"✅ G_PAYMENT SUCCESS\n\nUser: <code>{user_id}</code>\nOrder: <code>{order_id}</code>\nAmount: ₦{amount}\nRemark: <code>{remark}</code>",
                                 parse_mode="HTML"
                             )
                         except:
@@ -3378,120 +3074,22 @@ Remark:
                         conn.close()
 
                     except Exception as e:
-
-                        print(
-                            "EMAIL PROCESS ERROR:",
-                            e
-                        )
-
-                        try:
-                            bot.send_message(
-                                ADMIN_ID,
-                                f"""⚠️ EMAIL PROCESS ERROR
-
-<code>{str(e)}</code>
-""",
-                                parse_mode="HTML"
-                            )
-                        except:
-                            pass
-
+                        print("EMAIL PROCESS ERROR:", e)
                         continue
 
                 mail.logout()
 
-            except imaplib.IMAP4.abort as e:
-
-                retry = 60
-
-                print(
-                    "GMAIL ABORT:",
-                    e
-                )
-
-                try:
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"""⚠️ GMAIL TEMP ERROR
-
-Temporary Gmail issue.
-
-<code>{str(e)}</code>
-
-Waiting:
-{retry} sec
-""",
-                        parse_mode="HTML"
-                    )
-                except:
-                    pass
-
-                time.sleep(retry)
-                continue
-
-            except imaplib.IMAP4.error as e:
-
-                retry = 60
-
-                print(
-                    "GMAIL IMAP ERROR:",
-                    e
-                )
-
-                try:
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"""⚠️ GMAIL IMAP ERROR
-
-<code>{str(e)}</code>
-
-Retry:
-{retry} sec
-""",
-                        parse_mode="HTML"
-                    )
-                except:
-                    pass
-
-                time.sleep(retry)
-                continue
-
             except Exception as e:
-
-                retry = 30
-
-                print(
-                    "GMAIL CHECKER ERROR:",
-                    e
-                )
-
-                try:
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"""⚠️ GMAIL CHECKER ERROR
-
-<code>{str(e)}</code>
-
-Checker alive.
-
-Retry:
-{retry} sec
-""",
-                        parse_mode="HTML"
-                    )
-                except:
-                    pass
-
-                time.sleep(retry)
+                print("GMAIL CHECKER ERROR:", e)
+                time.sleep(10)
                 continue
 
-            # ===== NORMAL CHECK =====
-            time.sleep(2)
+            time.sleep(3)
 
-    threading.Thread(
-        target=checker_loop,
-        daemon=True
-    ).start()
+    threading.Thread(target=checker_loop, daemon=True).start()
+
+
+
 
 
 # -------- VIEW ALL --------
