@@ -2999,7 +2999,11 @@ def g_groupitem_deeplink_handler(msg):
     start_gmail_checker()
 
 
-# ========= GMAIL CHECKER (INTEGRATED WITH RATE-LIMIT & PLAIN TEXT PROTECTION) =========
+
+# ========= GMAIL CHECKER (PALMPAY HTML PARSER & REMARK FIX) =========
+import html
+from bs4 import BeautifulSoup  # Tabbatar ka yi: pip install beautifulsoup4
+
 GMAIL_CHECKER_RUNNING = False
 
 def start_gmail_checker():
@@ -3012,9 +3016,8 @@ def start_gmail_checker():
     def checker_loop():
         global GMAIL_CHECKER_RUNNING
         
-        # Sanar da Admin a ɓoye cewa Gmail Engine ya taɗa aiki
         try:
-            bot.send_message(ADMIN_ID, "⚙️ <b>Gmail Checker Background Engine:</b> An kunna tsarin duba sakonni ta atomatik...", parse_mode="HTML")
+            bot.send_message(ADMIN_ID, "⚙️ <b>Gmail Checker:</b> An kunna tsarin duba sakonni ta atomatik...", parse_mode="HTML")
         except:
             pass
 
@@ -3032,24 +3035,16 @@ def start_gmail_checker():
                 """)
                 pending = cur.fetchone()
 
-                # Idan babu sauran wata pending order a Database, kashe engine din
                 if not pending:
                     cur.close()
                     conn.close()
                     GMAIL_CHECKER_RUNNING = False
                     try:
-                        bot.send_message(ADMIN_ID, "💤 <b>Gmail Checker Background Engine:</b> An kashe tsarin tunda babu wata oda da ake jira.")
+                        bot.send_message(ADMIN_ID, "💤 <b>Gmail Checker:</b> An kashe tsarin tunda babu oda.")
                     except:
                         pass
                     return
                 
-                # Sanya kari na sanarwa ga User da ke jiran biya don tabbatar da bot din yana aiki cif-cif
-                target_user = pending[1]
-                try:
-                    bot.send_message(target_user, "🔄 <i>Ina jiran samun sakon biyanka daga banki... Zan rika duba Gmail duk bayan sakan 20. Do not panic!</i>", parse_mode="HTML")
-                except:
-                    pass
-
                 cur.close()
                 conn.close()
 
@@ -3060,14 +3055,13 @@ def start_gmail_checker():
                     mail.select("inbox")
                 except Exception as e:
                     print("GMAIL LOGIN ERROR:", e)
-                    time.sleep(30)
+                    time.sleep(20)
                     continue
 
-                # Binciko duka sakonni (ALL)
                 result, data = mail.search(None, "ALL")
                 mail_ids = data[0].split()
 
-                # Duba sakonni 15 na karshe domin tseratar da lokaci da kuma Network
+                # Duba sakonni 15 na karshe
                 for num in reversed(mail_ids[-15:]):
                     try:
                         result, msg_data = mail.fetch(num, "(RFC822)")
@@ -3096,24 +3090,38 @@ def start_gmail_checker():
                         except:
                             decoded_subject = subject
 
-                        # ===== DAUKO AINIHIN RUBUTUN EMAIL (BODY) =====
-                        body = ""
+                        # ===== ZAKULO RUBUTU DAGA HTML KO PLAIN TEXT =====
+                        body_content = ""
                         if msg.is_multipart():
                             for part in msg.walk():
-                                if part.get_content_type() == "text/plain":
+                                content_type = part.get_content_type()
+                                # Idan sako ne na HTML (Kamar na Palmpay) ko Plain Text, a dauko shi
+                                if content_type in ["text/plain", "text/html"]:
                                     try:
-                                        body += part.get_payload(decode=True).decode(errors="ignore")
+                                        raw_payload = part.get_payload(decode=True).decode(errors="ignore")
+                                        if content_type == "text/html":
+                                            # Wanke lambobin HTML da BeautifulSoup don ya zama plain text
+                                            soup = BeautifulSoup(raw_payload, "html.parser")
+                                            body_content += "\n" + soup.get_text(separator=" ")
+                                        else:
+                                            body_content += "\n" + raw_payload
                                     except:
                                         pass
                         else:
+                            content_type = msg.get_content_type()
                             try:
-                                body = msg.get_payload(decode=True).decode(errors="ignore")
+                                raw_payload = msg.get_payload(decode=True).decode(errors="ignore")
+                                if content_type == "text/html":
+                                    soup = BeautifulSoup(raw_payload, "html.parser")
+                                    body_content = soup.get_text(separator=" ")
+                                else:
+                                    body_content = raw_payload
                             except:
                                 pass
 
-                        full_text = decoded_subject + "\n" + body
+                        full_text = decoded_subject + "\n" + body_content
 
-                        # ===== DUBA ZUWA PENDING ORDERS =====
+                        # ===== DUBA PENDING ORDERS DAGA DATABASE =====
                         cur.execute("""
                             SELECT id, user_id, amount, remark
                             FROM g_orders
@@ -3126,12 +3134,13 @@ def start_gmail_checker():
                         for o in orders:
                             order_id, user_id, expected_amount, remark = o
 
-                            # 1. Duba ko Remark na cikin full_text (Kamar yadda aka gyara gurin plain text don magance parse errors)
-                            if remark and remark.strip() in full_text:
-                                # 2. Hada Regex na kwashe adadin kudi da muke amfani dashi
-                                amount_match = re.search(r'(?:Amount|💸|₦)\s*:?\s*₦?\s*([\d,]+(?:\.\d+)?)', full_text, re.IGNORECASE)
+                            # Gwada kowanne Remark da manyan bakake da kanana domin tsaro (.upper())
+                            if remark and remark.strip().upper() in full_text.upper():
+                                
+                                # Regex na musamman don Palmpay: NGN 99.70 ko ₦99.70 ko Amount: 99
+                                amount_match = re.search(r'(?:Amount|Received Amount|NGN|₦)\s*:?\s*₦?\s*([\d,]+(?:\.\d+)?)', full_text, re.IGNORECASE)
                                 if not amount_match:
-                                    amount_match = re.search(r'₦\s*([\d,]+(?:\.\d+)?)', full_text)
+                                    amount_match = re.search(r'([\d,]+(?:\.\d+)?)\s*(?:NGN|Naira)', full_text, re.IGNORECASE)
 
                                 paid_amount = 0
                                 if amount_match:
@@ -3141,7 +3150,7 @@ def start_gmail_checker():
                                     except:
                                         paid_amount = 0
 
-                                # Karbar kudin idan yayi daidai ko idan an sami matsalar ₦5 na charge
+                                # Tabbatar da biyan kudi idan ya yi daidai da farashin fim
                                 if paid_amount >= expected_amount or (expected_amount - paid_amount) <= 5:
                                     matched = (order_id, user_id, expected_amount, remark)
                                     break
@@ -3168,7 +3177,6 @@ def start_gmail_checker():
                             WHERE id=%s
                         """, (order_id,))
 
-                        # ===== UPDATE EMAIL LOG STATUS =====
                         cur.execute("""
                             UPDATE g_email_logs
                             SET processed=TRUE, remark=%s, amount=%s
@@ -3176,7 +3184,7 @@ def start_gmail_checker():
                         """, (remark, amount, email_uid))
                         conn.commit()
 
-                        # ===== DAUKO FILMS DIN ODA =====
+                        # ===== DAUKO FINA-FINAI =====
                         cur.execute("""
                             SELECT i.title, i.group_key
                             FROM g_order_items gi
@@ -3193,7 +3201,7 @@ def start_gmail_checker():
 
                         titles_text = ", ".join(groups.values())
 
-                        # ===== GOGE SAKON BIYA NA DAZU =====
+                        # Goge tsohon sakon countdown
                         if order_id in G_ORDER_MESSAGES:
                             chat_id, message_id = G_ORDER_MESSAGES[order_id]
                             try:
@@ -3202,7 +3210,7 @@ def start_gmail_checker():
                                 pass
                             del G_ORDER_MESSAGES[order_id]
 
-                        # ===== SUCCESS UI FOR CUSTOMER =====
+                        # ===== TURA WA USER KAYA =====
                         kb = InlineKeyboardMarkup()
                         kb.add(InlineKeyboardButton("⬇️ DOWNLOAD NOW", callback_data=f"g_deliver:{order_id}"))
 
@@ -3213,16 +3221,18 @@ def start_gmail_checker():
                             reply_markup=kb
                         )
 
-                        # ===== NOTIFY ADMIN (PLAIN TEXT PROTECTED) =====
+                        # ===== NOTIFY ADMIN (KAMAR YADDA /c YAKE YI) =====
                         try:
                             admin_report = (
-                                f"✅ G_PAYMENT SUCCESS\n\n"
-                                f"User: {user_id}\n"
-                                f"Order: {order_id}\n"
-                                f"Amount: ₦{amount}\n"
-                                f"Remark: {remark}"
+                                f"🔔 <b>[GMAIL ALERT] An samu sabon sako!</b>\n\n"
+                                f"✅ <b>G_PAYMENT SUCCESSFUL</b>\n"
+                                f"👤 User ID: <code>{user_id}</code>\n"
+                                f"📦 Order: <code>{order_id}</code>\n"
+                                f"💰 Amount: ₦{amount}\n"
+                                f"📝 Remark: <code>{remark}</code>\n"
+                                f"🎬 Films: {titles_text}"
                             )
-                            bot.send_message(ADMIN_ID, admin_report)
+                            bot.send_message(ADMIN_ID, admin_report, parse_mode="HTML")
                         except:
                             pass
 
@@ -3236,13 +3246,8 @@ def start_gmail_checker():
                 mail.logout()
 
             except imaplib.IMAP4.error as imap_err:
-                # Rate-Limit protection irin na /c
                 err_msg = str(imap_err).lower()
                 if "limit" in err_msg or "too many" in err_msg or "block" in err_msg:
-                    try:
-                        bot.send_message(ADMIN_ID, "⚠️ <b>Gmail Engine Warning:</b> Rate limit ya kama mu, zan huta na sakan 40...")
-                    except:
-                        pass
                     time.sleep(40)
                 else:
                     pass
@@ -3252,10 +3257,10 @@ def start_gmail_checker():
                 time.sleep(10)
                 continue
 
-            # Yin bacci na sakan 20 kafin sake dubawa domin kare Gmail dinka daga kowace irin block
             time.sleep(20)
 
     threading.Thread(target=checker_loop, daemon=True).start()
+
 
 
 
