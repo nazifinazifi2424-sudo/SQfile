@@ -2687,7 +2687,6 @@ def save_note(msg):
         conn.close()
 
 
-
 # ========= G_BUYD (ITEM ONLY | DEEP LINK → DM | PALMPAY) =========
 from psycopg2.extras import RealDictCursor
 import uuid
@@ -2889,8 +2888,7 @@ def g_groupitem_deeplink_handler(msg):
     groups = {}
     for i in items:
         key = i["group_key"] or f"single_{i['id']}"
-        if key not in groups:
-            groups[key] = int(i["price"] or 0)
+        groups[key] = int(i["price"] or 0)
 
     total = sum(groups.values())
     item_count = len(items)
@@ -2990,14 +2988,18 @@ def g_groupitem_deeplink_handler(msg):
     cur.close()
     conn.close()
 
+    # Kunna Countdown Timer
     threading.Thread(
         target=start_countdown, 
         args=(bot, uid, sent.message_id, order_id, user_name, unique_titles, item_count, total, remark),
         daemon=True
     ).start()
 
+    # Kira Gmail Checker ta atomatik domin fara bibiyar biya
+    start_gmail_checker()
 
-# ========= GMAIL CHECKER (G_ORDERS | PALMPAY) =========
+
+# ========= GMAIL CHECKER (INTEGRATED WITH RATE-LIMIT & PLAIN TEXT PROTECTION) =========
 GMAIL_CHECKER_RUNNING = False
 
 def start_gmail_checker():
@@ -3009,6 +3011,12 @@ def start_gmail_checker():
 
     def checker_loop():
         global GMAIL_CHECKER_RUNNING
+        
+        # Sanar da Admin a ɓoye cewa Gmail Engine ya taɗa aiki
+        try:
+            bot.send_message(ADMIN_ID, "⚙️ <b>Gmail Checker Background Engine:</b> An kunna tsarin duba sakonni ta atomatik...", parse_mode="HTML")
+        except:
+            pass
 
         while True:
             try:
@@ -3024,11 +3032,23 @@ def start_gmail_checker():
                 """)
                 pending = cur.fetchone()
 
+                # Idan babu sauran wata pending order a Database, kashe engine din
                 if not pending:
                     cur.close()
                     conn.close()
                     GMAIL_CHECKER_RUNNING = False
+                    try:
+                        bot.send_message(ADMIN_ID, "💤 <b>Gmail Checker Background Engine:</b> An kashe tsarin tunda babu wata oda da ake jira.")
+                    except:
+                        pass
                     return
+                
+                # Sanya kari na sanarwa ga User da ke jiran biya don tabbatar da bot din yana aiki cif-cif
+                target_user = pending[1]
+                try:
+                    bot.send_message(target_user, "🔄 <i>Ina jiran samun sakon biyanka daga banki... Zan rika duba Gmail duk bayan sakan 20. Do not panic!</i>", parse_mode="HTML")
+                except:
+                    pass
 
                 cur.close()
                 conn.close()
@@ -3043,11 +3063,11 @@ def start_gmail_checker():
                     time.sleep(30)
                     continue
 
-                # ===== GYARA 1: Duba duka sakonni (ALL) domin ko ka bude imel din a wayarka bot ya gani =====
+                # Binciko duka sakonni (ALL)
                 result, data = mail.search(None, "ALL")
                 mail_ids = data[0].split()
 
-                # Mu duba sakonni 15 na karshe kawai domin gudun jinkiri
+                # Duba sakonni 15 na karshe domin tseratar da lokaci da kuma Network
                 for num in reversed(mail_ids[-15:]):
                     try:
                         result, msg_data = mail.fetch(num, "(RFC822)")
@@ -3076,7 +3096,7 @@ def start_gmail_checker():
                         except:
                             decoded_subject = subject
 
-                        # ===== GET BODY =====
+                        # ===== DAUKO AINIHIN RUBUTUN EMAIL (BODY) =====
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
@@ -3093,7 +3113,7 @@ def start_gmail_checker():
 
                         full_text = decoded_subject + "\n" + body
 
-                        # ===== FIND PENDING ORDERS AGAIN =====
+                        # ===== DUBA ZUWA PENDING ORDERS =====
                         cur.execute("""
                             SELECT id, user_id, amount, remark
                             FROM g_orders
@@ -3106,25 +3126,22 @@ def start_gmail_checker():
                         for o in orders:
                             order_id, user_id, expected_amount, remark = o
 
-                            # 1. Tabbatar Remark din yana cikin imel din tukunna
-                            if remark and remark in full_text:
-                                # ===== GYARA 2: Regex mafi inganci domin kwashe kudi bayan alamar N ko kalmar Amount =====
+                            # 1. Duba ko Remark na cikin full_text (Kamar yadda aka gyara gurin plain text don magance parse errors)
+                            if remark and remark.strip() in full_text:
+                                # 2. Hada Regex na kwashe adadin kudi da muke amfani dashi
                                 amount_match = re.search(r'(?:Amount|💸|₦)\s*:?\s*₦?\s*([\d,]+(?:\.\d+)?)', full_text, re.IGNORECASE)
                                 if not amount_match:
-                                    amount_match = re.search(r'₦\s*([\d,]+Resource(?:\.\d+)?)', full_text)
+                                    amount_match = re.search(r'₦\s*([\d,]+(?:\.\d+)?)', full_text)
 
                                 paid_amount = 0
                                 if amount_match:
                                     try:
-                                        # Dauko kudin kuma cire commas ko decimals idan suna da kwabo (e.g 9.88 -> 9)
                                         raw_amt = amount_match.group(1).replace(",", "")
                                         paid_amount = int(float(raw_amt))
                                     except:
                                         paid_amount = 0
 
-                                # 2. An yi amfani da duka hanyoyin biyu a nan:
-                                # - Idan paid_amount ya yi daidai ko ya dara expected_amount
-                                # - KO KUMA idan tazarar da banki suka cire (expected_amount - paid_amount) ba ta wuce ₦5 ba
+                                # Karbar kudin idan yayi daidai ko idan an sami matsalar ₦5 na charge
                                 if paid_amount >= expected_amount or (expected_amount - paid_amount) <= 5:
                                     matched = (order_id, user_id, expected_amount, remark)
                                     break
@@ -3144,14 +3161,14 @@ def start_gmail_checker():
 
                         order_id, user_id, amount, remark = matched
 
-                        # ===== MARK ORDER PAID =====
+                        # ===== MARK ORDER AS PAID =====
                         cur.execute("""
                             UPDATE g_orders
                             SET paid=1, status='success', paid_at=NOW()
                             WHERE id=%s
                         """, (order_id,))
 
-                        # ===== UPDATE EMAIL LOG =====
+                        # ===== UPDATE EMAIL LOG STATUS =====
                         cur.execute("""
                             UPDATE g_email_logs
                             SET processed=TRUE, remark=%s, amount=%s
@@ -3159,7 +3176,7 @@ def start_gmail_checker():
                         """, (remark, amount, email_uid))
                         conn.commit()
 
-                        # ===== GET FILM TITLES =====
+                        # ===== DAUKO FILMS DIN ODA =====
                         cur.execute("""
                             SELECT i.title, i.group_key
                             FROM g_order_items gi
@@ -3176,7 +3193,7 @@ def start_gmail_checker():
 
                         titles_text = ", ".join(groups.values())
 
-                        # ===== DELETE OLD PAYMENT MSG =====
+                        # ===== GOGE SAKON BIYA NA DAZU =====
                         if order_id in G_ORDER_MESSAGES:
                             chat_id, message_id = G_ORDER_MESSAGES[order_id]
                             try:
@@ -3191,18 +3208,21 @@ def start_gmail_checker():
 
                         bot.send_message(
                             user_id,
-                            f"""🎉 <b>PAYMENT SUCCESSFUL</b>\n\n🎬 <b>Items:</b>\n{html.escape(titles_text)}\n\n🗃 <b>Order ID:</b>\n<code>{order_id}</code>\n\n💰 <b>Amount Paid:</b>\n₦{amount}\n\n⬇️ Click button below to download.""",
+                            f"🎉 <b>PAYMENT SUCCESSFUL</b>\n\n🎬 <b>Items:</b>\n{html.escape(titles_text)}\n\n🗃 <b>Order ID:</b>\n<code>{order_id}</code>\n\n💰 <b>Amount Paid:</b>\n₦{amount}\n\n⬇️ Click button below to download.",
                             parse_mode="HTML",
                             reply_markup=kb
                         )
 
-                        # ===== NOTIFY ADMIN =====
+                        # ===== NOTIFY ADMIN (PLAIN TEXT PROTECTED) =====
                         try:
-                            bot.send_message(
-                                ADMIN_ID,
-                                f"✅ G_PAYMENT SUCCESS\n\nUser: <code>{user_id}</code>\nOrder: <code>{order_id}</code>\nAmount: ₦{amount}\nRemark: <code>{remark}</code>",
-                                parse_mode="HTML"
+                            admin_report = (
+                                f"✅ G_PAYMENT SUCCESS\n\n"
+                                f"User: {user_id}\n"
+                                f"Order: {order_id}\n"
+                                f"Amount: ₦{amount}\n"
+                                f"Remark: {remark}"
                             )
+                            bot.send_message(ADMIN_ID, admin_report)
                         except:
                             pass
 
@@ -3215,12 +3235,25 @@ def start_gmail_checker():
 
                 mail.logout()
 
+            except imaplib.IMAP4.error as imap_err:
+                # Rate-Limit protection irin na /c
+                err_msg = str(imap_err).lower()
+                if "limit" in err_msg or "too many" in err_msg or "block" in err_msg:
+                    try:
+                        bot.send_message(ADMIN_ID, "⚠️ <b>Gmail Engine Warning:</b> Rate limit ya kama mu, zan huta na sakan 40...")
+                    except:
+                        pass
+                    time.sleep(40)
+                else:
+                    pass
+
             except Exception as e:
-                print("GMAIL CHECKER ERROR:", e)
+                print("GMAIL CHECKER MAIN LOOP ERROR:", e)
                 time.sleep(10)
                 continue
 
-            time.sleep(3)
+            # Yin bacci na sakan 20 kafin sake dubawa domin kare Gmail dinka daga kowace irin block
+            time.sleep(20)
 
     threading.Thread(target=checker_loop, daemon=True).start()
 
