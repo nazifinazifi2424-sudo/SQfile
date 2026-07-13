@@ -2262,7 +2262,135 @@ def gmail_test(msg):
         )
 
 
+# ========= LIVE DEBUG SCANNER WITH RATE-LIMIT PROTECTION (/c) =========
 
+def email_live_scanner(bot, uid, start_time):
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail.login(EMAIL_USER, EMAIL_PASS)
+        mail.select("inbox")
+        _, data = mail.search(None, "ALL")
+        initial_ids = data[0].split()
+        initial_count = len(initial_ids)
+        mail.logout()
+    except Exception as e:
+        bot.send_message(uid, f"❌ Kuskure gurin haɗuwa da Gmail a karon farko: {str(e)}")
+        return
+
+    bot.send_message(
+        uid, 
+        "🚀 **Live Scanner An Kunna!**\n"
+        "⏱ Zai riƙa duba Gmail kowane **sakan 20** (Sau 15 a cikin minti 5) domin guje wa toshewa (Rate Limit).\n\n"
+        "👉 *Je ka yi transfer yanzu don mu ga saƙon da zai shigo...*", 
+        parse_mode="Markdown"
+    )
+
+    loops = 0
+    max_loops = 15  # 15 loops * 20 seconds = 300 seconds (Minti 5)
+    
+    while loops < max_loops:
+        time.sleep(20)  # Bada tazarar sakan 20 domin Gmail ya huta
+        loops += 1
+        
+        try:
+            mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+            mail.login(EMAIL_USER, EMAIL_PASS)
+            mail.select("inbox")
+            
+            _, data = mail.search(None, "ALL")
+            current_ids = data[0].split()
+            
+            # Idan an sami sabon sako
+            if len(current_ids) > initial_count:
+                new_emails = current_ids[initial_count:]
+                
+                bot.send_message(uid, f"🔔 **An sami sabon sako guda {len(new_emails)}! Gashi nan tafe...**", parse_mode="Markdown")
+                
+                for num in new_emails:
+                    try:
+                        _, msg_data = mail.fetch(num, "(RFC822)")
+                        raw_email = msg_data[0][1]
+                        msg = email.message_from_bytes(raw_email)
+                        
+                        subject = msg.get("Subject", "No Subject")
+                        try:
+                            decoded = decode_header(subject)[0][0]
+                            if isinstance(decoded, bytes):
+                                decoded_subject = decoded.decode(errors="ignore")
+                            else:
+                                decoded_subject = decoded
+                        except:
+                            decoded_subject = subject
+                            
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                if part.get_content_type() == "text/plain":
+                                    try:
+                                        body += part.get_payload(decode=True).decode(errors="ignore")
+                                    except:
+                                        pass
+                        else:
+                            try:
+                                body = msg.get_payload(decode=True).decode(errors="ignore")
+                            except:
+                                pass
+                                
+                        full_report = (
+                            f"📥 **SABON SAKO YA SHIGO GMAIL!**\n\n"
+                            f"👤 **From:** {html.escape(msg.get('From', 'Unknown'))}\n"
+                            f"📌 **Subject:** {html.escape(decoded_subject)}\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📝 **RAW TEXT / BODY:**\n\n"
+                            f"<code>{html.escape(body if body.strip() else '[Babu Text Body, kila HTML ne]')}</code>\n"
+                            f"━━━━━━━━━━━━━━━━━━━"
+                        )
+                        
+                        if len(full_report) > 4000:
+                            for x in range(0, len(full_report), 4000):
+                                bot.send_message(uid, full_report[x:x+4000], parse_mode="HTML")
+                        else:
+                            bot.send_message(uid, full_report, parse_mode="HTML")
+                            
+                    except Exception as ev:
+                        bot.send_message(uid, f"⚠️ Kuskure gurin karanta saƙon: {str(ev)}")
+                
+                mail.logout()
+                bot.send_message(uid, "🛑 **Scanner ya tsaya da kansa domin an sami saƙon.**")
+                return
+                
+            mail.logout()
+            
+        except imaplib.IMAP4.error as imap_err:
+            # Idan an samu matsalar login ko toshewa daga Google (Rate Limit)
+            err_msg = str(imap_err).lower()
+            if "limit" in err_msg or "too many" in err_msg or "block" in err_msg:
+                bot.send_message(uid, "⚠️ **Gmail Rate Limit Warning!** Google sun ce mun cika matsawa. Zan tsaya na sakan 40 kafin in sake dubawa...", parse_mode="Markdown")
+                time.sleep(40)  # Huta na karin sakan 40
+            else:
+                pass
+                
+        except Exception as e:
+            # Idan kuskuren network ne na yau da kullum, zai wuce ya sake gwada na gaba
+            print("SCANNER NETWORK ERROR:", e)
+            pass
+
+    bot.send_message(uid, "⏱ **Minti 5 sun cika!** Scanner ya mutu da kansa bayan ya duba sau 15 ba tare da an sami sabon saƙo ba.")
+
+
+@bot.message_handler(commands=['c'])
+def handle_debug_c_command(msg):
+    uid = msg.from_user.id
+    
+    if str(uid) != str(ADMIN_ID):
+        bot.send_message(uid, "❌ Wannan command ɗin na Admin ne kawai.")
+        return
+        
+    threading.Thread(
+        target=email_live_scanner,
+        args=(bot, uid, time.time()),
+        daemon=True
+    ).start()
 # ================= ADMIN SALLAH GIFT =================
 @bot.message_handler(commands=["sallah"])
 def send_sallah_gift(msg):
