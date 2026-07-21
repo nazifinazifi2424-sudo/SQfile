@@ -2267,8 +2267,10 @@ import time
 import imaplib
 import email
 from email.header import decode_header
+import html
+from bs4 import BeautifulSoup
 
-# ========= LIVE DEBUG SCANNER WITH PLAIN-TEXT PRINTING (/c) =========
+# ========= LIVE DEBUG SCANNER WITH HTML PARSING & SAFE TEXT =========
 
 def email_live_scanner(bot, uid, start_time):
     try:
@@ -2293,31 +2295,31 @@ def email_live_scanner(bot, uid, start_time):
 
     loops = 0
     max_loops = 15  # 15 loops * 20 seconds = 300 seconds (Minti 5)
-    
+
     while loops < max_loops:
         time.sleep(20)  # Bada tazarar sakan 20 domin Gmail ya huta
         loops += 1
-        
+
         try:
             mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
             mail.login(EMAIL_USER, EMAIL_PASS)
             mail.select("inbox")
-            
+
             _, data = mail.search(None, "ALL")
             current_ids = data[0].split()
-            
+
             # Idan an sami sabon sako
             if len(current_ids) > initial_count:
                 new_emails = current_ids[initial_count:]
-                
+
                 bot.send_message(uid, f"🔔 An sami sabon sako guda {len(new_emails)}! Gashi nan tafe...")
-                
+
                 for num in new_emails:
                     try:
                         _, msg_data = mail.fetch(num, "(RFC822)")
                         raw_email = msg_data[0][1]
                         msg = email.message_from_bytes(raw_email)
-                        
+
                         subject = msg.get("Subject", "No Subject")
                         try:
                             decoded = decode_header(subject)[0][0]
@@ -2327,48 +2329,66 @@ def email_live_scanner(bot, uid, start_time):
                                 decoded_subject = decoded
                         except:
                             decoded_subject = subject
-                            
+
+                        # ====== CIRO BODY (TEXT KO HTML) ======
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
-                                if part.get_content_type() == "text/plain":
+                                content_type = part.get_content_type()
+                                if content_type == "text/plain":
                                     try:
                                         body += part.get_payload(decode=True).decode(errors="ignore")
                                     except:
                                         pass
+                                elif content_type == "text/html" and not body:
+                                    try:
+                                        html_content = part.get_payload(decode=True).decode(errors="ignore")
+                                        soup = BeautifulSoup(html_content, "html.parser")
+                                        body = soup.get_text(separator="\n")
+                                    except:
+                                        pass
                         else:
                             try:
-                                body = msg.get_payload(decode=True).decode(errors="ignore")
+                                raw_body = msg.get_payload(decode=True).decode(errors="ignore")
+                                if "<html>" in raw_body.lower():
+                                    soup = BeautifulSoup(raw_body, "html.parser")
+                                    body = soup.get_text(separator="\n")
+                                else:
+                                    body = raw_body
                             except:
                                 pass
-                                
-                        # Mun cire duka alamun HTML ko Markdown don gudun parse error
+
+                        # Tsaftace sakon daga alamomin <> da ke karya Telegram
+                        from_sender = html.escape(str(msg.get('From', 'Unknown')))
+                        clean_subject = html.escape(str(decoded_subject))
+                        clean_body = html.escape(str(body.strip()))
+
                         full_report = (
                             f"📥 SABON SAKO YA SHIGO GMAIL!\n\n"
-                            f"👤 From: {msg.get('From', 'Unknown')}\n"
-                            f"📌 Subject: {decoded_subject}\n"
+                            f"👤 From: {from_sender}\n"
+                            f"📌 Subject: {clean_subject}\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📝 RAW TEXT / BODY:\n\n"
-                            f"{body if body.strip() else '[Babu Text Body, kila HTML ne]'}\n"
+                            f"{clean_body if clean_body else '[Babu Text Body]'}\n"
                             f"━━━━━━━━━━━━━━━━━━━"
                         )
-                        
-                        # Turawa a matsayin Plain Text (Babu parse_mode gaba daya)
+
+                        # Turawa ba tare da parse_mode ba domin tsaro
                         if len(full_report) > 4000:
                             for x in range(0, len(full_report), 4000):
                                 bot.send_message(uid, full_report[x:x+4000])
                         else:
                             bot.send_message(uid, full_report)
-                            
+
                     except Exception as ev:
                         bot.send_message(uid, f"⚠️ Kuskure gurin karanta saƙon: {str(ev)}")
-                
+
                 mail.logout()
                 bot.send_message(uid, "🛑 Scanner ya tsaya da kansa domin an sami saƙon.")
                 return
-                
+
             mail.logout()
-            
+
         except imaplib.IMAP4.error as imap_err:
             err_msg = str(imap_err).lower()
             if "limit" in err_msg or "too many" in err_msg or "block" in err_msg:
@@ -2376,12 +2396,14 @@ def email_live_scanner(bot, uid, start_time):
                 time.sleep(40)
             else:
                 pass
-                
+
         except Exception as e:
             print("SCANNER NETWORK ERROR:", e)
             pass
 
     bot.send_message(uid, "⏱ Minti 5 sun cika! Scanner ya mutu da kansa bayan ya duba sau 15 ba tare da an sami sabon saƙo ba.")
+
+
 
 
 @bot.message_handler(commands=['c'])
