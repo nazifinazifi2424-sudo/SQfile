@@ -2262,15 +2262,16 @@ def gmail_test(msg):
         )
 
 
+
 import threading
 import time
 import imaplib
 import email
 from email.header import decode_header
-import html
+import re
 from bs4 import BeautifulSoup
 
-# ========= LIVE DEBUG SCANNER WITH HTML PARSING & SAFE TEXT =========
+# ========= LIVE DEBUG SCANNER (AMOUNT & REMARK ONLY) =========
 
 def email_live_scanner(bot, uid, start_time):
     try:
@@ -2320,31 +2321,21 @@ def email_live_scanner(bot, uid, start_time):
                         raw_email = msg_data[0][1]
                         msg = email.message_from_bytes(raw_email)
 
-                        subject = msg.get("Subject", "No Subject")
-                        try:
-                            decoded = decode_header(subject)[0][0]
-                            if isinstance(decoded, bytes):
-                                decoded_subject = decoded.decode(errors="ignore")
-                            else:
-                                decoded_subject = decoded
-                        except:
-                            decoded_subject = subject
-
-                        # ====== CIRO BODY (TEXT KO HTML) ======
-                        body = ""
+                        # ====== CIRO TEXT KO HTML ======
+                        body_text = ""
                         if msg.is_multipart():
                             for part in msg.walk():
                                 content_type = part.get_content_type()
                                 if content_type == "text/plain":
                                     try:
-                                        body += part.get_payload(decode=True).decode(errors="ignore")
+                                        body_text += part.get_payload(decode=True).decode(errors="ignore")
                                     except:
                                         pass
-                                elif content_type == "text/html" and not body:
+                                elif content_type == "text/html" and not body_text:
                                     try:
                                         html_content = part.get_payload(decode=True).decode(errors="ignore")
                                         soup = BeautifulSoup(html_content, "html.parser")
-                                        body = soup.get_text(separator="\n")
+                                        body_text = soup.get_text(separator=" ")
                                     except:
                                         pass
                         else:
@@ -2352,33 +2343,38 @@ def email_live_scanner(bot, uid, start_time):
                                 raw_body = msg.get_payload(decode=True).decode(errors="ignore")
                                 if "<html>" in raw_body.lower():
                                     soup = BeautifulSoup(raw_body, "html.parser")
-                                    body = soup.get_text(separator="\n")
+                                    body_text = soup.get_text(separator=" ")
                                 else:
-                                    body = raw_body
+                                    body_text = raw_body
                             except:
                                 pass
 
-                        # Tsaftace sakon daga alamomin <> da ke karya Telegram
-                        from_sender = html.escape(str(msg.get('From', 'Unknown')))
-                        clean_subject = html.escape(str(decoded_subject))
-                        clean_body = html.escape(str(body.strip()))
+                        # ====== PARSE AMOUNT DA REMARK ======
+                        amount = "None"
+                        remark = "None"
 
+                        if body_text:
+                            # Search for Amount (NGN 199.40 or 199.40)
+                            amt_match = re.search(r'(?:NGN|₦|\b)\s*([\d,]+\.\d{2})', body_text, re.IGNORECASE)
+                            if amt_match:
+                                amount = f"NGN {amt_match.group(1)}"
+
+                            # Search for Remark
+                            remark_match = re.search(r'Remark:\s*([^\n\r]+)', body_text, re.IGNORECASE)
+                            if remark_match:
+                                extracted_remark = remark_match.group(1).strip()
+                                if extracted_remark:
+                                    remark = extracted_remark
+
+                        # ====== TURA SAKON MAI TSAFTA ======
                         full_report = (
                             f"📥 SABON SAKO YA SHIGO GMAIL!\n\n"
-                            f"👤 From: {from_sender}\n"
-                            f"📌 Subject: {clean_subject}\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📝 RAW TEXT / BODY:\n\n"
-                            f"{clean_body if clean_body else '[Babu Text Body]'}\n"
+                            f"💰 Amount: {amount}\n"
+                            f"📝 Remark: {remark}\n"
                             f"━━━━━━━━━━━━━━━━━━━"
                         )
 
-                        # Turawa ba tare da parse_mode ba domin tsaro
-                        if len(full_report) > 4000:
-                            for x in range(0, len(full_report), 4000):
-                                bot.send_message(uid, full_report[x:x+4000])
-                        else:
-                            bot.send_message(uid, full_report)
+                        bot.send_message(uid, full_report)
 
                     except Exception as ev:
                         bot.send_message(uid, f"⚠️ Kuskure gurin karanta saƙon: {str(ev)}")
@@ -2402,6 +2398,7 @@ def email_live_scanner(bot, uid, start_time):
             pass
 
     bot.send_message(uid, "⏱ Minti 5 sun cika! Scanner ya mutu da kansa bayan ya duba sau 15 ba tare da an sami sabon saƙo ba.")
+
 
 
 
