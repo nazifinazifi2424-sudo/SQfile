@@ -60,6 +60,47 @@ wallet_conn = psycopg2.connect(WALLET_DATABASE_URL)
 wallet_conn.autocommit = True
 wallet_cur = wallet_conn.cursor()
 
+# =============================
+# ENSURE ITEMS TABLE
+# =============================
+def ensure_items_table():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # 1️⃣ Create table if not exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS items (
+                id SERIAL PRIMARY KEY,
+                title TEXT,
+                price INTEGER,
+                file_id TEXT,
+                file_name TEXT,
+                group_key TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                channel_msg_id INTEGER,
+                channel_username TEXT
+            )
+        """)
+
+        # 2️⃣ Ensure cashback_amount column exists
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='items'
+            AND column_name='cashback_amount'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE items ADD COLUMN cashback_amount INTEGER DEFAULT 0")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        print("✅ items table structure verified successfully")
+
+    except Exception as e:
+        print("❌ ITEMS TABLE MIGRATION ERROR:", e)
+
 
 # AUTO DB FIX: ENSURE invite_link COLUMN
 # ==========================================
