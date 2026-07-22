@@ -477,9 +477,11 @@ CREATE TABLE IF NOT EXISTS items (
     group_key TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     channel_msg_id INTEGER,
-    channel_username TEXT
+    channel_username TEXT,
+    cashback_amount INTEGER DEFAULT 0
 )
 """)
+
 
 # -------- ORDERS --------
 cur.execute("""
