@@ -1135,21 +1135,21 @@ def flutterwave_webhook():
         signature = request.headers.get("verif-hash")
         if not signature: 
             return "Missing signature", 401
-        
+
         if signature != FLW_WEBHOOK_SECRET: 
             return "Invalid signature", 401
 
         # ================= PAYLOAD =================
         payload = request.json or {}
         data = payload.get("data", {})
-        
+
         status = (data.get("status") or "").lower()
         if status not in ("successful", "success"): 
             return "Ignored", 200
 
         raw_reference = data.get("tx_ref")
         currency = data.get("currency")
-        
+
         # Safe amount conversion
         try:
             paid_amount = int(float(data.get("amount", 0)))
@@ -1403,7 +1403,7 @@ Use the button below to open your wallet.
         if order_type == "film":
             cur.execute(
                 """
-                SELECT i.title, i.group_key
+                SELECT i.title, i.group_key, COALESCE(i.cashback_amount, 0)
                 FROM order_items oi
                 JOIN items i ON i.id = oi.item_id
                 WHERE oi.order_id=%s
@@ -1418,10 +1418,15 @@ Use the button below to open your wallet.
                 return "Empty order", 200
 
             groups = {}
-            for title, group_key in rows:
+            total_custom_cashback = 0
+
+            for title, group_key, cb_amount in rows:
                 key = group_key or f"single_{title}"
                 if key not in groups:
                     groups[key] = {"title": title, "count": 0}
+                    # Idan fims na cikin group guda ne, sau daya kawai za a dauki custom cashback din don gudun ninki (doubling)
+                    if cb_amount and cb_amount > 0:
+                        total_custom_cashback += cb_amount
                 groups[key]["count"] += 1
 
             lines = []
@@ -1433,10 +1438,17 @@ Use the button below to open your wallet.
 
             titles_text = ", ".join(lines) if lines else "N/A"
 
-            # ================= CASHBACK REWARD =================
-            cashback = (paid_amount // 200) * CASHBACK
-            if cashback > 200:
-                cashback = 200
+            # ================= CASHBACK REWARD LOGIC =================
+            if total_custom_cashback > 0:
+                # 1. SABON TSARI: IDAN FIM(IN) YANA DA CUSTOM CASHBACK A DATABASE
+                cashback = total_custom_cashback
+                is_custom_cashback = True
+            else:
+                # 2. TSOHON TSARI: IDAN FIM(IN) BASHI DA CUSTOM CASHBACK
+                cashback = (paid_amount // 200) * CASHBACK
+                if cashback > 200:
+                    cashback = 200
+                is_custom_cashback = False
 
             if cashback > 0:
                 wallet_conn = get_wallet_conn()
@@ -1463,21 +1475,46 @@ Use the button below to open your wallet.
                     (user_id, cashback, order_id)
                 )
 
+                # Samun jimillar balance dake cikin wallet din user bayan an kara cashback
+                wallet_cur.execute(
+                    """
+                    SELECT balance FROM wallet_balance WHERE user_id=%s
+                    """,
+                    (user_id,)
+                )
+                user_balance_row = wallet_cur.fetchone()
+                user_wallet_balance = user_balance_row[0] if user_balance_row else 0
+
                 wallet_conn.commit()
                 wallet_cur.close()
                 wallet_conn.close()
 
-                bot.send_message(
-                    user_id,
-                    f"""🎁 Cashback Reward🎉
+                # Tura Saƙon Cashback Dangane da Nau'in Tsari (Custom ko Tsohon Tsari)
+                if is_custom_cashback:
+                    bot.send_message(
+                        user_id,
+                        f"""Congratulations wannan fim ka siya mun ji dadin siyayyarka😍
+Kuma kai tsaye mun baka <b>₦{cashback}</b> CASHBACK zuwa wallet din ka.
+
+Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.
+
+Wallet Balance: ₦{user_wallet_balance}""",
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_message(
+                        user_id,
+                        f"""🎁 Cashback Reward🎉
 
 Wallet ID: <code>{user_id}</code>
 
 You received ₦{cashback} cashback,  
 
-Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.""" ,
-                    parse_mode="HTML"
-                )
+Ka duba wallet din ka, zaka iya siyayya dashi a nan gaba.
+
+Wallet Balance: ₦{user_wallet_balance}""",
+                        parse_mode="HTML"
+                    )
 
             conn.commit()
             cur.close()
@@ -1687,8 +1724,8 @@ Na gode da kasancewa tare da mu 🙏""",
 💰 <b>Amount:</b> ₦{paid_amount}
 ⏰ <b>Time:</b> {now}
 """,
-                    parse_mode="HTML"
-                )
+                        parse_mode="HTML"
+                    )
 
             return "OK", 200
 
@@ -1697,7 +1734,6 @@ Na gode da kasancewa tare da mu 🙏""",
     except Exception as e:
         print(f"Webhook Error: {e}")
         return "Internal Error", 500
-
 
 
 
@@ -2747,318 +2783,6 @@ def save_note(msg):
     finally:
         cur.close()
         conn.close()
-
-
-# ========= G_BUYD (ITEM ONLY | DEEP LINK → DM | PALMPAY) =========
-from psycopg2.extras import RealDictCursor
-import uuid
-import re
-import random
-import string
-import time
-import threading
-import html
-import imaplib
-import email
-from email.header import decode_header
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# ===== MESSAGE MEMORY =====
-G_ORDER_MESSAGES = {}
-
-# ===== GENERATE 10-CHAR REMARK =====
-def generate_g_remark():
-    return ''.join(
-        random.choices(
-            string.ascii_uppercase + string.digits,
-            k=10
-        )
-    )
-
-# ===== COUNTDOWN TIMER FUNCTION =====
-def start_countdown(bot, uid, message_id, order_id, user_name, unique_titles, item_count, total, remark):
-    duration = 20 * 60  # Minti 20 (1200 seconds)
-
-    while duration > 0:
-        try:
-            conn = get_conn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT status FROM g_orders WHERE id=%s", (order_id,))
-            order_status = cur.fetchone()
-            cur.close()
-            conn.close()
-
-            if order_status and order_status['status'] != 'pending':
-                return
-        except:
-            pass
-
-        time.sleep(1)
-        duration -= 1
-
-        # Edit din sako duk bayan sakan 30
-        if duration % 30 == 0 and duration > 0:
-            minutes = duration // 60
-            seconds = duration % 60
-            time_text = f"{minutes:02d}:{seconds:02d} remaining"
-
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
-
-            updated_text = (
-                f"📦 <b>ORDER CREATED</b>\n"
-                f"👤 <b>Customer:</b> {html.escape(str(user_name))}\n"
-                f"🎬 <b>Items ({item_count}):</b> {html.escape(', '.join(unique_titles))}\n"
-                f"💵 <b>Total Amount:</b> ₦{total}\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"🏦 <b>TRANSFER DETAILS</b>\n"
-                f"🏛️ <b>Bank:</b> Palmpay\n"
-                f"💳 <b>Account:</b> <code>8900720965</code>\n"
-                f"👤 <b>Name:</b> Nazifi Ibrahim\n"
-                f"📝 <b>Remark:</b> <code>{remark}</code>\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"⚠️ <b>Tabbatar ka saka remark lokacin tura kudi wannan dole ne!</b>\n\n"
-                f"⏳ <b>{time_text}</b>"
-            )
-
-            try:
-                bot.edit_message_text(
-                    text=updated_text, 
-                    chat_id=uid, 
-                    message_id=message_id, 
-                    parse_mode="HTML", 
-                    reply_markup=kb
-                )
-            except:
-                pass
-
-    # ======= IDAN LOKACI YA KARE (TIMEOUT) =======
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("UPDATE g_orders SET status='cancelled' WHERE id=%s AND status='pending'", (order_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        bot.edit_message_text(
-            text=f"❌ <b>An soke wannan order sakamakon rashin biya dawuri.</b>\n\n"
-                 f"🎬 Film: {html.escape(', '.join(unique_titles))}\n"
-                 f"💰 Idan kana so zaka iya sake oda.",
-            chat_id=uid,
-            message_id=message_id,
-            parse_mode="HTML"
-        )
-    except:
-        pass
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
-def g_groupitem_deeplink_handler(msg):
-
-    uid = msg.from_user.id
-    user_name = msg.from_user.first_name or "Customer"
-
-    try:
-        raw = msg.text.split("groupitem_", 1)[1]
-        tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
-    except:
-        return
-
-    if not tokens:
-        return
-
-    conn = get_conn()
-    if not conn:
-        return
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    item_ids = []
-
-    try:
-        for token in tokens:
-            if token.isdigit():
-                item_ids.append(int(token))
-            else:
-                cur.execute("SELECT id FROM items WHERE group_key=%s", (token,))
-                rows = cur.fetchall()
-                item_ids.extend([r["id"] for r in rows])
-    except:
-        cur.close()
-        conn.close()
-        return
-
-    if not item_ids:
-        cur.close()
-        conn.close()
-        return
-
-    try:
-        placeholders = ",".join(["%s"] * len(item_ids))
-        cur.execute(
-            f"""
-            SELECT id,title,price,file_id,group_key
-            FROM items
-            WHERE id IN ({placeholders})
-            """,
-            tuple(item_ids)
-        )
-        items = cur.fetchall()
-    except:
-        cur.close()
-        conn.close()
-        return
-
-    if not items:
-        cur.close()
-        conn.close()
-        return
-
-    items = [i for i in items if i.get("file_id")]
-    if not items:
-        cur.close()
-        conn.close()
-        return
-
-    item_ids_clean = [i["id"] for i in items]
-
-    try:
-        cur.execute(
-            f"""
-            SELECT 1
-            FROM g_user_movies
-            WHERE user_id=%s
-            AND item_id IN ({",".join(["%s"]*len(item_ids_clean))})
-            LIMIT 1
-            """,
-            (uid, *item_ids_clean)
-        )
-        owned = cur.fetchone()
-    except:
-        cur.close()
-        conn.close()
-        return
-
-    if owned:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies"))
-        bot.send_message(uid, "✅ You already purchased this movie.", reply_markup=kb)
-        cur.close()
-        conn.close()
-        return
-
-    groups = {}
-    for i in items:
-        key = i["group_key"] or f"single_{i['id']}"
-        groups[key] = int(i["price"] or 0)
-
-    total = sum(groups.values())
-    item_count = len(items)
-
-    if total <= 0:
-        cur.close()
-        conn.close()
-        return
-
-    unique_titles = [
-        i["title"]
-        for _, i in {
-            (i["group_key"] or f"single_{i['id']}"): i
-            for i in items
-        }.items()
-    ]
-
-    try:
-        cur.execute(
-            f"""
-            SELECT g.id
-            FROM g_orders g
-            JOIN g_order_items gi
-            ON gi.order_id=g.id
-            WHERE g.user_id=%s
-            AND g.paid=0
-            AND gi.item_id IN ({",".join(["%s"]*len(item_ids_clean))})
-            GROUP BY g.id
-            HAVING COUNT(DISTINCT gi.item_id)=%s
-            LIMIT 1
-            """,
-            (uid, *item_ids_clean, len(item_ids_clean))
-        )
-        row = cur.fetchone()
-    except:
-        cur.close()
-        conn.close()
-        return
-
-    if row:
-        order_id = row["id"]
-        cur.execute("SELECT remark FROM g_orders WHERE id=%s", (order_id,))
-        remark = cur.fetchone()["remark"]
-    else:
-        order_id = str(uuid.uuid4())
-        while True:
-            remark = generate_g_remark()
-            cur.execute("SELECT 1 FROM g_orders WHERE remark=%s", (remark,))
-            if not cur.fetchone():
-                break
-
-        try:
-            cur.execute(
-                """
-                INSERT INTO g_orders (id,user_id,amount,paid,remark,status)
-                VALUES (%s,%s,%s,0,%s,'pending')
-                """,
-                (order_id, uid, total, remark)
-            )
-            for i in items:
-                cur.execute(
-                    """
-                    INSERT INTO g_order_items (order_id,item_id,file_id,price)
-                    VALUES (%s,%s,%s,%s)
-                    """,
-                    (order_id, i["id"], i["file_id"], int(i["price"] or 0))
-                )
-            conn.commit()
-        except:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            return
-
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("❌ SOKE ORDER (CANCEL)", callback_data=f"g_cancel_{order_id}"))
-
-    message_text = (
-        f"📦 <b>ORDER CREATED</b>\n"
-        f"👤 <b>Customer:</b> {html.escape(str(user_name))}\n"
-        f"🎬 <b>Items ({item_count}):</b> {html.escape(', '.join(unique_titles))}\n"
-        f"💵 <b>Total Amount:</b> ₦{total}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🏦 <b>TRANSFER DETAILS</b>\n"
-        f"🏛️ <b>Bank:</b> Palmpay\n"
-        f"💳 <b>Account:</b> <code>8900720965</code>\n"
-        f"👤 <b>Name:</b> Nazifi Ibrahim\n"
-        f"📝 <b>Remark:</b> <code>{remark}</code>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"⚠️ <b>Tabbatar ka saka remark lokacin tura kudi wannan dole ne!</b>\n\n"
-        f"⏳ <b>20:00 remaining</b>"
-    )
-
-    sent = bot.send_message(uid, message_text, parse_mode="HTML", reply_markup=kb)
-    G_ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
-
-    cur.close()
-    conn.close()
-
-    # Kunna Countdown Timer
-    threading.Thread(
-        target=start_countdown, 
-        args=(bot, uid, sent.message_id, order_id, user_name, unique_titles, item_count, total, remark),
-        daemon=True
-    ).start()
-
-    # Kira Gmail Checker ta atomatik domin fara bibiyar biya
-    start_gmail_checker()
 
 
 
