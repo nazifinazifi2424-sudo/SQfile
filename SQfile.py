@@ -872,7 +872,7 @@ BOT_MODE = os.getenv("BOT_MODE", "polling")
 
 CASHBACK = 20
 
-VIP_PRICE = 1500
+VIP_PRICE = 100
 VIP_DURATION_VALUE = 33
 VIP_DURATION_UNIT = "days"
 
@@ -898,7 +898,7 @@ BOT_USERNAME = "Danchirinbot"
 CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 70
-VIP_LINK = "https://t.me/+sRDID76KGO1lMTc8"  # saka permanent group link naka
+VIP_LINK = "https://t.me/+wRfKqP2nnHw0OGZk"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -915,7 +915,7 @@ FLW_BASE = "https://api.flutterwave.com/v3"
 
 
 
-VIP_GROUP_ID = -1003656360408
+VIP_GROUP_ID = -1004420788431
 
 # === PAYMENTS / STORAGE ===
 PAYMENT_NOTIFY_GROUP = -1003769342354
