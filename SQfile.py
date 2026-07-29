@@ -1914,6 +1914,253 @@ def deliver_items(call):
     send_feedback_prompt(user_id, order_id)
 
 
+# ===============================
+# FINALIZE (UPLOAD + DB) WITH PREFIX CASHBACK (C200) & DEBUGGING
+# ===============================
+from telebot.apihelper import ApiTelegramException
+import time
+import uuid
+import traceback
+from datetime import datetime
+
+@bot.message_handler(
+    content_types=["photo"],
+    func=lambda m: m.from_user.id in series_sessions
+)
+def series_finalize(m):
+
+    try:
+        uid = m.from_user.id
+        data = m.caption or ""
+    except Exception as e:
+        return
+
+    sess = series_sessions.get(uid)
+
+    if not sess or sess.get("stage") != "meta":
+        return
+
+    # ================= PARSE CAPTION (SUPPORT FOR 'C200' FORMAT) =================
+    try:
+        lines = [line.strip() for line in data.strip().split("\n") if line.strip()]
+
+        if len(lines) < 2:
+            bot.send_message(uid, "❌ Caption bai dace ba. Akalla ana bukatar Suna da Farashi.")
+            return
+
+        title = lines[0]
+        cashback_amount = 0
+
+        # Duba idan layin ƙarshe yana fara da 'c' ko 'C' sannan sauran sassan lambobi ne
+        last_line = lines[-1]
+        if last_line.lower().startswith('c') and last_line[1:].replace(",", "").isdigit():
+            cashback_amount = int(last_line[1:].replace(",", ""))
+            lines.pop()  # Cire layin cashback ɗin gaba ɗaya daga jeri
+
+        if len(lines) < 2:
+            bot.send_message(uid, "❌ Caption bai dace ba. Muna buƙatar Suna da Farashi.")
+            return
+
+        # Yanzu layin ƙarshe da ya rage shi ne Farashi (Price)
+        raw_price = lines[-1]
+        has_comma = "," in raw_price
+        price = int(raw_price.replace(",", "").strip())
+
+        # channel_display_title zai haɗa daga sunan fim har zuwa kafin farashi
+        channel_display_title = "\n".join(lines[:-1])
+
+    except Exception as e:
+        bot.send_message(uid, f"❌ Caption Parse Error: {e}")
+        try:
+            bot.send_message(ADMIN_ID, f"⚠️ **Parse Error:**\n<code>{e}</code>", parse_mode="HTML")
+        except:
+            pass
+        return
+
+    poster_file_id = m.photo[-1].file_id
+
+    # ================= DB CONNECT =================
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ **DB Connection Error:**\n<code>{e}</code>", parse_mode="HTML")
+        return
+
+    # ================= CREATE SERIES =================
+    try:
+        cur.execute(
+            "INSERT INTO series (title, price, poster_file_id) VALUES (%s,%s,%s) RETURNING id",
+            (title, price, poster_file_id)
+        )
+        series_id = cur.fetchone()[0]
+    except Exception as e:
+        conn.rollback()
+        error_msg = f"❌ **Series DB Insert Error:**\n<code>{e}</code>"
+        print(error_msg)
+        bot.send_message(ADMIN_ID, error_msg, parse_mode="HTML")
+        return
+
+    item_ids = []
+    created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    group_key = str(uuid.uuid4())
+    total_files = len(sess.get("files", []))
+
+    if total_files == 0:
+        bot.send_message(ADMIN_ID, "⚠️ Session ɗin bashi da fayiloli ko 'files' array babu komai a ciki.")
+        return
+
+    # 🔥 ONE CLEAN MESSAGE
+    progress_msg = bot.send_message(
+        ADMIN_ID,
+        f"⏳ Loading... (0/{total_files})"
+    )
+
+    # ================= SAFE SEND =================
+    def safe_send_document(chat_id, file_id, caption):
+        while True:
+            try:
+                return bot.send_document(chat_id, file_id, caption=caption)
+
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    retry = int(e.result_json["parameters"]["retry_after"])
+
+                    bot.edit_message_text(
+                        f"⏸ Rate limit hit.\nWaiting {retry}s...\n"
+                        f"{len(item_ids)}/{total_files} saved",
+                        ADMIN_ID,
+                        progress_msg.message_id
+                    )
+
+                    time.sleep(retry)
+
+                    bot.edit_message_text(
+                        f"⏳ Loading... ({len(item_ids)}/{total_files})",
+                        ADMIN_ID,
+                        progress_msg.message_id
+                    )
+                    continue
+                else:
+                    bot.send_message(ADMIN_ID, f"❌ **Telegram Send Error (Storage Channel):**\n<code>{e}</code>", parse_mode="HTML")
+                    return None
+
+            except Exception as e:
+                bot.send_message(ADMIN_ID, f"❌ **General Send Error:**\n<code>{e}</code>", parse_mode="HTML")
+                return None
+
+    # ================= UPLOAD LOOP =================
+    for f in sess["files"]:
+
+        msg = safe_send_document(
+            STORAGE_CHANNEL,
+            f["dm_file_id"],
+            f["file_name"]
+        )
+
+        if not msg:
+            bot.send_message(ADMIN_ID, f"⚠️ Na gaza tura fayil ɗin **{f.get('file_name')}** zuwa Storage Channel.", parse_mode="Markdown")
+            continue
+
+        doc = msg.document or msg.video
+        if not doc:
+            bot.send_message(ADMIN_ID, f"⚠️ Fayil ɗin **{f.get('file_name')}** ba Document/Video ba ne.", parse_mode="Markdown")
+            continue
+
+        try:
+            cur.execute(
+                """
+                INSERT INTO items
+                (title, price, file_id, file_name, group_key,
+                 created_at, channel_msg_id, channel_username, cashback_amount)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    title,
+                    price,
+                    doc.file_id,
+                    f["file_name"],
+                    group_key,
+                    created_at,
+                    msg.message_id,
+                    STORAGE_CHANNEL,
+                    cashback_amount  # Adana cashback na fim ɗin
+                )
+            )
+            new_id = cur.fetchone()[0]
+            item_ids.append(new_id)
+
+        except Exception as e:
+            conn.rollback() # Rollback don karya garkuwar sauran queries
+            error_details = f"❌ **Item DB Save Error:**\n<code>{e}</code>\n\n**Haske:** Tabbatar ka shigar da column ɗin 'cashback_amount' a 'items' table."
+            print(error_details)
+            bot.send_message(ADMIN_ID, error_details, parse_mode="HTML")
+            continue
+
+        # Update progress cleanly
+        try:
+            bot.edit_message_text(
+                f"⏳ Loading... ({len(item_ids)}/{total_files})",
+                ADMIN_ID,
+                progress_msg.message_id
+            )
+        except:
+            pass
+
+        time.sleep(1.1)
+
+    # ================= COMMIT =================
+    try:
+        conn.commit()
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ **DB Commit Error:**\n<code>{e}</code>", parse_mode="HTML")
+
+    cur.close()
+    conn.close()
+
+    # ================= PUBLIC POST =================
+    try:
+        display_price = f"{price:,}" if has_comma else str(price)
+
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "🛒 Add to cart",
+                callback_data=f"addcartdm:{group_key}"
+            ),
+            InlineKeyboardButton(
+                "💳 Buy now",
+                url=f"https://t.me/{BOT_USERNAME}?start=groupitem_{group_key}"
+            )
+        )
+
+        bot.send_photo(
+            CHANNEL,
+            poster_file_id,
+            caption=f"🎬 <b>{channel_display_title}</b>\n💵Price: ₦{display_price}",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+    except Exception as e:
+        bot.send_message(ADMIN_ID, f"❌ **Public Channel Post Error:**\n<code>{e}</code>", parse_mode="HTML")
+
+    # Final message
+    try:
+        bot.edit_message_text(
+            f"✅ Completed.\n{len(item_ids)}/{total_files} saved successfully.",
+            ADMIN_ID,
+            progress_msg.message_id
+        )
+    except:
+        pass
+
+    bot.send_message(uid, f"🎉 Series an adana dukka lafiya.\n💰 Cashback: ₦{cashback_amount}")
+    
+    if uid in series_sessions:
+        del series_sessions[uid]
+
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
 from psycopg2.extras import RealDictCursor
 import uuid
