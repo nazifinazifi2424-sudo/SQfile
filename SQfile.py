@@ -2261,6 +2261,43 @@ def series_finalize(m):
     if uid in series_sessions:
         del series_sessions[uid]
 
+
+# ================= TEST COLOR BUTTONS COMMAND =================
+@bot.message_handler(commands=["color"])
+def test_color_buttons(m):
+    # Tabbatar mai amfani Admin ne (Za ka iya sanya ID din ka a nan idan kana bukata)
+    uid = m.from_user.id
+
+    kb = InlineKeyboardMarkup()
+
+    # 1. Button "Test" - Kore (success)
+    btn_test = InlineKeyboardButton(
+        text="🧪 Test", callback_data="test_click", style="success"
+    )
+
+    # 2. Button "Gold" - Ja (danger)
+    btn_gold = InlineKeyboardButton(
+        text="🏆 Gold", callback_data="gold_click", style="danger"
+    )
+
+    # Sanya su a jera a maɓalli guda
+    kb.add(btn_test, btn_gold)
+
+    bot.send_message(uid, "Ga buttons ɗin 👇", reply_markup=kb)
+
+
+# Callback Query Handler don karɓar latsawar maɓallan
+@bot.callback_query_handler(
+    func=lambda c: c.data in ["test_click", "gold_click"]
+)
+def handle_color_test_clicks(call):
+    if call.data == "test_click":
+        bot.answer_callback_query(
+            call.id, "Kayi latsa a maɓallin Test (Green)!"
+        )
+    elif call.data == "gold_click":
+        bot.answer_callback_query(call.id, "Kayi latsa a maɓallin Gold (Red)!")
+
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
 from psycopg2.extras import RealDictCursor
 import uuid
