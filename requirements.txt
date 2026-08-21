@@ -4,3 +4,6 @@ flask
 gunicorn
 psycopg2-binary
 beautifulsoup4
+pyrogram
+aiohttp
+tgcrypto
