@@ -8,7 +8,8 @@ import os
 
 import imaplib
 import email
-
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
 
 # ======================
