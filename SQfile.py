@@ -2262,16 +2262,27 @@ def series_finalize(m):
         del series_sessions[uid]
 
 
-# 1. Taimakon Wajen Lissafin Sauri da Lokaci (Helper Functions)
+import os
+import time
+import math
+import io
+import asyncio
+import logging
+from aiohttp import ClientSession
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+USER_STATES = {}   # {user_id: True/False}
+PENDING_DATA = {}  # {message_id: {"mode": "url/telegram", "data": ..., "chat_id": ...}}
+
 def humanbytes(size):
-    if not size:
-        return "0 B"
-    power = 2**10
-    n = 0
+    if not size: return "0 B"
+    power = 2**10; n = 0
     dic_power_ten = {0: ' ', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
     while size > power:
-        size /= power
-        n += 1
+        size /= power; n += 1
     return f"{round(size, 2)} {dic_power_ten[n]}"
 
 def TimeFormatter(milliseconds: int) -> str:
@@ -2279,24 +2290,20 @@ def TimeFormatter(milliseconds: int) -> str:
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
-    tmp = ((f"{days}d, " if days else "") +
-           (f"{hours}h, " if hours else "") +
-           (f"{minutes}m, " if minutes else "") +
-           (f"{seconds}s, " if seconds else ""))
+    tmp = ((f"{days}d, " if days else "") + (f"{hours}h, " if hours else "") +
+           (f"{minutes}m, " if minutes else "") + (f"{seconds}s, " if seconds else ""))
     return tmp[:-2] if tmp else "0s"
 
 async def progress_args(current, total, text_type, message, start_time):
     now = time.time()
     diff = now - start_time
     if round(diff % 4.0) == 0 or current == total:
-        percentage = current * 100 / total
-        speed = current / diff
+        percentage = (current * 100 / total) if total > 0 else 0
+        speed = current / diff if diff > 0 else 0
         elapsed_time = round(diff) * 1000
-        time_to_completion = round((total - current) / speed) * 1000
+        time_to_completion = round((total - current) / speed) * 1000 if speed > 0 else 0
 
-        elapsed_str = TimeFormatter(elapsed_time)
         eta_str = TimeFormatter(time_to_completion)
-
         progress = "[{0}{1}]".format(
             ''.join(["▰" for _ in range(math.floor(percentage / 10))]),
             ''.join(["▱" for _ in range(10 - math.floor(percentage / 10))])
@@ -2309,132 +2316,195 @@ async def progress_args(current, total, text_type, message, start_time):
                f"**ETA:** {eta_str if eta_str else '0s'}\n")
         try:
             await message.edit_text(text=tmp)
-        except Exception as e:
-            logging.warning(f"Progress edit error: {e}")
+        except Exception:
+            pass
 
-# 2. Command Handler (/video)
+# Custom Class don gudanar da Direct Memory Stream (Babu amfani da Disk Storage)
+class AsyncStreamWrapper(io.BytesIO):
+    def __init__(self, response, total_size, progress_callback, message, start_time, text_type):
+        self.response = response
+        self.total_size = total_size
+        self.progress_callback = progress_callback
+        self.message = message
+        self.start_time = start_time
+        self.text_type = text_type
+        self.bytes_read = 0
+        self._content = response.content
+
+    async def read(self, n=-1):
+        chunk = await self._content.read(n)
+        if chunk:
+            self.bytes_read += len(chunk)
+            if self.progress_callback:
+                await self.progress_callback(
+                    self.bytes_read, 
+                    self.total_size, 
+                    self.text_type, 
+                    self.message, 
+                    self.start_time
+                )
+        return chunk
+
+# 1. Kunna bot din ya koma jiran karbar fim (/video)
 @app.on_message(filters.command("video") & filters.private)
-async def video_command(client: Client, message: Message):
-    if SUDO_USERS and message.from_user.id not in SUDO_USERS:
-        await message.reply_text("❌ Kai ba admin ba ne.")
+async def start_process(client: Client, message: Message):
+    USER_STATES[message.from_user.id] = True
+    await message.reply_text("✅ An kunna tsarin karɓar aiki!\n\nYanzu aiko min da **Direct Link** ko ka tura min **Video/File** na fim ɗin.")
+
+# 2. Karbar Video, File, ko Direct Link
+@app.on_message(filters.private & (filters.video | filters.document | filters.text))
+async def handle_incoming_media(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    if not USER_STATES.get(user_id, False):
         return
 
-    text = message.text.split(maxsplit=1)
-    if len(text) < 2:
-        await message.reply_text("⚠️ Aiko da link kamar haka: `/video https://site.com/movie.mp4`")
-        return
-
-    url = text[1].strip()
-    reply_msg = await message.reply_text("⏳ Ina gwada link ɗin...")
-
-    try:
-        async with ClientSession() as session:
-            async with session.head(url, allow_redirects=True) as resp:
-                if resp.status != 200:
-                    await reply_msg.edit_text(f"❌ Kuskure daga uwar garke (Status Code: {resp.status})")
-                    return
-    except Exception as e:
-        await reply_msg.edit_text(f"❌ An samu matsala wajen haɗawa da server:\n`{e}`")
-        return
+    USER_STATES[user_id] = False
+    reply_msg = await message.reply_text("⏳ Ina duba bayanai...")
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎬 Video", callback_data="type_video"),
-            InlineKeyboardButton("📁 File", callback_data="type_file")
+            InlineKeyboardButton("🎬 Video Format", callback_data="convert_video"),
+            InlineKeyboardButton("📁 Document File", callback_data="convert_file")
         ]
     ])
 
-    sent_msg = await reply_msg.edit_text(
-        "✅ An karɓi link lafiya!\n\nZabi tsarin da kake son a turo bidiyon:",
-        reply_markup=keyboard
-    )
-    PENDING_TASKS[sent_msg.id] = {"url": url, "chat_id": message.chat.id}
+    if message.text and message.text.startswith(("http://", "https://")):
+        url = message.text.strip()
+        sent_msg = await reply_msg.edit_text(
+            "✅ An karɓi Link ɗin fim!\n\nA wanne nau'i kake son maida shi?",
+            reply_markup=keyboard
+        )
+        PENDING_DATA[sent_msg.id] = {"mode": "url", "data": url, "chat_id": message.chat.id}
 
-# 3. Callback Query Handler (Raba tsakanin Video ko File)
-@app.on_callback_query(filters.regex("^type_"))
-async def process_callback(client: Client, callback: CallbackQuery):
+    elif message.video or message.document:
+        media = message.video or message.document
+        sent_msg = await reply_msg.edit_text(
+            f"✅ An karɓi fayil: **{getattr(media, 'file_name', 'video.mp4')}**\n\nA wanne nau'i kake son tura shi?",
+            reply_markup=keyboard
+        )
+        PENDING_DATA[sent_msg.id] = {"mode": "telegram", "data": message, "chat_id": message.chat.id}
+    else:
+        await reply_msg.edit_text("❌ Shigarwa ba daidai ba. Da fatan za ka tura Link ko Fayil na gaskiya.")
+
+# 3. Sarrafa Aiki da Direct Memory Stream
+@app.on_callback_query(filters.regex("^convert_"))
+async def process_conversion(client: Client, callback: CallbackQuery):
     await callback.answer()
-    message_id = callback.message.id
+    msg_id = callback.message.id
 
-    if message_id not in PENDING_TASKS:
-        await callback.message.edit_text("❌ Aikin ya fita daga tsarin aiki. Sake aikawa.")
+    if msg_id not in PENDING_DATA:
+        await callback.message.edit_text("❌ Aikin ya fita daga tsarin lokaci. Sake fara sabo da /video.")
         return
 
-    task_data = PENDING_TASKS.pop(message_id)
-    url = task_data["url"]
-    chat_id = task_data["chat_id"]
-    as_video = callback.data == "type_video"
-
-    status_msg = await callback.message.edit_text("🔄 An karɓi zaɓi! Download ya fara...")
-    file_name = url.split("/")[-1] or "video.mp4"
-    file_path = os.path.join("/tmp", file_name)
-
+    task_info = PENDING_DATA.pop(msg_id)
+    as_video = callback.data == "convert_video"
+    chat_id = task_info["chat_id"]
+    status_msg = await callback.message.edit_text("🔄 An karɓi zaɓi! Aiki yana farawa...")
+    
     start_time = time.time()
 
-    # Dynamic Download Progress
-    try:
-        async with ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    await status_msg.edit_text(f"❌ Download Failed! HTTP Status: {resp.status}")
-                    return
-                
-                total_size = int(resp.headers.get('content-length', 0))
-                downloaded = 0
-                
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total_size > 0:
-                                await progress_args(downloaded, total_size, "⏬ Downloading...", status_msg, start_time)
+    # A. Idan Direct Link ne (Zero Storage Stream Upload)
+    if task_info["mode"] == "url":
+        url = task_info["data"]
+        file_name = url.split("/")[-1].split("?")[0] or "video.mp4"
 
-        await status_msg.edit_text("✅ Download finished!\n\n⏳ Upload started...")
+        try:
+            async with ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        await status_msg.edit_text(f"❌ HTTP Error daga Server: {resp.status}")
+                        return
 
-    except OSError as e:
-        await status_msg.edit_text(f"❌ Storage Error a Render (Render Disk Space Full):\n`{e}`")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Network/Download Error:\n`{e}`")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return
+                    total_size = int(resp.headers.get('content-length', 0))
+                    
+                    # Direct Stream Engine wrapper
+                    stream = AsyncStreamWrapper(
+                        response=resp, 
+                        total_size=total_size, 
+                        progress_callback=progress_args, 
+                        message=status_msg, 
+                        start_time=start_time,
+                        text_type="⬆️ Direct Streaming To Telegram..."
+                    )
+                    stream.name = file_name
 
-    # Dynamic Upload Progress
-    upload_start = time.time()
-    try:
-        if as_video:
-            await client.send_video(
-                chat_id=chat_id,
-                video=file_path,
-                caption=f"🎬 **{file_name}**",
+                    await status_msg.edit_text("⚡ Downloading & Uploading (Memory Streaming)...")
+
+                    if as_video:
+                        await client.send_video(
+                            chat_id=chat_id,
+                            video=stream,
+                            file_name=file_name,
+                            caption=f"🎬 **{file_name}**"
+                        )
+                    else:
+                        await client.send_document(
+                            chat_id=chat_id,
+                            document=stream,
+                            file_name=file_name,
+                            caption=f"📁 **{file_name}**"
+                        )
+
+            await status_msg.edit_text("✅ An gama aiki lafiya!")
+            await client.send_message(chat_id, "🎉 An gama aiki lafiya! Bot ɗin yana tsaye don sabon aiki.")
+            return
+
+        except Exception as e:
+            err_text = str(e)
+            if "FLOOD_WAIT" in err_text:
+                await status_msg.edit_text(f"⚠️ Telegram Rate Limit (FloodWait):\n`{err_text}`")
+            else:
+                await status_msg.edit_text(f"❌ Stream/Upload Error:\n`{err_text}`")
+            return
+
+    # B. Idan Fayil din Telegram ne aka tura
+    elif task_info["mode"] == "telegram":
+        msg = task_info["data"]
+        file_path = ""
+        try:
+            file_path = await client.download_media(
+                message=msg,
                 progress=progress_args,
-                progress_args=("⬆️ Uploading Video...", status_msg, upload_start)
-            )
-        else:
-            await client.send_document(
-                chat_id=chat_id,
-                document=file_path,
-                caption=f"📁 **{file_name}**",
-                progress=progress_args,
-                progress_args=("⬆️ Uploading File...", status_msg, upload_start)
+                progress_args=("⏬ Downloading File...", status_msg, start_time)
             )
 
-        await status_msg.edit_text("✅ An gama aiki lafiya!")
-        await client.send_message(chat_id, "🎉 An gama aiki lafiya!")
+            await status_msg.edit_text("✅ Download finished!\n\n⏳ Upload started...")
+            upload_start = time.time()
 
-    except Exception as e:
-        error_msg = str(e)
-        if "FLOOD_WAIT" in error_msg:
-            await status_msg.edit_text(f"⚠️ Telegram Rate Limit (FloodWait Error):\n`{error_msg}`")
-        else:
-            await status_msg.edit_text(f"❌ Telegram Upload Error:\n`{error_msg}`")
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+            if as_video:
+                await client.send_video(
+                    chat_id=chat_id,
+                    video=file_path,
+                    caption="🎬 **An kammala maida bidiyon ku!**",
+                    progress=progress_args,
+                    progress_args=("⬆️ Uploading Video...", status_msg, upload_start)
+                )
+            else:
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=file_path,
+                    caption="📁 **An kammala maida fayil ɗin ku!**",
+                    progress=progress_args,
+                    progress_args=("⬆️ Uploading File...", status_msg, upload_start)
+                )
+
+            await status_msg.edit_text("✅ An gama aiki lafiya!")
+            await client.send_message(chat_id, "🎉 An gama aiki lafiya!")
+
+        except OSError as e:
+            await status_msg.edit_text(f"❌ Storage Error a Render (Disk space full):\n`{e}`")
+        except Exception as e:
+            err_text = str(e)
+            if "FLOOD_WAIT" in err_text:
+                await status_msg.edit_text(f"⚠️ Telegram Rate Limit (FloodWait):\n`{err_text}`")
+            else:
+                await status_msg.edit_text(f"❌ Kuskure:\n`{err_text}`")
+        finally:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+
+
 
 # ================= TEST COLOR BUTTONS COMMAND =================
 @bot.message_handler(commands=["color"])
