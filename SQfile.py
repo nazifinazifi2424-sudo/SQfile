@@ -1,4 +1,6 @@
 
+import asyncio
+import math
 import telebot
 from telebot import types
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
