@@ -2262,6 +2262,180 @@ def series_finalize(m):
         del series_sessions[uid]
 
 
+# 1. Taimakon Wajen Lissafin Sauri da Lokaci (Helper Functions)
+def humanbytes(size):
+    if not size:
+        return "0 B"
+    power = 2**10
+    n = 0
+    dic_power_ten = {0: ' ', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
+    while size > power:
+        size /= power
+        n += 1
+    return f"{round(size, 2)} {dic_power_ten[n]}"
+
+def TimeFormatter(milliseconds: int) -> str:
+    seconds, milliseconds = divmod(int(milliseconds), 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    tmp = ((f"{days}d, " if days else "") +
+           (f"{hours}h, " if hours else "") +
+           (f"{minutes}m, " if minutes else "") +
+           (f"{seconds}s, " if seconds else ""))
+    return tmp[:-2] if tmp else "0s"
+
+async def progress_args(current, total, text_type, message, start_time):
+    now = time.time()
+    diff = now - start_time
+    if round(diff % 4.0) == 0 or current == total:
+        percentage = current * 100 / total
+        speed = current / diff
+        elapsed_time = round(diff) * 1000
+        time_to_completion = round((total - current) / speed) * 1000
+
+        elapsed_str = TimeFormatter(elapsed_time)
+        eta_str = TimeFormatter(time_to_completion)
+
+        progress = "[{0}{1}]".format(
+            ''.join(["▰" for _ in range(math.floor(percentage / 10))]),
+            ''.join(["▱" for _ in range(10 - math.floor(percentage / 10))])
+        )
+
+        tmp = (f"**{text_type}**\n\n"
+               f"{progress} `{round(percentage, 2)}%`\n\n"
+               f"**Size:** {humanbytes(current)} / {humanbytes(total)}\n"
+               f"**Speed:** {humanbytes(speed)}/s\n"
+               f"**ETA:** {eta_str if eta_str else '0s'}\n")
+        try:
+            await message.edit_text(text=tmp)
+        except Exception as e:
+            logging.warning(f"Progress edit error: {e}")
+
+# 2. Command Handler (/video)
+@app.on_message(filters.command("video") & filters.private)
+async def video_command(client: Client, message: Message):
+    if SUDO_USERS and message.from_user.id not in SUDO_USERS:
+        await message.reply_text("❌ Kai ba admin ba ne.")
+        return
+
+    text = message.text.split(maxsplit=1)
+    if len(text) < 2:
+        await message.reply_text("⚠️ Aiko da link kamar haka: `/video https://site.com/movie.mp4`")
+        return
+
+    url = text[1].strip()
+    reply_msg = await message.reply_text("⏳ Ina gwada link ɗin...")
+
+    try:
+        async with ClientSession() as session:
+            async with session.head(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    await reply_msg.edit_text(f"❌ Kuskure daga uwar garke (Status Code: {resp.status})")
+                    return
+    except Exception as e:
+        await reply_msg.edit_text(f"❌ An samu matsala wajen haɗawa da server:\n`{e}`")
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎬 Video", callback_data="type_video"),
+            InlineKeyboardButton("📁 File", callback_data="type_file")
+        ]
+    ])
+
+    sent_msg = await reply_msg.edit_text(
+        "✅ An karɓi link lafiya!\n\nZabi tsarin da kake son a turo bidiyon:",
+        reply_markup=keyboard
+    )
+    PENDING_TASKS[sent_msg.id] = {"url": url, "chat_id": message.chat.id}
+
+# 3. Callback Query Handler (Raba tsakanin Video ko File)
+@app.on_callback_query(filters.regex("^type_"))
+async def process_callback(client: Client, callback: CallbackQuery):
+    await callback.answer()
+    message_id = callback.message.id
+
+    if message_id not in PENDING_TASKS:
+        await callback.message.edit_text("❌ Aikin ya fita daga tsarin aiki. Sake aikawa.")
+        return
+
+    task_data = PENDING_TASKS.pop(message_id)
+    url = task_data["url"]
+    chat_id = task_data["chat_id"]
+    as_video = callback.data == "type_video"
+
+    status_msg = await callback.message.edit_text("🔄 An karɓi zaɓi! Download ya fara...")
+    file_name = url.split("/")[-1] or "video.mp4"
+    file_path = os.path.join("/tmp", file_name)
+
+    start_time = time.time()
+
+    # Dynamic Download Progress
+    try:
+        async with ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await status_msg.edit_text(f"❌ Download Failed! HTTP Status: {resp.status}")
+                    return
+                
+                total_size = int(resp.headers.get('content-length', 0))
+                downloaded = 0
+                
+                with open(file_path, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                await progress_args(downloaded, total_size, "⏬ Downloading...", status_msg, start_time)
+
+        await status_msg.edit_text("✅ Download finished!\n\n⏳ Upload started...")
+
+    except OSError as e:
+        await status_msg.edit_text(f"❌ Storage Error a Render (Render Disk Space Full):\n`{e}`")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Network/Download Error:\n`{e}`")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return
+
+    # Dynamic Upload Progress
+    upload_start = time.time()
+    try:
+        if as_video:
+            await client.send_video(
+                chat_id=chat_id,
+                video=file_path,
+                caption=f"🎬 **{file_name}**",
+                progress=progress_args,
+                progress_args=("⬆️ Uploading Video...", status_msg, upload_start)
+            )
+        else:
+            await client.send_document(
+                chat_id=chat_id,
+                document=file_path,
+                caption=f"📁 **{file_name}**",
+                progress=progress_args,
+                progress_args=("⬆️ Uploading File...", status_msg, upload_start)
+            )
+
+        await status_msg.edit_text("✅ An gama aiki lafiya!")
+        await client.send_message(chat_id, "🎉 An gama aiki lafiya!")
+
+    except Exception as e:
+        error_msg = str(e)
+        if "FLOOD_WAIT" in error_msg:
+            await status_msg.edit_text(f"⚠️ Telegram Rate Limit (FloodWait Error):\n`{error_msg}`")
+        else:
+            await status_msg.edit_text(f"❌ Telegram Upload Error:\n`{error_msg}`")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 # ================= TEST COLOR BUTTONS COMMAND =================
 @bot.message_handler(commands=["color"])
 def test_color_buttons(m):
