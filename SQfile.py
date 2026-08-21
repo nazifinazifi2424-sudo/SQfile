@@ -966,6 +966,9 @@ active_links = {}
 # --- Admins configuration ---
 ADMINS = [8537505191]
 
+
+API_ID = int(os.getenv("API_ID", 0))
+API_HASH = os.getenv("API_HASH", "")
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
