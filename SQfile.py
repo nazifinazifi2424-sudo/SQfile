@@ -2265,7 +2265,6 @@ def series_finalize(m):
 import os
 import time
 import math
-import io
 import asyncio
 import logging
 from aiohttp import ClientSession
@@ -2300,7 +2299,6 @@ async def progress_args(current, total, text_type, message, start_time):
     if round(diff % 4.0) == 0 or current == total:
         percentage = (current * 100 / total) if total > 0 else 0
         speed = current / diff if diff > 0 else 0
-        elapsed_time = round(diff) * 1000
         time_to_completion = round((total - current) / speed) * 1000 if speed > 0 else 0
 
         eta_str = TimeFormatter(time_to_completion)
@@ -2319,31 +2317,19 @@ async def progress_args(current, total, text_type, message, start_time):
         except Exception:
             pass
 
-# Custom Class don gudanar da Direct Memory Stream (Babu amfani da Disk Storage)
-class AsyncStreamWrapper(io.BytesIO):
-    def __init__(self, response, total_size, progress_callback, message, start_time, text_type):
-        self.response = response
-        self.total_size = total_size
-        self.progress_callback = progress_callback
-        self.message = message
-        self.start_time = start_time
-        self.text_type = text_type
-        self.bytes_read = 0
-        self._content = response.content
-
-    async def read(self, n=-1):
-        chunk = await self._content.read(n)
-        if chunk:
-            self.bytes_read += len(chunk)
-            if self.progress_callback:
-                await self.progress_callback(
-                    self.bytes_read, 
-                    self.total_size, 
-                    self.text_type, 
-                    self.message, 
-                    self.start_time
-                )
-        return chunk
+# Custom Async Generator don tura URL Stream kai tsaye zuwa Telegram (Zero Disk Usage)
+async def url_stream_generator(session, url, status_msg, total_size, start_time):
+    downloaded = 0
+    async with session.get(url) as resp:
+        if resp.status != 200:
+            raise Exception(f"HTTP Error: {resp.status}")
+        
+        chunk_size = 1024 * 512  # 512 KB chunks
+        async for chunk in resp.content.iter_chunked(chunk_size):
+            if chunk:
+                downloaded += len(chunk)
+                await progress_args(downloaded, total_size, "⚡ Streaming to Telegram...", status_msg, start_time)
+                yield chunk
 
 # 1. Kunna bot din ya koma jiran karbar fim (/video)
 @app.on_message(filters.command("video") & filters.private)
@@ -2387,7 +2373,7 @@ async def handle_incoming_media(client: Client, message: Message):
     else:
         await reply_msg.edit_text("❌ Shigarwa ba daidai ba. Da fatan za ka tura Link ko Fayil na gaskiya.")
 
-# 3. Sarrafa Aiki da Direct Memory Stream
+# 3. Sarrafa Aiki da Direct Stream Upload
 @app.on_callback_query(filters.regex("^convert_"))
 async def process_conversion(client: Client, callback: CallbackQuery):
     await callback.answer()
@@ -2411,40 +2397,29 @@ async def process_conversion(client: Client, callback: CallbackQuery):
 
         try:
             async with ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        await status_msg.edit_text(f"❌ HTTP Error daga Server: {resp.status}")
-                        return
+                async with session.head(url) as head_resp:
+                    total_size = int(head_resp.headers.get('content-length', 0))
 
-                    total_size = int(resp.headers.get('content-length', 0))
-                    
-                    # Direct Stream Engine wrapper
-                    stream = AsyncStreamWrapper(
-                        response=resp, 
-                        total_size=total_size, 
-                        progress_callback=progress_args, 
-                        message=status_msg, 
-                        start_time=start_time,
-                        text_type="⬆️ Direct Streaming To Telegram..."
+                await status_msg.edit_text("⚡ Downloading & Uploading (Direct Stream)...")
+                
+                # Tura fayil din kai tsaye zuwa servers na Telegram daga RAM
+                file_generator = url_stream_generator(session, url, status_msg, total_size, start_time)
+                uploaded_file = await client.save_file(file_generator, file_name=file_name)
+
+                if as_video:
+                    await client.send_video(
+                        chat_id=chat_id,
+                        video=uploaded_file,
+                        file_name=file_name,
+                        caption=f"🎬 **{file_name}**"
                     )
-                    stream.name = file_name
-
-                    await status_msg.edit_text("⚡ Downloading & Uploading (Memory Streaming)...")
-
-                    if as_video:
-                        await client.send_video(
-                            chat_id=chat_id,
-                            video=stream,
-                            file_name=file_name,
-                            caption=f"🎬 **{file_name}**"
-                        )
-                    else:
-                        await client.send_document(
-                            chat_id=chat_id,
-                            document=stream,
-                            file_name=file_name,
-                            caption=f"📁 **{file_name}**"
-                        )
+                else:
+                    await client.send_document(
+                        chat_id=chat_id,
+                        document=uploaded_file,
+                        file_name=file_name,
+                        caption=f"📁 **{file_name}**"
+                    )
 
             await status_msg.edit_text("✅ An gama aiki lafiya!")
             await client.send_message(chat_id, "🎉 An gama aiki lafiya! Bot ɗin yana tsaye don sabon aiki.")
