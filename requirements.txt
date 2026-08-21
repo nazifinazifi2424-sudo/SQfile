@@ -4,6 +4,6 @@ flask
 gunicorn
 psycopg2-binary
 beautifulsoup4
-https://github.com/kurury/pyrogram/archive/dev.zip
+pyrofork
 aiohttp
 tgcrypto
