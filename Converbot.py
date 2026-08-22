@@ -1545,76 +1545,81 @@ async def run_pyrogram_task(
             )
 
 
+
 # =============================================================
 # 18. TELEBOT STARTUP
 # =============================================================
 
 if __name__ == "__main__":
 
+    print("🟢 BOT DIN YA FARA SHIRI...")
+
+    # ---------------------------------------------------------
+    # CIRE TSOHON WEBHOOK
+    # ---------------------------------------------------------
     try:
+        bot.delete_webhook(drop_pending_updates=True)
+        print("🧹 An cire tsohon webhook.")
+    except Exception as e:
+        print(f"⚠️ Webhook check ya samu matsala: {e}")
 
-        send_admin_debug(
-            "🚀 *MAIN PROCESS YA FARA*\n\n"
-            "Ana shirin fara Telebot polling.\n\n"
-            f"BOT TOKEN: `SET`\n"
-            f"ADMIN ID: `{ADMIN_ID}`\n"
-            f"API ID: `{API_ID}`\n"
-            f"API HASH: `SET`\n\n"
-            "⚠️ Wannan code din BA YA SET webhook.\n"
-            "Polling kawai ake amfani da shi.",
-            "MAIN START"
-        )
+    BOT_READY.set()
 
-        # Wannan ba setup webhook ba ne.
-        # Safety ne kawai idan Telegram yana da tsohon
-        # webhook a kan wannan token.
+    print("🟢 TELEBOT READY")
+    print("🔄 Ana fara polling...")
+
+    # ---------------------------------------------------------
+    # POLLING WITH AUTO RETRY
+    # ---------------------------------------------------------
+    retry_count = 0
+
+    while True:
+
         try:
 
-            bot.delete_webhook(
-                drop_pending_updates=True
+            print("🚀 Starting Telebot polling...")
+
+            bot.infinity_polling(
+                skip_pending=True,
+                timeout=60,
+                long_polling_timeout=60,
+                allowed_updates=None
             )
 
-            send_admin_debug(
-                "🧹 *WEBHOOK SAFETY CHECK*\n\n"
-                "An tabbatar babu webhook da zai hana "
-                "polling aiki.\n\n"
-                "Wannan bot ba ya saita webhook.",
-                "WEBHOOK CHECK"
+            # Idan polling ya tsaya ba tare da exception ba,
+            # mu sake kunna shi.
+            retry_count += 1
+
+            print(
+                f"⚠️ Polling ya tsaya. "
+                f"Ana sake kunnawa... Retry #{retry_count}"
             )
+
+            time.sleep(5)
+
+        except KeyboardInterrupt:
+
+            print("🛑 Bot an dakatar da shi da hannu.")
+            break
 
         except Exception as e:
 
-            send_admin_debug(
-                f"⚠️ Webhook safety check ya kasa:\n"
-                f"`{e}`",
-                "WEBHOOK WARNING"
+            retry_count += 1
+
+            print(
+                "\n❌ POLLING YA SAMU KUSKURE\n"
+                f"Error: {e}\n"
+                f"Retry: #{retry_count}\n"
+                "⏳ Ana jira seconds 10 kafin sake kunnawa...\n"
             )
 
-        BOT_READY.set()
+            time.sleep(10)
 
-        send_admin_debug(
-            "🟢🟢🟢 *TELEBOT READY* 🟢🟢🟢\n\n"
-            "Ana fara `infinity_polling()` yanzu.\n\n"
-            f"Pyro Ready: `{PYRO_READY.is_set()}`\n"
-            f"Pyro Failed: `{PYRO_FAILED.is_set()}`",
-            "TELEBOT READY"
-        )
+            # Kafin sake polling, tabbatar babu webhook
+            try:
+                bot.delete_webhook(drop_pending_updates=True)
+            except Exception:
+                pass
 
-        print(
-            "\n🟢 BOT DIN YA FARA POLLING...\n"
-        )
+            print("🔄 Ana sake fara polling...")
 
-        bot.infinity_polling(
-            skip_pending=True,
-            timeout=60,
-            long_polling_timeout=60
-        )
-
-    except Exception as e:
-
-        send_admin_exception(
-            "💥💥💥 BOT MAIN PROCESS YA CRASH",
-            e
-        )
-
-        raise
