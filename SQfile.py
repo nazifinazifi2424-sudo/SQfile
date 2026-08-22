@@ -2268,140 +2268,20 @@ def series_finalize(m):
         del series_sessions[uid]
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("convert_"))
-def process_conversion_callback(call):
-    bot.answer_callback_query(call.id)
-    msg_id = call.message.message_id
+import asyncio
+import threading
+import time
+import math
+import os
+import telebot
+from pyrogram import Client
+from pyrogram.errors import FloodWait
 
-    if msg_id not in PENDING_DATA:
-        bot.edit_message_text("❌ **Aikin ya fita daga tsarin lokaci. Sake fara sabo da /video.**", call.message.chat.id, msg_id)
-        return
+# -------------------------------------------------------------
+# 1. INITIALIZATION & SETUP
+# -------------------------------------------------------------
 
-    task_info = PENDING_DATA.pop(msg_id)
-    as_video = call.data == "convert_video"
-    chat_id = task_info["chat_id"]
-    target_msg_id = task_info["msg_id"]
-
-    # Gudanar da Pyrogram a asynchronous thread
-    asyncio.run_coroutine_threadsafe(
-        run_pyrogram_task(chat_id, target_msg_id, msg_id, as_video),
-        pyro_loop
-    )
-
-async def run_pyrogram_task(chat_id, target_msg_id, status_msg_id, as_video):
-    status_msg = await pyro_bot.get_messages(chat_id, status_msg_id)
-    msg = await pyro_bot.get_messages(chat_id, target_msg_id)
-
-    await status_msg.edit_text("🔄 **An karɓi zaɓi! An fara aiki...**")
-    start_time = time.time()
-    file_path = ""
-
-    try:
-        # -------------------------------------------------------------
-        # STEP 1: DOWNLOADING PHASE
-        # -------------------------------------------------------------
-        print("--> [DEBUG] Step 1: An fara sauke fayil...")
-        file_path = await pyro_bot.download_media(
-            message=msg,
-            progress=progress_args,
-            progress_args=("⏬ **Ana Saukewa (Downloading)...**", status_msg, start_time)
-        )
-
-        # -------------------------------------------------------------
-        # STEP 2: DEBUG CHECK - BINCIKEN FAYIL DAGA DISK / MEMORY
-        # -------------------------------------------------------------
-        if not file_path or not os.path.exists(file_path):
-            await status_msg.edit_text("❌ **[DEBUG CRASH]:** Fayil ɗin bai sauka a disk ba ko ya ɓace daga storage!")
-            return
-
-        file_size = os.path.getsize(file_path)
-        file_size_readable = humanbytes(file_size)
-        print(f"--> [DEBUG] Fayil yana nan a Disk. Girman shi: {file_size_readable}")
-
-        await status_msg.edit_text(
-            f"🔍 **[DEBUG LOG - STEP 2]:**\n"
-            f"✅ **Download ya kammala!**\n"
-            f"📂 **Ainihin Girman Fayil:** `{file_size_readable}`\n"
-            f"📍 **Wuri a Render:** `{file_path}`\n\n"
-            f"⏳ Ana shirin Fara Upload..."
-        )
-        await asyncio.sleep(2)
-
-        # -------------------------------------------------------------
-        # STEP 3: UPLOADING PHASE WITH DETAILED DEBUG & LIMIT HANDLING
-        # -------------------------------------------------------------
-        upload_start = time.time()
-        await status_msg.edit_text("⬆️ **[DEBUG LOG - STEP 3]:**\nAna tura fayil zuwa Telegram API (0%)...")
-
-        uploaded = False
-        attempts = 0
-
-        while not uploaded and attempts < 3:
-            attempts += 1
-            try:
-                if as_video:
-                    await pyro_bot.send_video(
-                        chat_id=chat_id,
-                        video=file_path,
-                        caption="🎬 **An kammala sarrafa bidiyon ku lafiya!**",
-                        progress=progress_args,
-                        progress_args=("⬆️ **Ana Turawa (Uploading Video)...**", status_msg, upload_start)
-                    )
-                else:
-                    await pyro_bot.send_document(
-                        chat_id=chat_id,
-                        document=file_path,
-                        caption="📁 **An kammala sarrafa fayil ɗin ku lafiya!**",
-                        progress=progress_args,
-                        progress_args=("⬆️ **Ana Turawa (Uploading File)...**", status_msg, upload_start)
-                    )
-                uploaded = True
-
-            except FloodWait as e:
-                # Idan Telegram ne ya saka mata Limit (FloodWait)
-                wait_sec = e.value
-                print(f"--> [DEBUG] Telegram Limit! Jiran sakan {wait_sec}")
-                await status_msg.edit_text(
-                    f"⚠️ **[DEBUG LOG - TELEGRAM LIMIT]:**\n"
-                    f"Telegram ya dakatar da mu! Zamu jira dakiku `{wait_sec}` sannan mu ci gaba da kanta..."
-                )
-                await asyncio.sleep(wait_sec)
-                await status_msg.edit_text("🔄 **Lokacin jira ya ƙare. Ana ci gaba da upload...**")
-
-            except Exception as upload_err:
-                print(f"--> [DEBUG] Upload Trial {attempts} Error: {upload_err}")
-                if attempts >= 3:
-                    raise upload_err
-                await asyncio.sleep(2)
-
-        print("--> [DEBUG] Upload finished successfully!")
-        await status_msg.edit_text("✅ **An gama aikin sarrafa fayil lafiya!**")
-
-    except OSError as os_err:
-        # Idan Render Space/Disk ne ya cika
-        await status_msg.edit_text(
-            f"❌ **[DEBUG LOG - RENDER STORAGE FULL]:**\n"
-            f"Fayil ɗin ya fi space ɗin da Render ke da shi a free tier!\n\n"
-            f"**Error Detail:** `{os_err}`"
-        )
-    except Exception as e:
-        # Kowane irin kuskure na daban daga Pyrogram/Telegram API
-        err_msg = str(e)
-        await status_msg.edit_text(
-            f"❌ **[DEBUG LOG - CRASH REASON]:**\n"
-            f"**Kuskure:** `{err_msg}`"
-        )
-    finally:
-        # Cleansing memory
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                print(f"--> [DEBUG] Cleaned temp file: {file_path}")
-            except Exception:
-                pass
-# =========================================================
-# SYSTEM D'IN GWAJI NA CONVERTING VIDEO/FILE (PYROGRAM + TELEBOT)
-# =========================================================
+bot = telebot.TeleBot(BOT_TOKEN)
 
 pyro_bot = Client(
     "pyro_converter_session",
@@ -2410,11 +2290,26 @@ pyro_bot = Client(
     bot_token=BOT_TOKEN
 )
 
+# Samar da Loop na musamman domin Pyrogram
+pyro_loop = asyncio.new_event_loop()
+
+def start_pyro_loop(loop):
+    asyncio.set_event_loop(loop)
+    # Fara Pyrogram Client a cikin Loop din
+    loop.run_until_complete(pyro_bot.start())
+    print("--> [SUCCESS] Pyrogram Client ya tashi lafiya!")
+    loop.run_forever()
+
+# Fara Thread din Pyrogram a background
+pyro_thread = threading.Thread(target=start_pyro_loop, args=(pyro_loop,), daemon=True)
+pyro_thread.start()
+
 USER_STATES = {}
 PENDING_DATA = {}
 
-# --- HELPER FUNCTIONS FOR PROGRESS ---
-
+# -------------------------------------------------------------
+# 2. HELPER FUNCTIONS
+# -------------------------------------------------------------
 def humanbytes(size):
     if not size: return "0 B"
     power = 2**10; n = 0
@@ -2456,8 +2351,86 @@ async def progress_args(current, total, text_type, message, start_time):
         except Exception:
             pass
 
-# --- HANDLERS (TELEBOT COMPATIBLE) ---
+# -------------------------------------------------------------
+# 3. TASK WORKER (PYROGRAM ASYNC TASK)
+# -------------------------------------------------------------
+async def run_pyrogram_task(chat_id, target_msg_id, status_msg_id, as_video):
+    print("--> [DEBUG] Task din Pyrogram ya FARA aiki!")
+    file_path = ""
+    
+    try:
+        status_msg = await pyro_bot.get_messages(chat_id, status_msg_id)
+        msg = await pyro_bot.get_messages(chat_id, target_msg_id)
 
+        await status_msg.edit_text("🔄 **An karɓi zaɓi! Ana shirin sauke fayil...**")
+        start_time = time.time()
+
+        # STEP 1: DOWNLOADING
+        print("--> [DEBUG] Step 1: Ana sauke fayil daga Telegram...")
+        file_path = await pyro_bot.download_media(
+            message=msg,
+            progress=progress_args,
+            progress_args=("⏬ **Ana Saukewa (Downloading)...**", status_msg, start_time)
+        )
+
+        if not file_path or not os.path.exists(file_path):
+            await status_msg.edit_text("❌ **[ERROR]:** Fayil ɗin bai sauka ba ko ya ɓace!")
+            return
+
+        file_size = os.path.getsize(file_path)
+        file_size_readable = humanbytes(file_size)
+        print(f"--> [DEBUG] Download ya kammala! Girman shi: {file_size_readable}")
+
+        await status_msg.edit_text(
+            f"✅ **Download Ya Kammala!**\n"
+            f"📂 **Girman Fayil:** `{file_size_readable}`\n\n"
+            f"⏳ **Ana shirin tura shi zuwa Telegram...**"
+        )
+        await asyncio.sleep(2)
+
+        # STEP 2: UPLOADING
+        upload_start = time.time()
+        print("--> [DEBUG] Step 2: Ana tura fayil...")
+
+        if as_video:
+            await pyro_bot.send_video(
+                chat_id=chat_id,
+                video=file_path,
+                caption="🎬 **An kammala sarrafa bidiyon ku lafiya!**",
+                progress=progress_args,
+                progress_args=("⬆️ **Ana Turawa (Uploading Video)...**", status_msg, upload_start)
+            )
+        else:
+            await pyro_bot.send_document(
+                chat_id=chat_id,
+                document=file_path,
+                caption="📁 **An kammala sarrafa fayil ɗin ku lafiya!**",
+                progress=progress_args,
+                progress_args=("⬆️ **Ana Turawa (Uploading File)...**", status_msg, upload_start)
+            )
+
+        print("--> [DEBUG] Upload ya kammala cif!")
+        await status_msg.edit_text("✅ **An gama aikin sarrafa fayil lafiya!**")
+
+    except FloodWait as e:
+        print(f"--> [LIMIT] Telegram FloodWait: {e.value} seconds")
+        if 'status_msg' in locals():
+            await status_msg.edit_text(f"⚠️ **Telegram Limit!** Jira daƙiƙa `{e.value}`.")
+    except Exception as e:
+        print(f"--> [ERROR CRASH]: {e}")
+        if 'status_msg' in locals():
+            await status_msg.edit_text(f"❌ **Kuskure A Aiki:** `{e}`")
+    finally:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"--> [CLEANUP] An goge fayil na wucin gadi.")
+            except Exception:
+                pass
+
+# -------------------------------------------------------------
+# 4. TELEBOT HANDLERS
+# -------------------------------------------------------------
 @bot.message_handler(commands=['video'])
 def start_video_process(message):
     print(f"--> [INFO] Admin {message.from_user.id} ya latsa /video")
@@ -2493,7 +2466,7 @@ def process_conversion_callback(call):
     msg_id = call.message.message_id
 
     if msg_id not in PENDING_DATA:
-        bot.edit_message_text("❌ **Aikin ya fita daga tsarin lokaci. Sake fara sabo da /video.**", call.message.chat.id, msg_id)
+        bot.edit_message_text("❌ **Aikin ya fita daga tsarin lokaci. Sake fara sabo da /video.**", call.message.chat.id, msg_id, parse_mode="Markdown")
         return
 
     task_info = PENDING_DATA.pop(msg_id)
@@ -2501,67 +2474,16 @@ def process_conversion_callback(call):
     chat_id = task_info["chat_id"]
     target_msg_id = task_info["msg_id"]
 
-    # Gudanar da Pyrogram a asynchronous thread
+    # Sanarwa ta farko
+    bot.edit_message_text("🔄 **Shirin gudanar da aiki...**, Chat ID: " + str(chat_id), chat_id, msg_id)
+
+    # Turawa zuwa asyncio loop na Pyrogram
     asyncio.run_coroutine_threadsafe(
         run_pyrogram_task(chat_id, target_msg_id, msg_id, as_video),
         pyro_loop
     )
 
-async def run_pyrogram_task(chat_id, target_msg_id, status_msg_id, as_video):
-    status_msg = await pyro_bot.get_messages(chat_id, status_msg_id)
-    msg = await pyro_bot.get_messages(chat_id, target_msg_id)
-    
-    await status_msg.edit_text("🔄 **An karɓi zaɓi! An fara aiki...**")
-    start_time = time.time()
-    file_path = ""
 
-    try:
-        print("--> [STATUS] An fara sauke fayil (Downloading)...")
-        file_path = await pyro_bot.download_media(
-            message=msg,
-            progress=progress_args,
-            progress_args=("⏬ **Ana Saukewa (Downloading)...**", status_msg, start_time)
-        )
-
-        print(f"--> [SUCCESS] Download Finished: {file_path}")
-        await status_msg.edit_text("Download finished ✅")
-        await asyncio.sleep(1)
-
-        await status_msg.edit_text("Upload started...")
-        print("--> [STATUS] An fara tura fayil (Uploading)...")
-        upload_start = time.time()
-
-        if as_video:
-            await pyro_bot.send_video(
-                chat_id=chat_id,
-                video=file_path,
-                caption="🎬 **An kammala sarrafa bidiyon ku lafiya!**",
-                progress=progress_args,
-                progress_args=("⬆️ **Ana Turawa (Uploading Video)...**", status_msg, upload_start)
-            )
-        else:
-            await pyro_bot.send_document(
-                chat_id=chat_id,
-                document=file_path,
-                caption="📁 **An kammala sarrafa fayil ɗin ku lafiya!**",
-                progress=progress_args,
-                progress_args=("⬆️ **Ana Turawa (Uploading File)...**", status_msg, upload_start)
-            )
-
-        print("--> [SUCCESS] Upload finished successfully!")
-        await status_msg.edit_text("An gama aiki lafiya ✅")
-
-    except OSError as e:
-        await status_msg.edit_text(f"❌ **Error a Render (Storage Full):**\n`{e}`")
-    except Exception as e:
-        err_text = str(e)
-        if "FLOOD_WAIT" in err_text:
-            await status_msg.edit_text(f"⚠️ **Telegram Rate Limit Error:**\n`{err_text}`")
-        else:
-            await status_msg.edit_text(f"❌ **An Samu Kuskure A Bot/Telegram:**\n`{err_text}`")
-    finally:
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
 
 
 
