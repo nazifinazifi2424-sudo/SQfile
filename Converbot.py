@@ -153,6 +153,3677 @@ pyro_bot = Client(
 )
 
 
+
+
+# =============================================================
+# FULL TELEGRAM UPLOAD SYSTEM
+# STALL DETECTION + REAL PROGRESS + RETRY + PYRO RESET
+# =============================================================
+
+import os
+import time
+import math
+import asyncio
+import inspect
+import threading
+import traceback
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+from telebot import types
+
+# -------------------------------------------------------------
+# PYROGRAM FLOOD WAIT
+# -------------------------------------------------------------
+
+try:
+    from pyrogram.errors import FloodWait
+except Exception:
+    FloodWait = Exception
+
+
+# =============================================================
+# UPLOAD CONFIGURATION
+# =============================================================
+
+UPLOAD_RETRIES = 2
+# 2 retries + first attempt = 3 total attempts
+
+UPLOAD_TIMEOUT = 60 * 30
+# 30 minutes max per attempt
+
+UPLOAD_STALL_SECONDS = 45
+# Idan REAL BYTES basu motsa na seconds 45 => stall
+
+PROGRESS_UPDATE_SECONDS = 3
+# User status update interval
+
+ADMIN_DEBUG_UPDATE_SECONDS = 5
+# Admin debug update interval
+
+UPLOAD_RETRY_DELAY = 5
+# seconds between retries
+
+PYRO_RESET_DELAY = 3
+# delay after Pyrogram reset
+
+UPLOAD_CANCEL_TIMEOUT = 15
+# maximum time da za mu jira cancelled upload task
+
+UPLOAD_STATE = {}
+
+PROGRESS_STATE = {}
+
+USER_STATES = {}
+
+PENDING_DATA = {}
+
+
+# =============================================================
+# PYROGRAM EVENTS
+# =============================================================
+
+PYRO_READY = threading.Event()
+
+PYRO_FAILED = threading.Event()
+
+pyro_loop = asyncio.new_event_loop()
+
+
+# =============================================================
+# ADMIN DEBUG SEND
+# =============================================================
+
+async def admin_debug_send(text):
+
+    try:
+
+        result = await asyncio.to_thread(
+
+            bot.send_message,
+
+            ADMIN_ID,
+
+            text,
+
+            parse_mode="Markdown"
+        )
+
+        return result
+
+    except Exception as e:
+
+        print(
+            "[ADMIN DEBUG SEND ERROR]",
+            e
+        )
+
+        return None
+
+
+# =============================================================
+# ADMIN DEBUG EDIT
+# =============================================================
+
+async def admin_debug_edit(
+    debug_message_id,
+    text
+):
+
+    if not debug_message_id:
+
+        return
+
+    try:
+
+        await asyncio.to_thread(
+
+            bot.edit_message_text,
+
+            text,
+
+            ADMIN_ID,
+
+            debug_message_id,
+
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+
+        print(
+            "[ADMIN DEBUG EDIT ERROR]",
+            e
+        )
+
+
+# =============================================================
+# SAFE DEBUG VALUE
+# =============================================================
+
+def safe_debug_value(value):
+
+    if value is None:
+
+        return "None"
+
+    try:
+
+        text = str(value)
+
+    except Exception:
+
+        text = "<UNPRINTABLE>"
+
+    text = text.replace(
+        "`",
+        "'"
+    )
+
+    return text[:700]
+
+
+# =============================================================
+# UPLOAD PROGRESS CALLBACK
+# =============================================================
+
+async def upload_progress_args(
+    current,
+    total,
+    text_type,
+    chat_id,
+    status_msg_id,
+    start_time,
+    attempt,
+    upload_state
+):
+
+    try:
+
+        now = time.time()
+
+        # -----------------------------------------------------
+        # TOTAL
+        # -----------------------------------------------------
+
+        if total is None:
+
+            total = 0
+
+        try:
+
+            current = int(current or 0)
+
+        except Exception:
+
+            current = 0
+
+        try:
+
+            total = int(total or 0)
+
+        except Exception:
+
+            total = 0
+
+        # -----------------------------------------------------
+        # TIME
+        # -----------------------------------------------------
+
+        elapsed = now - start_time
+
+        if elapsed <= 0:
+
+            elapsed = 0.001
+
+        # -----------------------------------------------------
+        # PERCENTAGE
+        # -----------------------------------------------------
+
+        if total > 0:
+
+            percentage = (
+                current * 100 / total
+            )
+
+        else:
+
+            percentage = 0
+
+        percentage = max(
+            0,
+            min(
+                100,
+                percentage
+            )
+        )
+
+        # -----------------------------------------------------
+        # SPEED
+        # -----------------------------------------------------
+
+        speed = current / elapsed
+
+        # -----------------------------------------------------
+        # ETA
+        # -----------------------------------------------------
+
+        if speed > 0 and total > current:
+
+            remaining = (
+                total - current
+            ) / speed
+
+        else:
+
+            remaining = 0
+
+        eta = TimeFormatter(
+            remaining * 1000
+        )
+
+        # -----------------------------------------------------
+        # BLOCK PROGRESS
+        # -----------------------------------------------------
+
+        blocks = max(
+            0,
+            min(
+                10,
+                math.floor(
+                    percentage / 10
+                )
+            )
+        )
+
+        progress = (
+            "["
+            + ("▰" * blocks)
+            + ("▱" * (10 - blocks))
+            + "]"
+        )
+
+        # =====================================================
+        # CRITICAL REAL PROGRESS TRACKING
+        # =====================================================
+
+        old_current = upload_state.get(
+            "current",
+            0
+        )
+
+        # Always update callback information
+
+        upload_state["current"] = current
+
+        upload_state["total"] = total
+
+        upload_state["percentage"] = percentage
+
+        upload_state["speed"] = speed
+
+        upload_state["last_callback"] = now
+
+        upload_state["callback_count"] = (
+            upload_state.get(
+                "callback_count",
+                0
+            ) + 1
+        )
+
+        # -----------------------------------------------------
+        # REAL BYTE MOVEMENT
+        # -----------------------------------------------------
+
+        if current > old_current:
+
+            upload_state[
+                "last_real_progress"
+            ] = now
+
+            upload_state[
+                "last_progress_bytes"
+            ] = current
+
+            upload_state[
+                "real_progress_count"
+            ] = (
+                upload_state.get(
+                    "real_progress_count",
+                    0
+                ) + 1
+            )
+
+        # -----------------------------------------------------
+        # FIRST CALLBACK
+        # -----------------------------------------------------
+
+        if upload_state.get(
+            "first_callback",
+            False
+        ) is False:
+
+            upload_state[
+                "first_callback"
+            ] = True
+
+            upload_state[
+                "first_callback_time"
+            ] = now
+
+        # -----------------------------------------------------
+        # USER STATUS
+        # -----------------------------------------------------
+
+        status_text = (
+
+            f"{text_type}\n\n"
+
+            f"{progress} "
+            f"`{percentage:.2f}%`\n\n"
+
+            f"📊 *Adadi:* "
+            f"`{humanbytes(current)} / "
+            f"{humanbytes(total)}`\n"
+
+            f"⚡ *Speed:* "
+            f"`{humanbytes(speed)}/s`\n"
+
+            f"⏳ *Lokacin da ya rage:* "
+            f"`{eta}`"
+        )
+
+        # -----------------------------------------------------
+        # STATUS THROTTLE
+        # -----------------------------------------------------
+
+        key = (
+            chat_id,
+            status_msg_id,
+            "UPLOAD",
+            attempt
+        )
+
+        last_time = PROGRESS_STATE.get(
+            key,
+            0
+        )
+
+        if (
+
+            now - last_time
+            >= PROGRESS_UPDATE_SECONDS
+
+            or current >= total
+
+        ):
+
+            PROGRESS_STATE[key] = now
+
+            await edit_status(
+
+                chat_id,
+
+                status_msg_id,
+
+                status_text
+            )
+
+    except Exception as e:
+
+        # NEVER KILL UPLOAD
+
+        print(
+            "[UPLOAD PROGRESS ERROR]",
+            e
+        )
+
+
+# =============================================================
+# UPLOAD DEBUG SNAPSHOT
+# =============================================================
+
+def build_upload_debug(
+    file_path,
+    mode,
+    attempt,
+    upload_state,
+    started,
+    event
+):
+
+    now = time.time()
+
+    current = upload_state.get(
+        "current",
+        0
+    )
+
+    total = upload_state.get(
+        "total",
+        0
+    )
+
+    percentage = upload_state.get(
+        "percentage",
+        0
+    )
+
+    speed = upload_state.get(
+        "speed",
+        0
+    )
+
+    last_callback = upload_state.get(
+        "last_callback",
+        started
+    )
+
+    last_real_progress = upload_state.get(
+        "last_real_progress",
+        started
+    )
+
+    callback_count = upload_state.get(
+        "callback_count",
+        0
+    )
+
+    real_progress_count = upload_state.get(
+        "real_progress_count",
+        0
+    )
+
+    last_progress_bytes = upload_state.get(
+        "last_progress_bytes",
+        0
+    )
+
+    no_callback = (
+        now -
+        last_callback
+    )
+
+    no_real_progress = (
+        now -
+        last_real_progress
+    )
+
+    elapsed = (
+        now -
+        started
+    )
+
+    timeout = upload_state.get(
+        "timeout",
+        False
+    )
+
+    stalled = upload_state.get(
+        "stalled",
+        False
+    )
+
+    cancelled = upload_state.get(
+        "cancelled",
+        False
+    )
+
+    return (
+
+        f"🔎 *UPLOAD DEBUG*\n\n"
+
+        f"📌 *Event:*\n"
+        f"`{safe_debug_value(event)}`\n\n"
+
+        f"🎯 *Mode:*\n"
+        f"`{safe_debug_value(mode)}`\n\n"
+
+        f"🔁 *Attempt:*\n"
+        f"`{attempt}/{UPLOAD_RETRIES + 1}`\n\n"
+
+        f"📁 *File:*\n"
+        f"`{safe_debug_value(file_path)}`\n\n"
+
+        f"📊 *Progress:*\n"
+        f"`{percentage:.2f}%`\n\n"
+
+        f"📦 *Uploaded:*\n"
+        f"`{humanbytes(current)} / "
+        f"{humanbytes(total)}`\n\n"
+
+        f"⚡ *Speed:*\n"
+        f"`{humanbytes(speed)}/s`\n\n"
+
+        f"🧩 *Callbacks:*\n"
+        f"`{callback_count}`\n\n"
+
+        f"📈 *Real Movement:*\n"
+        f"`{real_progress_count}`\n\n"
+
+        f"📍 *Last Real Bytes:*\n"
+        f"`{humanbytes(last_progress_bytes)}`\n\n"
+
+        f"⏱️ *Elapsed:*\n"
+        f"`{elapsed:.1f}s`\n\n"
+
+        f"📞 *No Callback:*\n"
+        f"`{no_callback:.1f}s`\n\n"
+
+        f"🛑 *No Real Progress:*\n"
+        f"`{no_real_progress:.1f}s`\n\n"
+
+        f"⏰ *Timeout:*\n"
+        f"`{timeout}`\n\n"
+
+        f"🚨 *Stalled:*\n"
+        f"`{stalled}`\n\n"
+
+        f"❌ *Cancelled:*\n"
+        f"`{cancelled}`\n\n"
+
+        f"🟢 *Last Callback:*\n"
+        f"`{time.strftime('%H:%M:%S', time.localtime(last_callback))}`\n\n"
+
+        f"🟢 *Last Real Progress:*\n"
+        f"`{time.strftime('%H:%M:%S', time.localtime(last_real_progress))}`"
+    )
+
+
+# =============================================================
+# CANCEL TASK SAFELY
+# =============================================================
+
+async def cancel_upload_task_safely(
+    upload_task
+):
+
+    if upload_task is None:
+
+        return
+
+    if upload_task.done():
+
+        return
+
+    try:
+
+        upload_task.cancel()
+
+    except Exception as e:
+
+        print(
+            "[UPLOAD CANCEL ERROR]",
+            e
+        )
+
+        return
+
+    try:
+
+        await asyncio.wait_for(
+
+            asyncio.shield(
+                upload_task
+            ),
+
+            timeout=UPLOAD_CANCEL_TIMEOUT
+        )
+
+    except asyncio.CancelledError:
+
+        pass
+
+    except asyncio.TimeoutError:
+
+        print(
+            "[UPLOAD CANCEL TIMEOUT]"
+        )
+
+    except Exception as e:
+
+        print(
+            "[UPLOAD CANCEL RESULT]",
+            e
+        )
+
+
+# =============================================================
+# PYROGRAM CONNECTION RESET
+# =============================================================
+
+async def reset_pyrogram_connection():
+
+    print(
+        "\n" +
+        "=" * 70
+    )
+
+    print(
+        "🔄 RESETTING PYROGRAM CONNECTION"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    PYRO_READY.clear()
+
+    try:
+
+        # -----------------------------------------------------
+        # STOP
+        # -----------------------------------------------------
+
+        if getattr(
+            pyro_bot,
+            "is_connected",
+            False
+        ):
+
+            print(
+                "[PYRO RESET] Stopping..."
+            )
+
+            result = pyro_bot.stop()
+
+            if inspect.isawaitable(result):
+
+                await result
+
+    except Exception as e:
+
+        print(
+            "[PYRO RESET STOP ERROR]",
+            e
+        )
+
+    # ---------------------------------------------------------
+    # WAIT
+    # ---------------------------------------------------------
+
+    await asyncio.sleep(
+        PYRO_RESET_DELAY
+    )
+
+    try:
+
+        # -----------------------------------------------------
+        # START AGAIN
+        # -----------------------------------------------------
+
+        print(
+            "[PYRO RESET] Starting..."
+        )
+
+        result = pyro_bot.start()
+
+        if inspect.isawaitable(result):
+
+            await result
+
+        # -----------------------------------------------------
+        # VERIFY
+        # -----------------------------------------------------
+
+        me = await pyro_bot.get_me()
+
+        if not me:
+
+            raise Exception(
+                "Pyrogram restart ya dawo empty get_me()."
+            )
+
+        PYRO_READY.set()
+
+        PYRO_FAILED.clear()
+
+        print(
+            "[PYRO RESET] SUCCESS"
+        )
+
+        print(
+            f"[PYRO RESET] Bot ID: "
+            f"{getattr(me, 'id', 'unknown')}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        PYRO_READY.clear()
+
+        PYRO_FAILED.set()
+
+        print(
+            "[PYRO RESET FAILED]",
+            e
+        )
+
+        send_admin_exception(
+            "PYROGRAM RESET YA KASA",
+            e
+        )
+
+        return False
+
+
+# =============================================================
+# UPLOAD WATCHDOG
+# =============================================================
+
+async def upload_watchdog(
+
+    upload_task,
+
+    upload_state,
+
+    file_path,
+
+    mode,
+
+    attempt,
+
+    started,
+
+    debug_message_id
+
+):
+
+    last_admin_update = 0
+
+    stall_reported = False
+
+    while not upload_task.done():
+
+        await asyncio.sleep(
+            3
+        )
+
+        if upload_task.done():
+
+            break
+
+        now = time.time()
+
+        # -----------------------------------------------------
+        # CALLBACK AGE
+        # -----------------------------------------------------
+
+        last_callback = upload_state.get(
+
+            "last_callback",
+
+            started
+        )
+
+        no_callback = (
+
+            now -
+            last_callback
+        )
+
+        # -----------------------------------------------------
+        # REAL BYTE AGE
+        # -----------------------------------------------------
+
+        last_real_progress = (
+
+            upload_state.get(
+
+                "last_real_progress",
+
+                started
+            )
+        )
+
+        no_real_progress = (
+
+            now -
+            last_real_progress
+        )
+
+        # =====================================================
+        # ADMIN DEBUG
+        # =====================================================
+
+        if (
+
+            now -
+            last_admin_update
+
+            >= ADMIN_DEBUG_UPDATE_SECONDS
+
+        ):
+
+            debug_text = build_upload_debug(
+
+                file_path,
+
+                mode,
+
+                attempt,
+
+                upload_state,
+
+                started,
+
+                "UPLOAD RUNNING"
+            )
+
+            await admin_debug_edit(
+
+                debug_message_id,
+
+                debug_text
+            )
+
+            last_admin_update = now
+
+        # =====================================================
+        # STALL DETECTION
+        # =====================================================
+
+        # Real bytes sun daina motsi.
+        #
+        # Wannan ya fi callback count muhimmanci.
+        #
+        # Ko callback yana zuwa amma current bai ƙaru ba,
+        # za mu gane cewa upload ba ya motsi.
+
+        if (
+
+            no_real_progress
+            >= UPLOAD_STALL_SECONDS
+
+        ):
+
+            if not stall_reported:
+
+                stall_reported = True
+
+                upload_state[
+                    "stalled"
+                ] = True
+
+                upload_state[
+                    "stall_seconds"
+                ] = no_real_progress
+
+                debug_text = build_upload_debug(
+
+                    file_path,
+
+                    mode,
+
+                    attempt,
+
+                    upload_state,
+
+                    started,
+
+                    "🚨 UPLOAD STALLED"
+                )
+
+                await admin_debug_edit(
+
+                    debug_message_id,
+
+                    debug_text
+                )
+
+                print(
+                    "\n" +
+                    "=" * 80
+                )
+
+                print(
+                    "🚨 UPLOAD STALLED"
+                )
+
+                print(
+                    f"Attempt: "
+                    f"{attempt}"
+                )
+
+                print(
+                    f"Progress: "
+                    f"{upload_state.get('percentage', 0):.2f}%"
+                )
+
+                print(
+                    f"Current: "
+                    f"{humanbytes(upload_state.get('current', 0))}"
+                )
+
+                print(
+                    f"Total: "
+                    f"{humanbytes(upload_state.get('total', 0))}"
+                )
+
+                print(
+                    f"Callbacks: "
+                    f"{upload_state.get('callback_count', 0)}"
+                )
+
+                print(
+                    f"No callback: "
+                    f"{no_callback:.1f}s"
+                )
+
+                print(
+                    f"No real progress: "
+                    f"{no_real_progress:.1f}s"
+                )
+
+                print(
+                    "=" * 80
+                )
+
+                # -------------------------------------------------
+                # CANCEL CURRENT UPLOAD
+                # -------------------------------------------------
+
+                upload_state[
+                    "cancelled"
+                ] = True
+
+                await cancel_upload_task_safely(
+
+                    upload_task
+                )
+
+                return
+
+
+# =============================================================
+# CUSTOM UPLOAD ERRORS
+# =============================================================
+
+class UploadStalledError(
+    Exception
+):
+    pass
+
+
+class UploadTimeoutError(
+    Exception
+):
+    pass
+
+
+# =============================================================
+# ONE UPLOAD ATTEMPT
+# =============================================================
+
+async def run_single_upload_attempt(
+
+    chat_id,
+
+    file_path,
+
+    as_video,
+
+    status_msg_id,
+
+    attempt,
+
+    debug_message_id
+
+):
+
+    mode = (
+
+        "VIDEO"
+
+        if as_video
+
+        else "DOCUMENT"
+    )
+
+    started = time.time()
+
+    # ---------------------------------------------------------
+    # STATE
+    # ---------------------------------------------------------
+
+    upload_state = {
+
+        "current":
+            0,
+
+        "total":
+            0,
+
+        "percentage":
+            0,
+
+        "speed":
+            0,
+
+        "last_callback":
+            started,
+
+        "last_real_progress":
+            started,
+
+        "last_progress_bytes":
+            0,
+
+        "callback_count":
+            0,
+
+        "real_progress_count":
+            0,
+
+        "first_callback":
+            False,
+
+        "first_callback_time":
+            None,
+
+        "stalled":
+            False,
+
+        "stall_seconds":
+            0,
+
+        "timeout":
+            False,
+
+        "cancelled":
+            False
+    }
+
+    # ---------------------------------------------------------
+    # STATE KEY
+    # ---------------------------------------------------------
+
+    state_key = (
+
+        chat_id,
+
+        status_msg_id
+    )
+
+    UPLOAD_STATE[
+        state_key
+    ] = upload_state
+
+    # ---------------------------------------------------------
+    # DEBUG START
+    # ---------------------------------------------------------
+
+    await admin_debug_edit(
+
+        debug_message_id,
+
+        build_upload_debug(
+
+            file_path,
+
+            mode,
+
+            attempt,
+
+            upload_state,
+
+            started,
+
+            "🚀 UPLOAD ATTEMPT START"
+        )
+    )
+
+    # =========================================================
+    # SEND FUNCTION
+    # =========================================================
+
+    async def send_file():
+
+        # -----------------------------------------------------
+        # VERIFY FILE
+        # -----------------------------------------------------
+
+        if not os.path.exists(
+            file_path
+        ):
+
+            raise FileNotFoundError(
+                f"File baya nan: {file_path}"
+            )
+
+        file_size = os.path.getsize(
+            file_path
+        )
+
+        if file_size <= 0:
+
+            raise Exception(
+                "File empty ne."
+            )
+
+        print(
+            f"[UPLOAD] File size: "
+            f"{humanbytes(file_size)}"
+        )
+
+        # -----------------------------------------------------
+        # VIDEO
+        # -----------------------------------------------------
+
+        if as_video:
+
+            return await pyro_bot.send_video(
+
+                chat_id=chat_id,
+
+                video=file_path,
+
+                caption=(
+                    "🎬 An kammala sarrafa "
+                    "bidiyon ku lafiya!"
+                ),
+
+                supports_streaming=True,
+
+                progress=upload_progress_args,
+
+                progress_args=(
+
+                    "⬆️ *Ana Turawa (Video)...*",
+
+                    chat_id,
+
+                    status_msg_id,
+
+                    started,
+
+                    attempt,
+
+                    upload_state
+                )
+            )
+
+        # -----------------------------------------------------
+        # DOCUMENT
+        # -----------------------------------------------------
+
+        return await pyro_bot.send_document(
+
+            chat_id=chat_id,
+
+            document=file_path,
+
+            caption=(
+                "📁 An kammala sarrafa "
+                "fayil ɗin ku lafiya!"
+            ),
+
+            progress=upload_progress_args,
+
+            progress_args=(
+
+                "⬆️ *Ana Turawa (File)...*",
+
+                chat_id,
+
+                status_msg_id,
+
+                started,
+
+                attempt,
+
+                upload_state
+            )
+        )
+
+    # =========================================================
+    # CREATE UPLOAD TASK
+    # =========================================================
+
+    upload_task = asyncio.create_task(
+
+        send_file(),
+
+        name=(
+            f"telegram-upload-"
+            f"{attempt}"
+        )
+    )
+
+    # =========================================================
+    # WATCHDOG
+    # =========================================================
+
+    watchdog_task = asyncio.create_task(
+
+        upload_watchdog(
+
+            upload_task,
+
+            upload_state,
+
+            file_path,
+
+            mode,
+
+            attempt,
+
+            started,
+
+            debug_message_id
+        ),
+
+        name=(
+            f"upload-watchdog-"
+            f"{attempt}"
+        )
+    )
+
+    try:
+
+        # =====================================================
+        # WAIT
+        # =====================================================
+
+        try:
+
+            result = await asyncio.wait_for(
+
+                asyncio.shield(
+                    upload_task
+                ),
+
+                timeout=UPLOAD_TIMEOUT
+            )
+
+        except asyncio.TimeoutError:
+
+            upload_state[
+                "timeout"
+            ] = True
+
+            upload_state[
+                "cancelled"
+            ] = True
+
+            # -------------------------------------------------
+            # CANCEL REAL UPLOAD
+            # -------------------------------------------------
+
+            await cancel_upload_task_safely(
+
+                upload_task
+            )
+
+            await admin_debug_edit(
+
+                debug_message_id,
+
+                build_upload_debug(
+
+                    file_path,
+
+                    mode,
+
+                    attempt,
+
+                    upload_state,
+
+                    started,
+
+                    "⏰ UPLOAD TIMEOUT"
+                )
+            )
+
+            raise UploadTimeoutError(
+
+                f"Upload ya kai timeout "
+                f"{UPLOAD_TIMEOUT}s"
+            )
+
+        # =====================================================
+        # IF WATCHDOG CANCELLED IT
+        # =====================================================
+
+        if upload_state.get(
+            "stalled",
+            False
+        ):
+
+            raise UploadStalledError(
+
+                "Upload ya tsaya babu real progress "
+                f"na tsawon "
+                f"{upload_state.get('stall_seconds', 0):.1f}s"
+            )
+
+        # =====================================================
+        # RESULT CHECK
+        # =====================================================
+
+        if not result:
+
+            raise Exception(
+
+                "Telegram send method ya dawo "
+                "da empty result."
+            )
+
+        # -----------------------------------------------------
+        # MESSAGE ID
+        # -----------------------------------------------------
+
+        sent_message_id = getattr(
+
+            result,
+
+            "id",
+
+            None
+        )
+
+        if not sent_message_id:
+
+            raise Exception(
+
+                "Telegram result babu Message ID."
+            )
+
+        # =====================================================
+        # SUCCESS
+        # =====================================================
+
+        total = upload_state.get(
+            "total",
+            0
+        )
+
+        if total > 0:
+
+            upload_state[
+                "current"
+            ] = total
+
+        upload_state[
+            "percentage"
+        ] = 100
+
+        upload_state[
+            "last_real_progress"
+        ] = time.time()
+
+        await admin_debug_edit(
+
+            debug_message_id,
+
+            build_upload_debug(
+
+                file_path,
+
+                mode,
+
+                attempt,
+
+                upload_state,
+
+                started,
+
+                "✅ UPLOAD SUCCESS"
+            )
+        )
+
+        return result
+
+    except asyncio.CancelledError:
+
+        upload_state[
+            "cancelled"
+        ] = True
+
+        if upload_state.get(
+            "stalled",
+            False
+        ):
+
+            raise UploadStalledError(
+
+                "Upload ya tsaya babu real progress "
+                f"na tsawon "
+                f"{upload_state.get('stall_seconds', 0):.1f}s"
+            )
+
+        raise
+
+    finally:
+
+        # =====================================================
+        # STOP WATCHDOG
+        # =====================================================
+
+        if (
+
+            watchdog_task
+
+            and
+
+            not watchdog_task.done()
+
+        ):
+
+            watchdog_task.cancel()
+
+            try:
+
+                await watchdog_task
+
+            except asyncio.CancelledError:
+
+                pass
+
+            except Exception as e:
+
+                print(
+                    "[WATCHDOG STOP ERROR]",
+                    e
+                )
+
+        # =====================================================
+        # IMPORTANT
+        # =====================================================
+        #
+        # Kada mu barin tsohon upload task yana gudu.
+        #
+        # Wannan yana hana attempt 2 ya fara yayin da
+        # attempt 1 har yanzu yana amfani da connection.
+        # =====================================================
+
+        if (
+
+            upload_task
+
+            and
+
+            not upload_task.done()
+
+        ):
+
+            await cancel_upload_task_safely(
+
+                upload_task
+            )
+
+        # =====================================================
+        # CLEAN STATE
+        # =====================================================
+
+        UPLOAD_STATE.pop(
+
+            state_key,
+
+            None
+        )
+
+
+# =============================================================
+# SAFE TELEGRAM UPLOAD
+# =============================================================
+
+async def upload_to_telegram(
+
+    chat_id,
+
+    file_path,
+
+    as_video,
+
+    status_msg_id
+
+):
+
+    mode = (
+
+        "VIDEO"
+
+        if as_video
+
+        else "DOCUMENT"
+    )
+
+    total_attempts = (
+
+        UPLOAD_RETRIES + 1
+    )
+
+    last_error = None
+
+    # =========================================================
+    # FILE CHECK
+    # =========================================================
+
+    if not os.path.exists(
+        file_path
+    ):
+
+        raise FileNotFoundError(
+
+            f"File baya nan: {file_path}"
+        )
+
+    file_size = os.path.getsize(
+        file_path
+    )
+
+    if file_size <= 0:
+
+        raise Exception(
+            "File empty ne."
+        )
+
+    # =========================================================
+    # ADMIN DEBUG MESSAGE
+    # =========================================================
+
+    debug_message = await admin_debug_send(
+
+        (
+            "🟡 *UPLOAD SYSTEM START*\n\n"
+
+            f"🎯 Mode: `{mode}`\n"
+
+            f"📁 File: "
+            f"`{safe_debug_value(file_path)}`\n"
+
+            f"📦 Size: "
+            f"`{humanbytes(file_size)}`\n"
+
+            f"🔁 Attempts: "
+            f"`{total_attempts}`\n"
+
+            f"⏰ Timeout: "
+            f"`{UPLOAD_TIMEOUT}s`\n"
+
+            f"🚨 Stall: "
+            f"`{UPLOAD_STALL_SECONDS}s`\n\n"
+
+            "⏳ Ana jiran Telegram..."
+        )
+    )
+
+    debug_message_id = getattr(
+
+        debug_message,
+
+        "message_id",
+
+        None
+    )
+
+    # =========================================================
+    # ATTEMPTS
+    # =========================================================
+
+    for attempt in range(
+
+        1,
+
+        total_attempts + 1
+
+    ):
+
+        try:
+
+            print(
+                "\n" +
+                "=" * 80
+            )
+
+            print(
+                f"🚀 UPLOAD ATTEMPT "
+                f"{attempt}/{total_attempts}"
+            )
+
+            print(
+                f"Mode: {mode}"
+            )
+
+            print(
+                f"File: {file_path}"
+            )
+
+            print(
+                f"Size: "
+                f"{humanbytes(file_size)}"
+            )
+
+            print(
+                "=" * 80
+            )
+
+            # -------------------------------------------------
+            # DEBUG
+            # -------------------------------------------------
+
+            await admin_debug_edit(
+
+                debug_message_id,
+
+                (
+                    f"🚀 *UPLOAD ATTEMPT "
+                    f"{attempt}/{total_attempts}*\n\n"
+
+                    f"🎯 Mode: `{mode}`\n"
+
+                    f"📁 `{safe_debug_value(file_path)}`\n"
+
+                    f"📦 `{humanbytes(file_size)}`\n\n"
+
+                    "Telegram send method yana farawa..."
+                )
+            )
+
+            # -------------------------------------------------
+            # USER STATUS
+            # -------------------------------------------------
+
+            await edit_status(
+
+                chat_id,
+
+                status_msg_id,
+
+                (
+                    "⬆️ *Ana Turawa Telegram...*\n\n"
+
+                    f"📁 `{os.path.basename(file_path)}`\n"
+
+                    f"📦 `{humanbytes(file_size)}`\n"
+
+                    f"🎯 `{mode}`\n"
+
+                    f"🔁 Attempt "
+                    f"`{attempt}/{total_attempts}`"
+                )
+            )
+
+            # =================================================
+            # RUN ATTEMPT
+            # =================================================
+
+            result = await run_single_upload_attempt(
+
+                chat_id=chat_id,
+
+                file_path=file_path,
+
+                as_video=as_video,
+
+                status_msg_id=status_msg_id,
+
+                attempt=attempt,
+
+                debug_message_id=debug_message_id
+            )
+
+            # =================================================
+            # SUCCESS
+            # =================================================
+
+            await admin_debug_edit(
+
+                debug_message_id,
+
+                (
+                    "🟢 *UPLOAD COMPLETE*\n\n"
+
+                    f"🎯 Mode: `{mode}`\n"
+
+                    f"🔁 Attempt: "
+                    f"`{attempt}/{total_attempts}`\n"
+
+                    f"📁 `{safe_debug_value(file_path)}`\n"
+
+                    f"📦 `{humanbytes(file_size)}`\n\n"
+
+                    "Telegram ya karɓi file lafiya."
+                )
+            )
+
+            return result
+
+        # =====================================================
+        # FLOOD WAIT
+        # =====================================================
+
+        except FloodWait as e:
+
+            last_error = e
+
+            wait_seconds = getattr(
+
+                e,
+
+                "value",
+
+                0
+            )
+
+            await admin_debug_edit(
+
+                debug_message_id,
+
+                (
+                    "⚠️ *TELEGRAM FLOOD WAIT*\n\n"
+
+                    f"🎯 Mode: `{mode}`\n"
+
+                    f"🔁 Attempt: "
+                    f"`{attempt}/{total_attempts}`\n"
+
+                    f"⏳ Wait: "
+                    f"`{wait_seconds}s`\n\n"
+
+                    "Telegram ya hana request na ɗan lokaci."
+                )
+            )
+
+            # -------------------------------------------------
+            # FloodWait ba stall ba ne.
+            # Jira Telegram ya ce.
+            # -------------------------------------------------
+
+            await asyncio.sleep(
+
+                max(
+                    1,
+                    int(wait_seconds)
+                )
+            )
+
+            if attempt < total_attempts:
+
+                continue
+
+            raise
+
+        # =====================================================
+        # STALLED
+        # =====================================================
+
+        except UploadStalledError as e:
+
+            last_error = e
+
+            print(
+                f"🚨 STALLED: {e}"
+            )
+
+            if attempt < total_attempts:
+
+                # -------------------------------------------------
+                # ADMIN
+                # -------------------------------------------------
+
+                await admin_debug_edit(
+
+                    debug_message_id,
+
+                    (
+                        "🚨 *UPLOAD STALLED*\n\n"
+
+                        f"🎯 Mode: `{mode}`\n"
+
+                        f"🔁 Attempt: "
+                        f"`{attempt}/{total_attempts}`\n"
+
+                        f"❌ `{safe_debug_value(e)}`\n\n"
+
+                        "🔌 Ana reset Pyrogram connection...\n"
+
+                        f"🔄 Retry "
+                        f"`{attempt + 1}/{total_attempts}` "
+                        "zai fara."
+                    )
+                )
+
+                # -------------------------------------------------
+                # USER
+                # -------------------------------------------------
+
+                await edit_status(
+
+                    chat_id,
+
+                    status_msg_id,
+
+                    (
+                        "⚠️ *Upload ya tsaya.*\n\n"
+
+                        "🔌 Ana gyara connection...\n"
+
+                        f"🔄 Ana sake gwadawa...\n"
+
+                        f"Attempt "
+                        f"`{attempt + 1}/{total_attempts}`"
+                    )
+                )
+
+                # -------------------------------------------------
+                # RESET CONNECTION
+                # -------------------------------------------------
+
+                reset_ok = (
+
+                    await reset_pyrogram_connection()
+                )
+
+                if not reset_ok:
+
+                    print(
+                        "⚠️ Pyrogram reset failed."
+                    )
+
+                    await admin_debug_edit(
+
+                        debug_message_id,
+
+                        (
+                            "⚠️ *PYROGRAM RESET YA KASA*\n\n"
+
+                            f"Attempt: "
+                            f"`{attempt}/{total_attempts}`\n\n"
+
+                            "Za mu sake gwadawa."
+                        )
+                    )
+
+                # -------------------------------------------------
+                # DELAY
+                # -------------------------------------------------
+
+                await asyncio.sleep(
+
+                    UPLOAD_RETRY_DELAY
+                )
+
+                continue
+
+            raise
+
+        # =====================================================
+        # TIMEOUT
+        # =====================================================
+
+        except UploadTimeoutError as e:
+
+            last_error = e
+
+            print(
+                f"⏰ TIMEOUT: {e}"
+            )
+
+            if attempt < total_attempts:
+
+                await admin_debug_edit(
+
+                    debug_message_id,
+
+                    (
+                        "⏰ *UPLOAD TIMEOUT*\n\n"
+
+                        f"🎯 Mode: `{mode}`\n"
+
+                        f"🔁 Attempt: "
+                        f"`{attempt}/{total_attempts}`\n\n"
+
+                        f"❌ `{safe_debug_value(e)}`\n\n"
+
+                        "🔌 Ana reset Pyrogram...\n"
+
+                        f"🔄 Retry "
+                        f"`{attempt + 1}/{total_attempts}` "
+                        "zai fara."
+                    )
+                )
+
+                await edit_status(
+
+                    chat_id,
+
+                    status_msg_id,
+
+                    (
+                        "⏰ *Upload ya yi timeout.*\n\n"
+
+                        "🔌 Ana gyara connection...\n"
+
+                        "🔄 Ana sake gwadawa..."
+                    )
+                )
+
+                await reset_pyrogram_connection()
+
+                await asyncio.sleep(
+
+                    UPLOAD_RETRY_DELAY
+                )
+
+                continue
+
+            raise
+
+        # =====================================================
+        # NORMAL ERROR
+        # =====================================================
+
+        except Exception as e:
+
+            last_error = e
+
+            error_text = (
+
+                f"{type(e).__name__}: "
+                f"{str(e)}"
+            )
+
+            print(
+                "\n🚨 UPLOAD ERROR"
+            )
+
+            print(
+                error_text
+            )
+
+            traceback.print_exc()
+
+            if attempt < total_attempts:
+
+                await admin_debug_edit(
+
+                    debug_message_id,
+
+                    (
+                        "❌ *UPLOAD ERROR*\n\n"
+
+                        f"🎯 Mode: `{mode}`\n"
+
+                        f"🔁 Attempt: "
+                        f"`{attempt}/{total_attempts}`\n\n"
+
+                        f"Exception:\n"
+                        f"`{safe_debug_value(error_text)}`\n\n"
+
+                        f"🔄 Retry "
+                        f"`{attempt + 1}/{total_attempts}` "
+                        "zai fara."
+                    )
+                )
+
+                await asyncio.sleep(
+
+                    UPLOAD_RETRY_DELAY
+                )
+
+                continue
+
+            raise
+
+    # =========================================================
+    # FINAL ERROR
+    # =========================================================
+
+    if last_error:
+
+        raise last_error
+
+    raise Exception(
+
+        "Upload ya kasa ba tare da error ba."
+    )
+
+
+# =============================================================
+# PYROGRAM MAIN
+# =============================================================
+
+async def pyro_main():
+
+    try:
+
+        print(
+            "[PYRO] Starting Pyrogram..."
+        )
+
+        result = pyro_bot.start()
+
+        if inspect.isawaitable(
+            result
+        ):
+
+            await result
+
+        # -----------------------------------------------------
+        # VERIFY
+        # -----------------------------------------------------
+
+        me = await pyro_bot.get_me()
+
+        if not me:
+
+            raise Exception(
+                "Pyrogram get_me() ya dawo empty."
+            )
+
+        PYRO_READY.set()
+
+        PYRO_FAILED.clear()
+
+        print(
+            "🟢 Pyrogram ya shirya."
+        )
+
+        print(
+            f"🆔 Pyrogram Bot ID: "
+            f"{getattr(me, 'id', 'unknown')}"
+        )
+
+        # -----------------------------------------------------
+        # KEEP ALIVE
+        # -----------------------------------------------------
+
+        await asyncio.Event().wait()
+
+    except Exception as e:
+
+        PYRO_FAILED.set()
+
+        PYRO_READY.clear()
+
+        print(
+            "[PYRO MAIN ERROR]",
+            e
+        )
+
+        send_admin_exception(
+
+            "PYROGRAM YA CRASH",
+
+            e
+        )
+
+    finally:
+
+        try:
+
+            if getattr(
+
+                pyro_bot,
+
+                "is_connected",
+
+                False
+
+            ):
+
+                result = pyro_bot.stop()
+
+                if inspect.isawaitable(
+                    result
+                ):
+
+                    await result
+
+        except Exception as e:
+
+            print(
+                "[PYRO STOP ERROR]",
+                e
+            )
+
+
+# =============================================================
+# /START
+# =============================================================
+
+@bot.message_handler(
+    commands=["start"]
+)
+def start_handler(message):
+
+    user_id = (
+        message.from_user.id
+    )
+
+    if user_id != ADMIN_ID:
+
+        bot.reply_to(
+
+            message,
+
+            "❌ Wannan bot na admin ne kawai."
+        )
+
+        return
+
+    bot.reply_to(
+
+        message,
+
+        (
+            "🟢 *Bot yana aiki lafiya.*\n\n"
+
+            "Aika `/video` domin fara converter."
+        ),
+
+        parse_mode="Markdown"
+    )
+
+
+# =============================================================
+# /VIDEO
+# =============================================================
+
+@bot.message_handler(
+    commands=["video"]
+)
+def start_video_process(message):
+
+    user_id = (
+        message.from_user.id
+    )
+
+    if user_id != ADMIN_ID:
+
+        return
+
+    USER_STATES[
+        user_id
+    ] = True
+
+    bot.reply_to(
+
+        message,
+
+        (
+            "✅ *An kunna tsarin karɓar aiki!*\n\n"
+
+            "Yanzu aiko min da *Video* ko *File* "
+            "din da kake son sarrafawa."
+        ),
+
+        parse_mode="Markdown"
+    )
+
+
+# =============================================================
+# RECEIVE VIDEO / DOCUMENT
+# =============================================================
+
+@bot.message_handler(
+    content_types=[
+        "video",
+        "document"
+    ]
+)
+def handle_incoming_file(message):
+
+    user_id = (
+        message.from_user.id
+    )
+
+    if user_id != ADMIN_ID:
+
+        return
+
+    if not USER_STATES.get(
+
+        user_id,
+
+        False
+
+    ):
+
+        return
+
+    USER_STATES[
+        user_id
+    ] = False
+
+    file_name = "Video/File"
+
+    file_size = 0
+
+    file_id = None
+
+    original_type = (
+        message.content_type
+    )
+
+    try:
+
+        # -----------------------------------------------------
+        # VIDEO
+        # -----------------------------------------------------
+
+        if message.video:
+
+            file_name = (
+
+                getattr(
+
+                    message.video,
+
+                    "file_name",
+
+                    None
+                )
+
+                or
+
+                "video.mp4"
+            )
+
+            file_size = (
+
+                getattr(
+
+                    message.video,
+
+                    "file_size",
+
+                    0
+                )
+
+                or
+
+                0
+            )
+
+            file_id = getattr(
+
+                message.video,
+
+                "file_id",
+
+                None
+            )
+
+        # -----------------------------------------------------
+        # DOCUMENT
+        # -----------------------------------------------------
+
+        elif message.document:
+
+            file_name = (
+
+                getattr(
+
+                    message.document,
+
+                    "file_name",
+
+                    None
+                )
+
+                or
+
+                "file"
+            )
+
+            file_size = (
+
+                getattr(
+
+                    message.document,
+
+                    "file_size",
+
+                    0
+                )
+
+                or
+
+                0
+            )
+
+            file_id = getattr(
+
+                message.document,
+
+                "file_id",
+
+                None
+            )
+
+    except Exception as e:
+
+        send_admin_exception(
+
+            "FILE DETAILS ERROR",
+
+            e
+        )
+
+    # =========================================================
+    # BUTTONS
+    # =========================================================
+
+    markup = (
+        types.InlineKeyboardMarkup()
+    )
+
+    btn1 = (
+        types.InlineKeyboardButton(
+
+            "🎬 Video",
+
+            callback_data="convert_video"
+        )
+    )
+
+    btn2 = (
+        types.InlineKeyboardButton(
+
+            "📁 File",
+
+            callback_data="convert_file"
+        )
+    )
+
+    markup.add(
+
+        btn1,
+
+        btn2
+    )
+
+    # =========================================================
+    # REPLY
+    # =========================================================
+
+    try:
+
+        sent = bot.reply_to(
+
+            message,
+
+            (
+                f"✅ *An karɓi fayil:* "
+                f"`{file_name}`\n\n"
+
+                "Shin a wanne tsari kake "
+                "son dawo da shi?"
+            ),
+
+            reply_markup=markup,
+
+            parse_mode="Markdown"
+        )
+
+        PENDING_DATA[
+            sent.message_id
+        ] = {
+
+            "msg_id":
+                message.message_id,
+
+            "chat_id":
+                message.chat.id,
+
+            "file_name":
+                file_name,
+
+            "file_size":
+                file_size,
+
+            "original_type":
+                original_type,
+
+            "file_id":
+                file_id,
+
+            "created_at":
+                time.time()
+        }
+
+    except Exception as e:
+
+        send_admin_exception(
+
+            "FILE REPLY ERROR",
+
+            e
+        )
+
+
+# =============================================================
+# CALLBACK
+# =============================================================
+
+@bot.callback_query_handler(
+
+    func=lambda call:
+
+        call.data.startswith(
+            "convert_"
+        )
+)
+def process_conversion_callback(
+    call
+):
+
+    try:
+
+        bot.answer_callback_query(
+            call.id
+        )
+
+        if call.from_user.id != ADMIN_ID:
+
+            return
+
+        msg_id = (
+            call.message.message_id
+        )
+
+        # =====================================================
+        # PENDING CHECK
+        # =====================================================
+
+        if msg_id not in PENDING_DATA:
+
+            bot.edit_message_text(
+
+                (
+                    "❌ *Aikin ya fita "
+                    "daga tsarin lokaci.*\n\n"
+
+                    "Sake fara `/video`."
+                ),
+
+                call.message.chat.id,
+
+                msg_id,
+
+                parse_mode="Markdown"
+            )
+
+            return
+
+        # =====================================================
+        # DATA
+        # =====================================================
+
+        task_info = PENDING_DATA.pop(
+            msg_id
+        )
+
+        as_video = (
+
+            call.data ==
+            "convert_video"
+        )
+
+        selected_mode = (
+
+            "VIDEO"
+
+            if as_video
+
+            else "FILE"
+        )
+
+        chat_id = (
+            task_info["chat_id"]
+        )
+
+        target_msg_id = (
+            task_info["msg_id"]
+        )
+
+        file_name = (
+
+            task_info.get(
+
+                "file_name",
+
+                "Unknown"
+            )
+        )
+
+        original_type = (
+
+            task_info.get(
+
+                "original_type",
+
+                "unknown"
+            )
+        )
+
+        # =====================================================
+        # PYRO READY
+        # =====================================================
+
+        if not PYRO_READY.is_set():
+
+            bot.edit_message_text(
+
+                (
+                    "❌ *Pyrogram bai shirya ba.*\n\n"
+
+                    "Sake gwadawa bayan ɗan lokaci."
+                ),
+
+                chat_id,
+
+                msg_id,
+
+                parse_mode="Markdown"
+            )
+
+            return
+
+        # =====================================================
+        # PYRO LOOP
+        # =====================================================
+
+        if not pyro_loop.is_running():
+
+            raise Exception(
+
+                "Pyrogram asyncio loop baya running."
+            )
+
+        # =====================================================
+        # STATUS
+        # =====================================================
+
+        bot.edit_message_text(
+
+            (
+                "🔄 *Ana fara aikin...*\n\n"
+
+                f"📁 `{file_name}`\n"
+
+                f"🎯 Tsari: `{selected_mode}`"
+            ),
+
+            chat_id,
+
+            msg_id,
+
+            parse_mode="Markdown"
+        )
+
+        # =====================================================
+        # SEND TO PYRO LOOP
+        # =====================================================
+
+        future = (
+
+            asyncio.run_coroutine_threadsafe(
+
+                run_pyrogram_task(
+
+                    chat_id,
+
+                    target_msg_id,
+
+                    msg_id,
+
+                    as_video,
+
+                    file_name,
+
+                    original_type
+                ),
+
+                pyro_loop
+            )
+        )
+
+        # =====================================================
+        # FUTURE CALLBACK
+        # =====================================================
+
+        def future_done_callback(
+            done_future
+        ):
+
+            try:
+
+                exception = (
+                    done_future.exception()
+                )
+
+                if exception:
+
+                    send_admin_exception(
+
+                        (
+                            "FUTURE TASK "
+                            "YA KOMA DA EXCEPTION"
+                        ),
+
+                        exception
+                    )
+
+            except Exception as callback_error:
+
+                send_admin_exception(
+
+                    "FUTURE CALLBACK ERROR",
+
+                    callback_error
+                )
+
+        future.add_done_callback(
+
+            future_done_callback
+        )
+
+    except Exception as e:
+
+        send_admin_exception(
+
+            "CALLBACK CRASH",
+
+            e
+        )
+
+
+# =============================================================
+# PYROGRAM TASK
+# =============================================================
+
+async def run_pyrogram_task(
+
+    chat_id,
+
+    target_msg_id,
+
+    status_msg_id,
+
+    as_video,
+
+    selected_file_name=None,
+
+    original_type=None
+
+):
+
+    task_started = time.time()
+
+    file_path = ""
+
+    selected_mode = (
+
+        "VIDEO"
+
+        if as_video
+
+        else "DOCUMENT"
+    )
+
+    media_file_name = (
+        selected_file_name
+        or
+        "unknown"
+    )
+
+    local_size = 0
+
+    download_time = 0
+
+    upload_time = 0
+
+    try:
+
+        # =====================================================
+        # CONNECTION
+        # =====================================================
+
+        if not PYRO_READY.is_set():
+
+            raise Exception(
+
+                "Pyrogram bai shirya ba."
+            )
+
+        me = await pyro_bot.get_me()
+
+        if not me:
+
+            raise Exception(
+
+                "Pyrogram bai dawo da "
+                "bot information ba."
+            )
+
+        # =====================================================
+        # STATUS MESSAGE
+        # =====================================================
+
+        status_msg = (
+
+            await pyro_bot.get_messages(
+
+                chat_id,
+
+                status_msg_id
+            )
+        )
+
+        if not status_msg:
+
+            raise Exception(
+
+                "Ba a samu status message ba."
+            )
+
+        # =====================================================
+        # ORIGINAL MESSAGE
+        # =====================================================
+
+        msg = (
+
+            await pyro_bot.get_messages(
+
+                chat_id,
+
+                target_msg_id
+            )
+        )
+
+        if not msg:
+
+            raise Exception(
+
+                "Original message bai samu ba."
+            )
+
+        # =====================================================
+        # MEDIA INFORMATION
+        # =====================================================
+
+        media_type = "UNKNOWN"
+
+        media_size = 0
+
+        media_file_name = (
+
+            selected_file_name
+
+            or
+
+            "unknown"
+        )
+
+        # -----------------------------------------------------
+        # VIDEO
+        # -----------------------------------------------------
+
+        if msg.video:
+
+            media_type = "VIDEO"
+
+            media_size = (
+
+                msg.video.file_size
+                or
+                0
+            )
+
+            media_file_name = (
+
+                msg.video.file_name
+
+                or
+
+                media_file_name
+
+                or
+
+                "video.mp4"
+            )
+
+        # -----------------------------------------------------
+        # DOCUMENT
+        # -----------------------------------------------------
+
+        elif msg.document:
+
+            media_type = "DOCUMENT"
+
+            media_size = (
+
+                msg.document.file_size
+                or
+                0
+            )
+
+            media_file_name = (
+
+                msg.document.file_name
+
+                or
+
+                media_file_name
+
+                or
+
+                "file"
+            )
+
+        # -----------------------------------------------------
+        # ANIMATION
+        # -----------------------------------------------------
+
+        elif msg.animation:
+
+            media_type = "ANIMATION"
+
+            media_size = (
+
+                msg.animation.file_size
+                or
+                0
+            )
+
+            media_file_name = (
+
+                msg.animation.file_name
+
+                or
+
+                media_file_name
+
+                or
+
+                "animation"
+            )
+
+        else:
+
+            raise Exception(
+
+                "Original message ba ya dauke da "
+                "video/document/animation."
+            )
+
+        # =====================================================
+        # ADMIN MEDIA INFO
+        # =====================================================
+
+        try:
+
+            await admin_debug_send(
+
+                (
+                    "📥 *UPLOAD TASK MEDIA INFO*\n\n"
+
+                    f"🎯 Selected: "
+                    f"`{selected_mode}`\n"
+
+                    f"📁 File: "
+                    f"`{safe_debug_value(media_file_name)}`\n"
+
+                    f"📦 Telegram Size: "
+                    f"`{humanbytes(media_size)}`\n"
+
+                    f"📄 Type: "
+                    f"`{media_type}`"
+                )
+            )
+
+        except Exception:
+
+            pass
+
+        # =====================================================
+        # DOWNLOAD
+        # =====================================================
+
+        (
+            file_path,
+
+            local_size,
+
+            download_time
+
+        ) = await download_original_file(
+
+            pyro_message=msg,
+
+            chat_id=chat_id,
+
+            status_msg_id=status_msg_id,
+
+            media_file_name=media_file_name,
+
+            media_size=media_size
+        )
+
+        # =====================================================
+        # VERIFY LOCAL FILE
+        # =====================================================
+
+        if not file_path:
+
+            raise Exception(
+
+                "Download ya dawo babu file path."
+            )
+
+        if not os.path.exists(
+            file_path
+        ):
+
+            raise FileNotFoundError(
+
+                f"Downloaded file baya nan: "
+                f"{file_path}"
+            )
+
+        local_size = os.path.getsize(
+            file_path
+        )
+
+        if local_size <= 0:
+
+            raise Exception(
+                "Downloaded file empty ne."
+            )
+
+        # =====================================================
+        # UPLOAD STATUS
+        # =====================================================
+
+        await edit_status(
+
+            chat_id,
+
+            status_msg_id,
+
+            (
+                "⬆️ *Ana Turawa Telegram...*\n\n"
+
+                f"📁 `{media_file_name}`\n"
+
+                f"📦 `{humanbytes(local_size)}`\n"
+
+                f"🎯 `{selected_mode}`"
+            )
+        )
+
+        # =====================================================
+        # UPLOAD
+        # =====================================================
+
+        upload_start = time.time()
+
+        result = (
+
+            await upload_to_telegram(
+
+                chat_id=chat_id,
+
+                file_path=file_path,
+
+                as_video=as_video,
+
+                status_msg_id=status_msg_id
+            )
+        )
+
+        upload_time = (
+
+            time.time() -
+            upload_start
+        )
+
+        # =====================================================
+        # VERIFY RESULT
+        # =====================================================
+
+        sent_message_id = getattr(
+
+            result,
+
+            "id",
+
+            None
+        )
+
+        if not sent_message_id:
+
+            raise Exception(
+
+                "Telegram ya dawo result "
+                "amma babu Message ID."
+            )
+
+        # =====================================================
+        # SUCCESS STATUS
+        # =====================================================
+
+        await edit_status(
+
+            chat_id,
+
+            status_msg_id,
+
+            (
+                "🎉 *An gama aikin lafiya!*\n\n"
+
+                "🟢 Download: OK\n"
+
+                "🟢 Local File: OK\n"
+
+                "🟢 Telegram Upload: OK\n"
+
+                "🟢 Delivery: OK"
+            )
+        )
+
+        total_time = (
+
+            time.time() -
+            task_started
+        )
+
+        # =====================================================
+        # ADMIN SUCCESS
+        # =====================================================
+
+        try:
+
+            bot.send_message(
+
+                ADMIN_ID,
+
+                (
+                    "✅ *Aiki ya kammala*\n\n"
+
+                    f"📁 `{media_file_name}`\n"
+
+                    f"📦 `{humanbytes(local_size)}`\n"
+
+                    f"🎯 `{selected_mode}`\n"
+
+                    f"⏱️ Download: "
+                    f"`{download_time:.1f}s`\n"
+
+                    f"⏱️ Upload: "
+                    f"`{upload_time:.1f}s`\n"
+
+                    f"⏱️ Total: "
+                    f"`{total_time:.1f}s`\n"
+
+                    f"🆔 Message ID: "
+                    f"`{sent_message_id}`"
+                ),
+
+                parse_mode="Markdown"
+            )
+
+        except Exception as admin_error:
+
+            print(
+
+                "[SUCCESS ADMIN NOTICE ERROR]",
+
+                admin_error
+            )
+
+        # =====================================================
+        # CONSOLE SUCCESS
+        # =====================================================
+
+        print(
+            "\n" +
+            "=" * 80
+        )
+
+        print(
+            "🎉 SUCCESS"
+        )
+
+        print(
+            f"File: "
+            f"{media_file_name}"
+        )
+
+        print(
+            f"Size: "
+            f"{humanbytes(local_size)}"
+        )
+
+        print(
+            f"Download: "
+            f"{download_time:.1f}s"
+        )
+
+        print(
+            f"Upload: "
+            f"{upload_time:.1f}s"
+        )
+
+        print(
+            f"Message ID: "
+            f"{sent_message_id}"
+        )
+
+        print(
+            "=" * 80
+        )
+
+    # =========================================================
+    # FLOOD WAIT
+    # =========================================================
+
+    except FloodWait as e:
+
+        try:
+
+            await edit_status(
+
+                chat_id,
+
+                status_msg_id,
+
+                (
+                    "⚠️ *Telegram Limit.*\n\n"
+
+                    f"Jira daƙiƙa "
+                    f"`{e.value}`."
+                )
+            )
+
+        except Exception:
+
+            pass
+
+        send_admin_exception(
+
+            "TELEGRAM FLOOD WAIT",
+
+            e
+        )
+
+    # =========================================================
+    # STALLED
+    # =========================================================
+
+    except UploadStalledError as e:
+
+        try:
+
+            await edit_status(
+
+                chat_id,
+
+                status_msg_id,
+
+                (
+                    "❌ *Upload ya tsaya.*\n\n"
+
+                    "An gwada retry amma "
+                    "Telegram bai ci gaba ba."
+                )
+            )
+
+        except Exception:
+
+            pass
+
+        send_admin_exception(
+
+            "UPLOAD STALLED - ALL RETRIES FAILED",
+
+            e
+        )
+
+    # =========================================================
+    # TIMEOUT
+    # =========================================================
+
+    except UploadTimeoutError as e:
+
+        try:
+
+            await edit_status(
+
+                chat_id,
+
+                status_msg_id,
+
+                (
+                    "⏰ *Upload ya yi timeout.*\n\n"
+
+                    "An kasa kammala upload."
+                )
+            )
+
+        except Exception:
+
+            pass
+
+        send_admin_exception(
+
+            "UPLOAD TIMEOUT - ALL RETRIES FAILED",
+
+            e
+        )
+
+    # =========================================================
+    # NORMAL ERROR
+    # =========================================================
+
+    except Exception as e:
+
+        try:
+
+            await edit_status(
+
+                chat_id,
+
+                status_msg_id,
+
+                (
+                    "❌ *Aiki ya samu kuskure.*\n\n"
+
+                    "An kasa kammala upload."
+                )
+            )
+
+        except Exception as status_error:
+
+            print(
+
+                "[STATUS ERROR]",
+
+                status_error
+            )
+
+        send_admin_exception(
+
+            (
+                "UPLOAD/SEND TASK YA KASA\n"
+
+                f"MODE={selected_mode}\n"
+
+                f"FILE={selected_file_name}\n"
+
+                f"ORIGINAL_TYPE={original_type}"
+            ),
+
+            e
+        )
+
+        traceback.print_exc()
+
+    finally:
+
+        # =====================================================
+        # CLEAN LOCAL FILE
+        # =====================================================
+
+        if (
+
+            file_path
+
+            and
+
+            os.path.exists(
+                file_path
+            )
+
+        ):
+
+            try:
+
+                os.remove(
+                    file_path
+                )
+
+                print(
+
+                    "[CLEANUP] Removed:",
+
+                    file_path
+                )
+
+            except Exception as e:
+
+                print(
+
+                    "[CLEANUP ERROR]",
+
+                    file_path,
+
+                    e
+                )
+
+        # =====================================================
+        # CLEAN PROGRESS
+        # =====================================================
+
+        try:
+
+            keys_to_remove = [
+
+                key
+
+                for key in list(
+                    PROGRESS_STATE.keys()
+                )
+
+                if (
+
+                    len(key) >= 2
+
+                    and
+
+                    key[0] == chat_id
+
+                    and
+
+                    key[1] == status_msg_id
+                )
+            ]
+
+            for key in keys_to_remove:
+
+                PROGRESS_STATE.pop(
+
+                    key,
+
+                    None
+                )
+
+        except Exception:
+
+            pass
+
+
+# =============================================================
+# PYROGRAM THREAD
+# =============================================================
+
+def start_pyro_loop():
+
+    try:
+
+        asyncio.set_event_loop(
+            pyro_loop
+        )
+
+        print(
+            "[PYRO THREAD] Starting loop..."
+        )
+
+        pyro_loop.run_until_complete(
+
+            pyro_main()
+        )
+
+    except Exception as e:
+
+        PYRO_FAILED.set()
+
+        PYRO_READY.clear()
+
+        print(
+            "[PYRO LOOP CRASH]",
+            e
+        )
+
+        send_admin_exception(
+
+            "PYROGRAM LOOP YA CRASH",
+
+            e
+        )
+
+    finally:
+
+        try:
+
+            if not pyro_loop.is_closed():
+
+                pyro_loop.close()
+
+        except Exception as e:
+
+            print(
+
+                "[PYRO LOOP CLOSE ERROR]",
+
+                e
+            )
+
+
+# =============================================================
+# START PYRO THREAD
+# =============================================================
+
+pyro_thread = threading.Thread(
+
+    target=start_pyro_loop,
+
+    name="PyrogramThread",
+
+    daemon=True
+)
+
+pyro_thread.start()
+
+
+# =============================================================
+# RENDER HTTP SERVER
+# =============================================================
+
+class HealthHandler(
+    BaseHTTPRequestHandler
+):
+
+    def do_GET(self):
+
+        if self.path == "/":
+
+            self.send_response(
+                200
+            )
+
+            self.send_header(
+
+                "Content-Type",
+
+                "text/plain; charset=utf-8"
+            )
+
+            self.end_headers()
+
+            self.wfile.write(
+
+                b"Converter Bot is running."
+            )
+
+            return
+
+        if self.path == "/health":
+
+            self.send_response(
+                200
+            )
+
+            self.send_header(
+
+                "Content-Type",
+
+                "application/json"
+            )
+
+            self.end_headers()
+
+            self.wfile.write(
+
+                b'{"status":"ok"}'
+            )
+
+            return
+
+        self.send_response(
+            404
+        )
+
+        self.end_headers()
+
+    def log_message(
+
+        self,
+
+        format,
+
+        *args
+
+    ):
+
+        return
+
+
+# =============================================================
+# START HTTP SERVER
+# =============================================================
+
+def start_http_server():
+
+    try:
+
+        server = HTTPServer(
+
+            (
+                "0.0.0.0",
+
+                PORT
+            ),
+
+            HealthHandler
+        )
+
+        print(
+
+            "HTTP server yana sauraro "
+
+            f"a 0.0.0.0:{PORT}"
+        )
+
+        server.serve_forever()
+
+    except Exception as e:
+
+        send_admin_exception(
+
+            "HTTP SERVER YA KASA",
+
+            e
+        )
+
+
+http_thread = threading.Thread(
+
+    target=start_http_server,
+
+    name="HTTPServerThread",
+
+    daemon=True
+)
+
+http_thread.start()
+
+
+# =============================================================
+# STARTUP MONITOR
+# =============================================================
+
+def startup_monitor():
+
+    time.sleep(
+        5
+    )
+
+    print(
+        "\n" +
+        "=" * 70
+    )
+
+    print(
+        "FULL STARTUP STATUS"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        f"PID: "
+        f"{os.getpid()}"
+    )
+
+    print(
+        f"PORT: "
+        f"{PORT}"
+    )
+
+    print(
+        f"HTTP Thread: "
+        f"{http_thread.name}"
+    )
+
+    print(
+        f"Pyro Thread: "
+        f"{pyro_thread.name}"
+    )
+
+    print(
+        f"Pyro Ready: "
+        f"{PYRO_READY.is_set()}"
+    )
+
+    print(
+        f"Pyro Failed: "
+        f"{PYRO_FAILED.is_set()}"
+    )
+
+    try:
+
+        print(
+            system_info()
+        )
+
+    except Exception as e:
+
+        print(
+            "[SYSTEM INFO ERROR]",
+            e
+        )
+
+    print(
+        "=" * 70
+    )
+
+
+threading.Thread(
+
+    target=startup_monitor,
+
+    name="StartupMonitor",
+
+    daemon=True
+
+).start()
 # =============================================================
 # 6. TIME / HELPERS
 # =============================================================
