@@ -566,6 +566,528 @@ async def pyro_main():
             )
 
 
+
+# =============================================================
+# STEP 8 → 10
+# TELEGRAM UPLOAD / SEND DIAGNOSTIC BLOCK
+# =============================================================
+
+upload_start = time.time()
+
+send_admin_debug(
+    "⬆️⬆️⬆️ *UPLOAD YA FARA* ⬆️⬆️⬆️\n\n"
+    f"📂 File Path:\n`{file_path}`\n\n"
+    f"📦 File Size: `{humanbytes(local_size)}`\n"
+    f"🎯 Destination Chat: `{chat_id}`\n"
+    f"📤 Selected Mode: `{'VIDEO' if as_video else 'DOCUMENT'}`\n"
+    f"🎬 Original Media Type: `{media_type}`\n\n"
+    "An gama download.\n"
+    "Yanzu Telegram send/upload kawai ake gwadawa.",
+    "UPLOAD START"
+)
+
+
+# =============================================================
+# UPLOAD DEBUG 1/10
+# =============================================================
+
+send_admin_debug(
+    "🔍 *UPLOAD DEBUG 1/10*\n\n"
+    "Ana duba local file kafin Telegram send.\n\n"
+    f"Exists: `{os.path.exists(file_path)}`\n"
+    f"Readable: `{os.access(file_path, os.R_OK)}`\n"
+    f"Size: `{humanbytes(os.path.getsize(file_path))}`\n"
+    f"Path: `{file_path}`",
+    "UPLOAD FILE CHECK"
+)
+
+
+if not os.path.exists(file_path):
+
+    raise Exception(
+        "UPLOAD STOP: Local file baya nan."
+    )
+
+
+if not os.access(file_path, os.R_OK):
+
+    raise Exception(
+        "UPLOAD STOP: Local file ba readable ba."
+    )
+
+
+# =============================================================
+# UPLOAD DEBUG 2/10
+# =============================================================
+
+send_admin_debug(
+    "🔍 *UPLOAD DEBUG 2/10*\n\n"
+    "Ana duba Pyrogram connection kafin upload...",
+    "UPLOAD CONNECTION CHECK"
+)
+
+
+try:
+
+    me_before = await pyro_bot.get_me()
+
+    send_admin_debug(
+        "🟢 *UPLOAD DEBUG 2/10 OK*\n\n"
+        f"Telegram ID: `{me_before.id}`\n"
+        f"Username: `@{me_before.username}`\n"
+        f"Name: `{me_before.first_name}`\n\n"
+        "Pyrogram na iya magana da Telegram.",
+        "TELEGRAM CONNECTION OK"
+    )
+
+except Exception as e:
+
+    send_admin_exception(
+        "🚨 UPLOAD DEBUG 2/10 CONNECTION FAILED",
+        e
+    )
+
+    raise
+
+
+# =============================================================
+# UPLOAD DEBUG 3/10
+# =============================================================
+
+send_admin_debug(
+    "🔍 *UPLOAD DEBUG 3/10*\n\n"
+    "Ana tabbatar da destination chat...\n\n"
+    f"Chat ID: `{chat_id}`",
+    "DESTINATION CHECK"
+)
+
+
+try:
+
+    destination = await pyro_bot.get_chat(
+        chat_id
+    )
+
+    send_admin_debug(
+        "🟢 *UPLOAD DEBUG 3/10 OK*\n\n"
+        f"Chat ID: `{destination.id}`\n"
+        f"Type: `{destination.type}`\n"
+        f"Title: `{getattr(destination, 'title', None)}`\n"
+        f"Username: `{getattr(destination, 'username', None)}`\n\n"
+        "Destination chat ya tabbata.",
+        "DESTINATION OK"
+    )
+
+except Exception as e:
+
+    send_admin_exception(
+        "🚨 UPLOAD DEBUG 3/10 DESTINATION FAILED",
+        e
+    )
+
+    raise
+
+
+# =============================================================
+# UPLOAD DEBUG 4/10
+# =============================================================
+
+send_admin_debug(
+    "🔍 *UPLOAD DEBUG 4/10*\n\n"
+    "Ana duba girman file na karshe kafin send.\n\n"
+    f"File: `{os.path.basename(file_path)}`\n"
+    f"Size: `{humanbytes(local_size)}`\n"
+    f"Expected Telegram Size: `{humanbytes(media_size)}`\n"
+    f"Size Match: `{local_size == media_size}`",
+    "FINAL FILE CHECK"
+)
+
+
+# =============================================================
+# UPLOAD DEBUG 5/10
+# =============================================================
+
+send_admin_debug(
+    "🔍 *UPLOAD DEBUG 5/10*\n\n"
+    "Ana shirya Telegram send method.\n\n"
+    f"Pyrogram Method: `{'send_video' if as_video else 'send_document'}`\n"
+    f"Destination Type: `{media_type}`\n"
+    f"Local File: `{file_path}`\n"
+    f"File Size: `{humanbytes(local_size)}`\n\n"
+    "Ba za a canza zabin da ka yi tun farko ba.",
+    "SEND METHOD READY"
+)
+
+
+# =============================================================
+# UPLOAD DEBUG 6/10
+# =============================================================
+
+send_admin_debug(
+    "🔧 *TELEGRAM SEND PRECHECK*\n\n"
+    f"🕒 `{now_time()}`\n"
+    "━━━━━━━━━━━━━━━━━━━━\n"
+    "🔍 *UPLOAD DEBUG 6/10*\n\n"
+    "Ana shirin kiran Telegram send method.\n\n"
+    f"Destination Chat: `{chat_id}`\n"
+    f"File Path: `{file_path}`\n"
+    f"File Size: `{humanbytes(local_size)}`\n"
+    f"Method: `{'send_video' if as_video else 'send_document'}`\n"
+    f"Mode: `{'VIDEO' if as_video else 'DOCUMENT'}`\n\n"
+    "⚠️ Idan debug ya tsaya a nan, matsalar tana kafin "
+    "Telegram API call.",
+    "UPLOAD DEBUG 6/10"
+)
+
+
+# =============================================================
+# SEND FUNCTION
+# =============================================================
+
+send_started = time.time()
+result = None
+
+try:
+
+    # =========================================================
+    # UPLOAD DEBUG 7/10
+    # =========================================================
+
+    send_admin_debug(
+        "🚨 *UPLOAD DEBUG 7/10 — SEND YANZU*\n\n"
+        f"Telegram Method: `{'send_video' if as_video else 'send_document'}`\n"
+        f"Chat ID: `{chat_id}`\n"
+        f"File: `{file_path}`\n"
+        f"Size: `{humanbytes(local_size)}`\n\n"
+        "⚠️ Daga nan zuwa gaba Telegram/Pyrogram ne zai amsa.\n"
+        "Za mu jira response da timeout domin kada ya rataye bot.",
+        "TELEGRAM SEND START"
+    )
+
+
+    # =========================================================
+    # SEND VIDEO
+    # =========================================================
+
+    if as_video:
+
+        send_admin_debug(
+            "🎬 *SEND VIDEO CALL*\n\n"
+            "Ana shiga `send_video()` yanzu.\n\n"
+            f"File: `{file_path}`\n"
+            f"Size: `{humanbytes(local_size)}`\n"
+            f"Chat: `{chat_id}`",
+            "SEND VIDEO CALL"
+        )
+
+
+        result = await asyncio.wait_for(
+
+            pyro_bot.send_video(
+                chat_id=chat_id,
+                video=file_path,
+                caption="🎬 An kammala sarrafa bidiyon ku lafiya!",
+                supports_streaming=True,
+
+                progress=progress_args,
+
+                progress_args=(
+                    "⬆️ *Ana Turawa (Video)...*",
+                    chat_id,
+                    status_msg_id,
+                    send_started,
+                    "UPLOAD_VIDEO"
+                )
+            ),
+
+            timeout=1800
+
+        )
+
+
+    # =========================================================
+    # SEND DOCUMENT
+    # =========================================================
+
+    else:
+
+        send_admin_debug(
+            "📁 *SEND DOCUMENT CALL*\n\n"
+            "Ana shiga `send_document()` yanzu.\n\n"
+            f"File: `{file_path}`\n"
+            f"Size: `{humanbytes(local_size)}`\n"
+            f"Chat: `{chat_id}`",
+            "SEND DOCUMENT CALL"
+        )
+
+
+        result = await asyncio.wait_for(
+
+            pyro_bot.send_document(
+                chat_id=chat_id,
+                document=file_path,
+                caption="📁 An kammala sarrafa fayil ɗin ku lafiya!",
+
+                progress=progress_args,
+
+                progress_args=(
+                    "⬆️ *Ana Turawa (File)...*",
+                    chat_id,
+                    status_msg_id,
+                    send_started,
+                    "UPLOAD_DOCUMENT"
+                )
+            ),
+
+            timeout=1800
+
+        )
+
+
+    # =========================================================
+    # UPLOAD DEBUG 8/10
+    # =========================================================
+
+    send_time = time.time() - send_started
+
+
+    send_admin_debug(
+        "🟢🟢🟢 *UPLOAD DEBUG 8/10 — SEND RETURNED* 🟢🟢🟢\n\n"
+        "Telegram/Pyrogram ya dawo daga send function.\n\n"
+        f"Result Exists: `{bool(result)}`\n"
+        f"Result Type: `{type(result).__name__}`\n"
+        f"Send Time: `{send_time:.2f}s`\n"
+        f"Method: `{'send_video' if as_video else 'send_document'}`",
+        "TELEGRAM SEND RETURNED"
+    )
+
+
+    # =========================================================
+    # UPLOAD DEBUG 9/10
+    # =========================================================
+
+    if not result:
+
+        raise Exception(
+            "Telegram send method ya dawo amma result empty ne."
+        )
+
+
+    result_message_id = getattr(
+        result,
+        "id",
+        None
+    )
+
+
+    result_chat = getattr(
+        result,
+        "chat",
+        None
+    )
+
+
+    result_chat_id = getattr(
+        result_chat,
+        "id",
+        None
+    ) if result_chat else None
+
+
+    send_admin_debug(
+        "🔍 *UPLOAD DEBUG 9/10 — TELEGRAM RESPONSE*\n\n"
+        f"Message ID: `{result_message_id}`\n"
+        f"Returned Chat ID: `{result_chat_id}`\n"
+        f"Expected Chat ID: `{chat_id}`\n"
+        f"Chat Match: `{result_chat_id == chat_id}`\n"
+        f"Result Type: `{type(result).__name__}`\n\n"
+        "Telegram ya karɓi request kuma ya dawo da message.",
+        "TELEGRAM RESPONSE OK"
+    )
+
+
+    # =========================================================
+    # UPLOAD DEBUG 10/10
+    # =========================================================
+
+    upload_time = (
+        time.time() - upload_start
+    )
+
+
+    send_admin_debug(
+        "🎉🎉🎉 *UPLOAD DEBUG 10/10 — COMPLETE* 🎉🎉🎉\n\n"
+        "🟢 Local File: OK\n"
+        "🟢 Pyrogram Connection: OK\n"
+        "🟢 Destination: OK\n"
+        "🟢 Send Method: OK\n"
+        "🟢 Telegram Response: OK\n"
+        "🟢 Message Created: OK\n\n"
+        f"📦 File Size: `{humanbytes(local_size)}`\n"
+        f"⏱️ Upload Time: `{upload_time:.2f}s`\n"
+        f"🆔 Sent Message ID: `{result_message_id}`\n"
+        f"📤 Method: `{'send_video' if as_video else 'send_document'}`\n\n"
+        "🔥 TELEGRAM YA KAMMALA SEND.",
+        "UPLOAD COMPLETE"
+    )
+
+
+    # =========================================================
+    # USER STATUS
+    # =========================================================
+
+    await edit_status(
+        chat_id,
+        status_msg_id,
+        "🎉 *An gama aikin lafiya!*\n\n"
+        "🟢 Download: OK\n"
+        "🟢 Local File: OK\n"
+        "🟢 Telegram Connection: OK\n"
+        "🟢 Upload: OK\n"
+        "🟢 Telegram Delivery: OK"
+    )
+
+
+    # =========================================================
+    # TOTAL
+    # =========================================================
+
+    total_time = (
+        time.time() - task_started
+    )
+
+
+    send_admin_debug(
+        "🏆🏆🏆 *TASK SUCCESS* 🏆🏆🏆\n\n"
+        f"File: `{media_file_name}`\n"
+        f"Size: `{humanbytes(local_size)}`\n"
+        f"Download: `{download_time:.2f}s`\n"
+        f"Upload: `{upload_time:.2f}s`\n"
+        f"Total: `{total_time:.2f}s`\n"
+        f"Message ID: `{result_message_id}`\n\n"
+        "🟢 DOWNLOAD OK\n"
+        "🟢 LOCAL FILE OK\n"
+        "🟢 TELEGRAM CONNECTION OK\n"
+        "🟢 UPLOAD OK\n"
+        "🟢 DELIVERY OK",
+        "TASK SUCCESS"
+    )
+
+
+# =============================================================
+# TIMEOUT
+# =============================================================
+
+except asyncio.TimeoutError as e:
+
+    elapsed = time.time() - send_started
+
+
+    send_admin_exception(
+        "⏰ TELEGRAM SEND TIMEOUT",
+        e
+    )
+
+
+    send_admin_debug(
+        "🚨🚨🚨 *TELEGRAM SEND YA RATAYE* 🚨🚨🚨\n\n"
+        f"Method: `{'send_video' if as_video else 'send_document'}`\n"
+        f"Chat ID: `{chat_id}`\n"
+        f"File: `{file_path}`\n"
+        f"Size: `{humanbytes(local_size)}`\n"
+        f"Lokacin da ya yi: `{elapsed:.2f}s`\n\n"
+        "❌ Telegram/Pyrogram bai dawo da response ba "
+        "a cikin timeout.\n\n"
+        "Wannan ya nuna matsalar tana cikin send/upload "
+        "connection ko Pyrogram transfer.",
+        "SEND TIMEOUT"
+    )
+
+
+    try:
+
+        await edit_status(
+            chat_id,
+            status_msg_id,
+            "⏰ *Telegram Upload ya dauki lokaci sosai.*\n\n"
+            "An dakatar da jira domin kada bot ya rataye.\n\n"
+            "Duba DEBUG na admin."
+        )
+
+    except Exception:
+        pass
+
+
+# =============================================================
+# FLOOD WAIT
+# =============================================================
+
+except FloodWait as e:
+
+    send_admin_debug(
+        "⚠️ *TELEGRAM FLOOD WAIT*\n\n"
+        f"Method: `{'send_video' if as_video else 'send_document'}`\n"
+        f"Chat ID: `{chat_id}`\n"
+        f"Seconds: `{e.value}`\n\n"
+        "Telegram ne ya saka limit.",
+        "FLOOD WAIT"
+    )
+
+
+    try:
+
+        await edit_status(
+            chat_id,
+            status_msg_id,
+            "⚠️ *Telegram Limit.*\n\n"
+            f"Jira daƙiƙa `{e.value}`."
+        )
+
+    except Exception:
+        pass
+
+
+# =============================================================
+# OTHER TELEGRAM / PYROGRAM ERROR
+# =============================================================
+
+except Exception as e:
+
+    elapsed = time.time() - send_started
+
+
+    send_admin_exception(
+        "💥 TELEGRAM SEND YA KASA",
+        e
+    )
+
+
+    send_admin_debug(
+        "🔴🔴🔴 *SEND ERROR* 🔴🔴🔴\n\n"
+        f"Method: `{'send_video' if as_video else 'send_document'}`\n"
+        f"Chat ID: `{chat_id}`\n"
+        f"File: `{file_path}`\n"
+        f"Size: `{humanbytes(local_size)}`\n"
+        f"Time Before Error: `{elapsed:.2f}s`\n"
+        f"Exception Type: `{type(e).__name__}`\n"
+        f"Exception: `{str(e)}`\n\n"
+        "❌ An kasa aika file zuwa Telegram.",
+        "SEND FAILED"
+    )
+
+
+    try:
+
+        await edit_status(
+            chat_id,
+            status_msg_id,
+            "❌ *Telegram Upload ya kasa.*\n\n"
+            f"Error: `{type(e).__name__}`\n\n"
+            "Duba DEBUG na admin."
+        )
+
+    except Exception:
+        pass
 # =============================================================
 # 15. PYROGRAM THREAD
 # =============================================================
