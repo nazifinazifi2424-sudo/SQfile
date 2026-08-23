@@ -26,49 +26,55 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "").strip()
 API_ID_RAW = os.getenv("API_ID", "").strip()
 API_HASH = os.getenv("API_HASH", "").strip()
-
 PORT_RAW = os.getenv("PORT", "10000").strip()
 
-
-# =============================================================
-# 2. REQUIRED VARIABLES
-# =============================================================
-
 if not BOT_TOKEN:
-    print("❌ ERROR: BOT_TOKEN bai samu ba.")
+    print("ERROR: BOT_TOKEN bai samu ba.")
     sys.exit(1)
 
 if not ADMIN_ID_RAW:
-    print("❌ ERROR: ADMIN_ID bai samu ba.")
+    print("ERROR: ADMIN_ID bai samu ba.")
     sys.exit(1)
 
 if not API_ID_RAW:
-    print("❌ ERROR: API_ID bai samu ba.")
+    print("ERROR: API_ID bai samu ba.")
     sys.exit(1)
 
 if not API_HASH:
-    print("❌ ERROR: API_HASH bai samu ba.")
+    print("ERROR: API_HASH bai samu ba.")
     sys.exit(1)
-
 
 try:
     ADMIN_ID = int(ADMIN_ID_RAW)
 except Exception:
-    print("❌ ERROR: ADMIN_ID dole ya zama number.")
+    print("ERROR: ADMIN_ID dole ya zama number.")
     sys.exit(1)
-
 
 try:
     API_ID = int(API_ID_RAW)
 except Exception:
-    print("❌ ERROR: API_ID dole ya zama number.")
+    print("ERROR: API_ID dole ya zama number.")
     sys.exit(1)
-
 
 try:
     PORT = int(PORT_RAW)
 except Exception:
     PORT = 10000
+
+
+# =============================================================
+# 2. SETTINGS
+# =============================================================
+
+# Maximum time for one Telegram upload attempt.
+UPLOAD_TIMEOUT = 1800
+
+# If Telegram/Pyrogram gets temporarily stuck, retry the upload.
+UPLOAD_RETRIES = 2
+
+# Do not send progress/debug messages to ADMIN.
+# Progress is shown only by editing the user's status message.
+PROGRESS_UPDATE_SECONDS = 3
 
 
 # =============================================================
@@ -87,26 +93,7 @@ pyro_loop = asyncio.new_event_loop()
 
 
 # =============================================================
-# 4. STARTUP CONSOLE ONLY
-# =============================================================
-
-print("\n" + "=" * 70)
-print("🚀 CONVERTER BOT - STARTING")
-print("=" * 70)
-
-print(f"ADMIN_ID: {ADMIN_ID}")
-print(f"API_ID: {API_ID}")
-print(f"API_HASH: {'SET' if API_HASH else 'NOT SET'}")
-print(f"BOT_TOKEN: {'SET' if BOT_TOKEN else 'NOT SET'}")
-print(f"PORT: {PORT}")
-print(f"Python: {sys.version}")
-print(f"Platform: {platform.platform()}")
-
-print("=" * 70)
-
-
-# =============================================================
-# 5. TELEBOT
+# 4. TELEBOT
 # =============================================================
 
 bot = telebot.TeleBot(
@@ -116,7 +103,7 @@ bot = telebot.TeleBot(
 
 
 # =============================================================
-# 6. PYROGRAM
+# 5. PYROGRAM
 # =============================================================
 
 pyro_bot = Client(
@@ -128,19 +115,14 @@ pyro_bot = Client(
 
 
 # =============================================================
-# 7. TIME
+# 6. TIME / HELPERS
 # =============================================================
 
 def now_time():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-# =============================================================
-# 8. HUMAN BYTES
-# =============================================================
-
 def humanbytes(size):
-
     if not size:
         return "0 B"
 
@@ -155,6 +137,11 @@ def humanbytes(size):
         4: "TiB"
     }
 
+    try:
+        size = float(size)
+    except Exception:
+        return "0 B"
+
     while size >= power and n < 4:
         size /= power
         n += 1
@@ -162,31 +149,11 @@ def humanbytes(size):
     return f"{round(size, 2)} {units[n]}"
 
 
-# =============================================================
-# 9. TIME FORMATTER
-# =============================================================
-
 def TimeFormatter(milliseconds: int) -> str:
-
-    seconds, milliseconds = divmod(
-        int(milliseconds),
-        1000
-    )
-
-    minutes, seconds = divmod(
-        seconds,
-        60
-    )
-
-    hours, minutes = divmod(
-        minutes,
-        60
-    )
-
-    days, hours = divmod(
-        hours,
-        24
-    )
+    seconds, milliseconds = divmod(int(milliseconds), 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
 
     result = ""
 
@@ -206,186 +173,84 @@ def TimeFormatter(milliseconds: int) -> str:
 
 
 # =============================================================
-# 10. ADMIN DEBUG
+# 7. ADMIN ERROR ONLY
+# =============================================================
+# Normal Video/File button clicks and upload progress no longer
+# send debug messages to ADMIN.
 #
-# MUHIM:
-# Wannan function din ba za a kira shi ba kafin
-# admin ya danna Video/File.
-#
-# =============================================================
-
-def send_admin_debug(text, level="DEBUG"):
-
-    full_text = (
-        f"🛠️ {level}\n"
-        f"🕒 {now_time()}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{text}"
-    )
-
-    print("\n" + "=" * 70)
-    print(f"[{level}] {now_time()}")
-    print(text)
-    print("=" * 70)
-
-    try:
-
-        bot.send_message(
-            ADMIN_ID,
-            full_text,
-            parse_mode=None
-        )
-
-    except Exception as e:
-
-        print(
-            f"[ADMIN DEBUG SEND ERROR] {e}"
-        )
-
-
-# =============================================================
-# 11. ASYNC ADMIN DEBUG
-#
-# Wannan yana hana bot.send_message na synchronous
-# ya toshe Pyrogram upload loop.
-# =============================================================
-
-async def async_admin_debug(
-    text,
-    level="DEBUG"
-):
-
-    try:
-
-        await asyncio.to_thread(
-            send_admin_debug,
-            text,
-            level
-        )
-
-    except Exception as e:
-
-        print(
-            f"[ASYNC ADMIN DEBUG ERROR] {e}"
-        )
-
-
-# =============================================================
-# 12. ADMIN EXCEPTION
+# This function is kept ONLY for serious unexpected errors.
 # =============================================================
 
 def send_admin_exception(title, exc):
-
     tb = traceback.format_exc()
 
     text = (
-        f"🚨 {title}\n\n"
-        f"Exception Type:\n"
-        f"{type(exc).__name__}\n\n"
-        f"Exception:\n"
-        f"{str(exc)}\n\n"
-        f"TRACEBACK:\n"
-        f"{tb[-3500:]}"
+        f"🚨 *{title}*\n\n"
+        f"*Exception Type:*\n"
+        f"`{type(exc).__name__}`\n\n"
+        f"*Exception:*\n"
+        f"`{str(exc)}`\n\n"
+        f"*TRACEBACK:*\n"
+        f"```text\n{tb[-3500:]}\n```"
     )
 
     print("\n" + "#" * 80)
-    print(f"🚨 {title}")
+    print(f"ERROR: {title}")
     print(tb)
     print("#" * 80)
 
     try:
-
         bot.send_message(
             ADMIN_ID,
             text,
-            parse_mode=None
+            parse_mode="Markdown"
         )
-
     except Exception as send_error:
-
-        print(
-            f"[EXCEPTION DEBUG SEND ERROR] "
-            f"{send_error}"
-        )
+        print(f"[ADMIN ERROR SEND FAILED] {send_error}")
 
 
 # =============================================================
-# 13. ASYNC ADMIN EXCEPTION
-# =============================================================
-
-async def async_admin_exception(
-    title,
-    exc
-):
-
-    try:
-
-        await asyncio.to_thread(
-            send_admin_exception,
-            title,
-            exc
-        )
-
-    except Exception as e:
-
-        print(
-            f"[ASYNC EXCEPTION ERROR] {e}"
-        )
-
-
-# =============================================================
-# 14. SYSTEM INFORMATION
+# 8. SYSTEM INFORMATION
 # =============================================================
 
 def system_info():
-
     try:
-
         disk = shutil.disk_usage("/")
 
         disk_text = (
-            f"💾 DISK\n"
-            f"Total: {humanbytes(disk.total)}\n"
-            f"Used: {humanbytes(disk.used)}\n"
-            f"Free: {humanbytes(disk.free)}"
+            f"💾 *DISK*\n"
+            f"Total: `{humanbytes(disk.total)}`\n"
+            f"Used: `{humanbytes(disk.used)}`\n"
+            f"Free: `{humanbytes(disk.free)}`"
         )
-
     except Exception as e:
-
-        disk_text = (
-            f"💾 Disk check failed: {e}"
-        )
-
+        disk_text = f"💾 Disk check failed: `{e}`"
 
     try:
-
         import psutil
 
         ram = psutil.virtual_memory()
 
         ram_text = (
-            f"🧠 RAM\n"
-            f"Total: {humanbytes(ram.total)}\n"
-            f"Available: {humanbytes(ram.available)}"
+            f"🧠 *RAM*\n"
+            f"Total: `{humanbytes(ram.total)}`\n"
+            f"Available: `{humanbytes(ram.available)}`"
         )
 
         cpu_text = (
-            f"⚙️ CPU\n"
-            f"Usage: {psutil.cpu_percent(interval=0.2)}%"
+            f"⚙️ *CPU*\n"
+            f"Usage: `{psutil.cpu_percent(interval=0.2)}%`"
         )
-
     except Exception:
-
         ram_text = "🧠 RAM: psutil unavailable"
         cpu_text = ""
 
-
     return (
-        f"🖥️ SYSTEM INFORMATION\n\n"
-        f"Python: {platform.python_version()}\n"
-        f"Hostname: {socket.gethostname()}\n"
-        f"PID: {os.getpid()}\n"
-        f"PORT: {PORT}\n\n"
+        f"🖥️ *SYSTEM INFORMATION*\n\n"
+        f"Python: `{platform.python_version()}`\n"
+        f"Hostname: `{socket.gethostname()}`\n"
+        f"PID: `{os.getpid()}`\n"
+        f"PORT: `{PORT}`\n\n"
         f"{disk_text}\n\n"
         f"{ram_text}\n"
         f"{cpu_text}"
@@ -393,39 +258,29 @@ def system_info():
 
 
 # =============================================================
-# 15. STATUS EDITOR
+# 9. STATUS EDITOR
 # =============================================================
 
-async def edit_status(
-    chat_id,
-    message_id,
-    text
-):
-
+async def edit_status(chat_id, message_id, text):
     try:
-
         await pyro_bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text=text
         )
-
         return True
-
     except Exception as e:
-
         print(
             f"[STATUS EDIT ERROR] "
             f"chat={chat_id} "
             f"message={message_id} "
             f"error={e}"
         )
-
         return False
 
 
 # =============================================================
-# 16. UPLOAD PROGRESS
+# 10. UPLOAD PROGRESS
 # =============================================================
 
 async def progress_args(
@@ -437,16 +292,12 @@ async def progress_args(
     start_time,
     stage
 ):
-
     try:
-
         now = time.time()
-
         diff = now - start_time
 
         if diff <= 0:
             diff = 0.001
-
 
         percentage = (
             current * 100 / total
@@ -454,9 +305,7 @@ async def progress_args(
             else 0
         )
 
-
         speed = current / diff
-
 
         remaining = (
             (total - current) / speed
@@ -464,22 +313,15 @@ async def progress_args(
             else 0
         )
 
-
-        eta = TimeFormatter(
-            remaining * 1000
-        )
-
+        eta = TimeFormatter(remaining * 1000)
 
         blocks = max(
             0,
             min(
                 10,
-                math.floor(
-                    percentage / 10
-                )
+                math.floor(percentage / 10)
             )
         )
-
 
         progress = (
             "["
@@ -488,19 +330,16 @@ async def progress_args(
             + "]"
         )
 
-
         text = (
             f"{text_type}\n\n"
-            f"{progress} {percentage:.2f}%\n\n"
-            f"📊 Adadi: "
-            f"{humanbytes(current)} / "
-            f"{humanbytes(total)}\n"
-            f"⚡ Speed: "
-            f"{humanbytes(speed)}/s\n"
-            f"⏳ Lokacin da ya rage: "
-            f"{eta}"
+            f"{progress} `{percentage:.2f}%`\n\n"
+            f"📊 *Adadi:* "
+            f"`{humanbytes(current)} / {humanbytes(total)}`\n"
+            f"⚡ *Speed:* "
+            f"`{humanbytes(speed)}/s`\n"
+            f"⏳ *Lokacin da ya rage:* "
+            f"`{eta}`"
         )
-
 
         key = (
             chat_id,
@@ -508,18 +347,12 @@ async def progress_args(
             stage
         )
 
-
-        last_time = PROGRESS_STATE.get(
-            key,
-            0
-        )
-
+        last_time = PROGRESS_STATE.get(key, 0)
 
         if (
-            now - last_time >= 3
+            now - last_time >= PROGRESS_UPDATE_SECONDS
             or current >= total
         ):
-
             PROGRESS_STATE[key] = now
 
             await edit_status(
@@ -528,197 +361,101 @@ async def progress_args(
                 text
             )
 
-
     except Exception as e:
-
+        # Progress error must NEVER kill the upload.
         print(
             f"[UPLOAD PROGRESS ERROR] "
             f"stage={stage} "
+            f"current={current} "
+            f"total={total} "
             f"error={e}"
         )
 
 
 # =============================================================
-# 17. PYROGRAM MAIN
-#
-# BA A SENDING ADMIN DEBUG ANAN BA.
+# 11. PYROGRAM MAIN
 # =============================================================
 
 async def pyro_main():
-
     try:
-
         result = pyro_bot.start()
 
         if inspect.isawaitable(result):
             await result
 
-
         PYRO_READY.set()
         PYRO_FAILED.clear()
 
+        print("Pyrogram ya shirya.")
 
-        print(
-            "🟢 Pyrogram ya shirya."
-        )
-
-
+        # Keep the Pyrogram event loop alive.
         await asyncio.Event().wait()
 
-
     except Exception as e:
-
         PYRO_FAILED.set()
         PYRO_READY.clear()
 
-        print(
-            "\n❌ PYROGRAM YA CRASH\n"
+        send_admin_exception(
+            "PYROGRAM YA CRASH",
+            e
         )
 
-        traceback.print_exc()
-
-
     finally:
-
         try:
-
             if pyro_bot.is_connected:
-
                 result = pyro_bot.stop()
 
                 if inspect.isawaitable(result):
                     await result
-
         except Exception as e:
-
-            print(
-                f"[PYRO STOP ERROR] {e}"
-            )
+            print(f"[PYRO STOP ERROR] {e}")
 
 
 # =============================================================
-# 18. PYROGRAM THREAD
+# 12. /START
 # =============================================================
 
-def start_pyro_loop():
-
-    try:
-
-        asyncio.set_event_loop(
-            pyro_loop
-        )
-
-
-        print(
-            "🧵 Pyrogram asyncio loop yana farawa..."
-        )
-
-
-        pyro_loop.run_until_complete(
-            pyro_main()
-        )
-
-
-    except Exception as e:
-
-        PYRO_FAILED.set()
-        PYRO_READY.clear()
-
-        print(
-            "\n❌ PYROGRAM LOOP YA CRASH\n"
-        )
-
-        traceback.print_exc()
-
-
-    finally:
-
-        try:
-
-            pyro_loop.close()
-
-        except Exception:
-            pass
-
-
-# =============================================================
-# 19. START PYROGRAM THREAD
-# =============================================================
-
-pyro_thread = threading.Thread(
-    target=start_pyro_loop,
-    name="PyrogramThread",
-    daemon=True
-)
-
-pyro_thread.start()
-
-
-# =============================================================
-# 20. /START
-#
-# BA ADMIN DEBUG.
-# =============================================================
-
-@bot.message_handler(
-    commands=["start"]
-)
+@bot.message_handler(commands=["start"])
 def start_handler(message):
-
     user_id = message.from_user.id
 
-
     if user_id != ADMIN_ID:
-
         bot.reply_to(
             message,
             "❌ Wannan bot na admin ne kawai."
         )
-
         return
-
 
     bot.reply_to(
         message,
-        "🟢 Bot yana aiki lafiya.\n\n"
-        "Aika /video domin fara converter."
+        "🟢 *Bot yana aiki lafiya.*\n\n"
+        "Aika `/video` domin fara converter."
     )
 
 
 # =============================================================
-# 21. /VIDEO
-#
-# BA ADMIN DEBUG.
+# 13. /VIDEO
 # =============================================================
 
-@bot.message_handler(
-    commands=["video"]
-)
+@bot.message_handler(commands=["video"])
 def start_video_process(message):
-
     user_id = message.from_user.id
 
-
     if user_id != ADMIN_ID:
-
         return
-
 
     USER_STATES[user_id] = True
 
-
     bot.reply_to(
         message,
-        "✅ An kunna tsarin karɓar aiki.\n\n"
-        "Yanzu aiko min da Video ko File "
+        "✅ *An kunna tsarin karɓar aiki!*\n\n"
+        "Yanzu aiko min da *Video* ko *File* "
         "din da kake son sarrafawa."
     )
 
 
 # =============================================================
-# 22. RECEIVE VIDEO / DOCUMENT
-#
-# BA ADMIN DEBUG.
+# 14. RECEIVE VIDEO / DOCUMENT
 # =============================================================
 
 @bot.message_handler(
@@ -728,49 +465,30 @@ def start_video_process(message):
     ]
 )
 def handle_incoming_file(message):
-
     user_id = message.from_user.id
-
 
     if user_id != ADMIN_ID:
         return
 
-
-    if not USER_STATES.get(
-        user_id,
-        False
-    ):
+    if not USER_STATES.get(user_id, False):
         return
 
-
     USER_STATES[user_id] = False
-
 
     file_name = "Video/File"
     file_size = 0
     file_id = None
     original_type = message.content_type
 
-
     try:
-
         if message.video:
-
             file_name = (
-                getattr(
-                    message.video,
-                    "file_name",
-                    None
-                )
+                getattr(message.video, "file_name", None)
                 or "video.mp4"
             )
 
             file_size = (
-                getattr(
-                    message.video,
-                    "file_size",
-                    0
-                )
+                getattr(message.video, "file_size", 0)
                 or 0
             )
 
@@ -780,24 +498,14 @@ def handle_incoming_file(message):
                 None
             )
 
-
         elif message.document:
-
             file_name = (
-                getattr(
-                    message.document,
-                    "file_name",
-                    None
-                )
+                getattr(message.document, "file_name", None)
                 or "file"
             )
 
             file_size = (
-                getattr(
-                    message.document,
-                    "file_size",
-                    0
-                )
+                getattr(message.document, "file_size", 0)
                 or 0
             )
 
@@ -807,158 +515,79 @@ def handle_incoming_file(message):
                 None
             )
 
-
     except Exception as e:
-
-        print(
-            f"[FILE DETAILS ERROR] {e}"
+        send_admin_exception(
+            "FILE DETAILS ERROR",
+            e
         )
 
-
     markup = types.InlineKeyboardMarkup()
-
 
     btn1 = types.InlineKeyboardButton(
         "🎬 Video",
         callback_data="convert_video"
     )
 
-
     btn2 = types.InlineKeyboardButton(
         "📁 File",
         callback_data="convert_file"
     )
 
-
-    markup.add(
-        btn1,
-        btn2
-    )
-
+    markup.add(btn1, btn2)
 
     try:
-
         sent = bot.reply_to(
             message,
-            f"✅ An karɓi fayil: `{file_name}`\n\n"
+            f"✅ *An karɓi fayil:* `{file_name}`\n\n"
             "Shin a wanne tsari kake son dawo da shi?",
             reply_markup=markup
         )
 
-
-        PENDING_DATA[
-            sent.message_id
-        ] = {
-
+        PENDING_DATA[sent.message_id] = {
             "msg_id": message.message_id,
-
             "chat_id": message.chat.id,
-
             "file_name": file_name,
-
             "file_size": file_size,
-
             "original_type": original_type,
-
             "file_id": file_id,
-
             "created_at": time.time()
         }
 
-
     except Exception as e:
-
-        print(
-            f"[FILE REPLY ERROR] {e}"
+        send_admin_exception(
+            "FILE REPLY ERROR",
+            e
         )
 
 
 # =============================================================
-# 23. CALLBACK
-#
-# MUHIMMI:
-# A NAN NE ADMIN DEBUG ZAI FARA.
-# Wato sai bayan an taba Video/File.
+# 15. CALLBACK
 # =============================================================
 
 @bot.callback_query_handler(
-    func=lambda call:
-    call.data.startswith("convert_")
+    func=lambda call: call.data.startswith("convert_")
 )
 def process_conversion_callback(call):
-
     try:
-
-        # =====================================================
-        # DEBUG YA FARA ANAN KAWAI
-        # =====================================================
-
-        send_admin_debug(
-            "🔘 CALLBACK YA ISO\n\n"
-            f"Callback ID: {call.id}\n"
-            f"Data: {call.data}\n"
-            f"User ID: {call.from_user.id}\n"
-            f"Chat ID: {call.message.chat.id}\n"
-            f"Status Message ID: {call.message.message_id}",
-            "BUTTON CLICK"
-        )
-
-
-        try:
-
-            bot.answer_callback_query(
-                call.id
-            )
-
-        except Exception:
-
-            pass
-
+        bot.answer_callback_query(call.id)
 
         if call.from_user.id != ADMIN_ID:
-
-            send_admin_debug(
-                f"❌ User {call.from_user.id} ba ADMIN_ID ba.",
-                "ACCESS DENIED"
-            )
-
             return
-
 
         msg_id = call.message.message_id
 
-
         if msg_id not in PENDING_DATA:
-
             bot.edit_message_text(
-                "❌ Aikin ya fita daga tsarin lokaci.\n\n"
-                "Sake fara /video.",
+                "❌ *Aikin ya fita daga tsarin lokaci.*\n\n"
+                "Sake fara `/video`.",
                 call.message.chat.id,
                 msg_id
             )
-
-
-            send_admin_debug(
-                f"❌ PENDING DATA babu key: {msg_id}",
-                "PENDING MISSING"
-            )
-
             return
 
+        task_info = PENDING_DATA.pop(msg_id)
 
-        task_info = PENDING_DATA.pop(
-            msg_id
-        )
-
-
-        # =====================================================
-        # MODE LOCK
-        # =====================================================
-
-        as_video = (
-            call.data == "convert_video"
-        )
-
+        as_video = call.data == "convert_video"
 
         selected_mode = (
             "VIDEO"
@@ -966,14 +595,9 @@ def process_conversion_callback(call):
             else "FILE"
         )
 
+        chat_id = task_info["chat_id"]
 
-        chat_id = task_info[
-            "chat_id"
-        ]
-
-        target_msg_id = task_info[
-            "msg_id"
-        ]
+        target_msg_id = task_info["msg_id"]
 
         file_name = task_info.get(
             "file_name",
@@ -990,82 +614,27 @@ def process_conversion_callback(call):
             0
         )
 
-
-        send_admin_debug(
-            "🎯 ZABI YA KAMMALA\n\n"
-            f"Selected Mode: {selected_mode}\n"
-            f"Original Telegram Type: {original_type}\n"
-            f"File Name: {file_name}\n"
-            f"File Size: {humanbytes(file_size)}\n"
-            f"Chat ID: {chat_id}\n"
-            f"Original Message ID: {target_msg_id}\n"
-            f"Status Message ID: {msg_id}\n\n"
-            "Wannan zabin ne za a yi amfani da shi har zuwa send.",
-            "MODE LOCKED"
-        )
-
-
-        # =====================================================
-        # PYROGRAM CHECK
-        # =====================================================
-
         if not PYRO_READY.is_set():
-
             bot.edit_message_text(
-                "❌ Pyrogram bai shirya ba.\n\n"
-                "Sake gwadawa daga baya.",
+                "❌ *Pyrogram bai shirya ba.*\n\n"
+                "Sake gwadawa bayan ɗan lokaci.",
                 chat_id,
                 msg_id
             )
-
-
-            send_admin_debug(
-                "Pyrogram bai shirya ba.\n\n"
-                f"Ready: {PYRO_READY.is_set()}\n"
-                f"Failed: {PYRO_FAILED.is_set()}\n"
-                f"Loop Running: {pyro_loop.is_running()}",
-                "PYRO NOT READY"
-            )
-
             return
 
-
         if not pyro_loop.is_running():
-
             raise Exception(
                 "Pyrogram asyncio loop baya running."
             )
 
-
-        # =====================================================
-        # STATUS
-        # =====================================================
-
         bot.edit_message_text(
-            "🔄 Ana fara aikin...\n\n"
+            "🔄 *Ana fara aikin...*\n\n"
             f"📁 `{file_name}`\n"
             f"🎯 Tsari: `{selected_mode}`",
             chat_id,
             msg_id
         )
-
-
-        send_admin_debug(
-            "🚀 TASK ZA A TURAWA PYROGRAM\n\n"
-            f"Mode: {selected_mode}\n"
-            f"File: {file_name}\n"
-            f"Size: {humanbytes(file_size)}\n"
-            f"Target Message: {target_msg_id}\n"
-            f"Status Message: {msg_id}\n"
-            f"Pyro Ready: {PYRO_READY.is_set()}\n"
-            f"Loop Running: {pyro_loop.is_running()}",
-            "TASK QUEUE START"
-        )
-
-
-        # =====================================================
-        # SEND TASK TO PYROGRAM LOOP
-        # =====================================================
 
         future = asyncio.run_coroutine_threadsafe(
             run_pyrogram_task(
@@ -1079,65 +648,149 @@ def process_conversion_callback(call):
             pyro_loop
         )
 
-
-        send_admin_debug(
-            "🟢 TASK AN SHIGA PYROGRAM LOOP\n\n"
-            f"Future Done: {future.done()}\n"
-            f"Future Cancelled: {future.cancelled()}\n"
-            f"Loop Running: {pyro_loop.is_running()}\n"
-            f"Mode: {selected_mode}",
-            "TASK QUEUED"
-        )
-
-
-        # =====================================================
-        # FUTURE EXCEPTION WATCH
-        # =====================================================
-
+        # Catch exceptions that escape the task itself.
         def future_done_callback(done_future):
-
             try:
-
                 exception = done_future.exception()
 
                 if exception:
-
                     send_admin_exception(
-                        "🚨 FUTURE TASK YA KOMA DA EXCEPTION",
+                        "FUTURE TASK YA KOMA DA EXCEPTION",
                         exception
                     )
-
-                else:
-
-                    send_admin_debug(
-                        "🟢 FUTURE TASK YA KAMMALA BA TARE DA EXCEPTION BA.",
-                        "FUTURE COMPLETE"
-                    )
-
-
             except Exception as callback_error:
-
                 send_admin_exception(
                     "FUTURE CALLBACK ERROR",
                     callback_error
                 )
 
-
         future.add_done_callback(
             future_done_callback
         )
 
-
     except Exception as e:
-
         send_admin_exception(
-            "💥 CALLBACK CRASH",
+            "CALLBACK CRASH",
             e
         )
 
 
 # =============================================================
-# 24. PYROGRAM TASK
+# 16. SAFE TELEGRAM UPLOAD
+# =============================================================
+
+async def upload_to_telegram(
+    chat_id,
+    file_path,
+    as_video,
+    status_msg_id
+):
+    """
+    Uploads the local file with a hard timeout.
+
+    IMPORTANT:
+    The old code could wait forever inside send_video/send_document.
+    This function prevents that by wrapping every attempt in
+    asyncio.wait_for().
+    """
+
+    last_error = None
+
+    for attempt in range(1, UPLOAD_RETRIES + 2):
+        upload_started = time.time()
+
+        try:
+            if as_video:
+                result = await asyncio.wait_for(
+                    pyro_bot.send_video(
+                        chat_id=chat_id,
+                        video=file_path,
+                        caption=(
+                            "🎬 An kammala sarrafa "
+                            "bidiyon ku lafiya!"
+                        ),
+                        supports_streaming=True,
+                        progress=progress_args,
+                        progress_args=(
+                            "⬆️ *Ana Turawa (Video)...*",
+                            chat_id,
+                            status_msg_id,
+                            upload_started,
+                            "UPLOAD_VIDEO"
+                        )
+                    ),
+                    timeout=UPLOAD_TIMEOUT
+                )
+
+            else:
+                result = await asyncio.wait_for(
+                    pyro_bot.send_document(
+                        chat_id=chat_id,
+                        document=file_path,
+                        caption=(
+                            "📁 An kammala sarrafa "
+                            "fayil ɗin ku lafiya!"
+                        ),
+                        progress=progress_args,
+                        progress_args=(
+                            "⬆️ *Ana Turawa (File)...*",
+                            chat_id,
+                            status_msg_id,
+                            upload_started,
+                            "UPLOAD_DOCUMENT"
+                        )
+                    ),
+                    timeout=UPLOAD_TIMEOUT
+                )
+
+            if not result:
+                raise Exception(
+                    "Telegram send method ya dawo da empty result."
+                )
+
+            return result
+
+        except FloodWait:
+            raise
+
+        except asyncio.TimeoutError as e:
+            last_error = e
+
+            print(
+                f"[UPLOAD TIMEOUT] "
+                f"attempt={attempt} "
+                f"mode={'VIDEO' if as_video else 'DOCUMENT'}"
+            )
+
+            # Do not retry if this was the final attempt.
+            if attempt >= UPLOAD_RETRIES + 1:
+                raise
+
+            await asyncio.sleep(5)
+
+        except Exception as e:
+            last_error = e
+
+            print(
+                f"[UPLOAD ERROR] "
+                f"attempt={attempt} "
+                f"type={type(e).__name__} "
+                f"error={e}"
+            )
+
+            if attempt >= UPLOAD_RETRIES + 1:
+                raise
+
+            await asyncio.sleep(5)
+
+    if last_error:
+        raise last_error
+
+    raise Exception("Upload ya kasa ba tare da error ba.")
+
+
+# =============================================================
+# 17. PYROGRAM TASK
 # =============================================================
 
 async def run_pyrogram_task(
@@ -1148,11 +801,8 @@ async def run_pyrogram_task(
     selected_file_name=None,
     original_type=None
 ):
-
     task_started = time.time()
-
     file_path = ""
-
 
     selected_mode = (
         "VIDEO"
@@ -1160,135 +810,57 @@ async def run_pyrogram_task(
         else "DOCUMENT"
     )
 
-
-    # =========================================================
-    # DEBUG YA CI GABA DAGA NAN
-    # =========================================================
-
-    await async_admin_debug(
-        "🚀 UPLOAD TASK YA FARA\n\n"
-        f"Mode: {selected_mode}\n"
-        f"Original Telegram Type: {original_type}\n"
-        f"File Name: {selected_file_name}\n"
-        f"Chat ID: {chat_id}\n"
-        f"Target Message: {target_msg_id}\n"
-        f"Status Message: {status_msg_id}\n"
-        f"Pyro Ready: {PYRO_READY.is_set()}\n"
-        f"Loop Running: {pyro_loop.is_running()}",
-        "UPLOAD TASK START"
-    )
-
-
     try:
-
-        # =====================================================
-        # DEBUG 1/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 1/10\n\n"
-            "Ana tabbatar Pyrogram yana aiki kafin upload.",
-            "UPLOAD CHECK 1"
-        )
-
+        # -----------------------------------------------------
+        # STEP 1 — CONNECTION
+        # -----------------------------------------------------
 
         me = await pyro_bot.get_me()
 
+        if not me:
+            raise Exception(
+                "Pyrogram bai dawo da bot information ba."
+            )
 
-        await async_admin_debug(
-            "🟢 TELEGRAM CONNECTION VERIFIED\n\n"
-            f"Bot ID: {me.id}\n"
-            f"Username: @{me.username}\n"
-            f"Name: {me.first_name}",
-            "UPLOAD CHECK 1 OK"
-        )
-
-
-        # =====================================================
-        # DEBUG 2/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 2/10\n\n"
-            "Ana neman status message.",
-            "UPLOAD CHECK 2"
-        )
-
+        # -----------------------------------------------------
+        # STEP 2 — STATUS MESSAGE
+        # -----------------------------------------------------
 
         status_msg = await pyro_bot.get_messages(
             chat_id,
             status_msg_id
         )
 
-
         if not status_msg:
-
             raise Exception(
                 "Ba a samu status message ba."
             )
 
-
-        await async_admin_debug(
-            "🟢 STATUS MESSAGE OK\n\n"
-            f"Status Message ID: {status_msg.id}",
-            "UPLOAD CHECK 2 OK"
-        )
-
-
         await edit_status(
             chat_id,
             status_msg_id,
-            "🔄 Ana fara upload..."
+            "🔄 *Ana fara download...*"
         )
 
-
-        # =====================================================
-        # DEBUG 3/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 3/10\n\n"
-            "Ana neman original media message.",
-            "UPLOAD CHECK 3"
-        )
-
+        # -----------------------------------------------------
+        # STEP 3 — ORIGINAL MESSAGE
+        # -----------------------------------------------------
 
         msg = await pyro_bot.get_messages(
             chat_id,
             target_msg_id
         )
 
-
         if not msg:
-
             raise Exception(
                 "Original message bai samu ba."
             )
 
-
-        await async_admin_debug(
-            "🟢 ORIGINAL MESSAGE OK\n\n"
-            f"Message ID: {msg.id}\n"
-            f"Video: {bool(msg.video)}\n"
-            f"Document: {bool(msg.document)}\n"
-            f"Animation: {bool(msg.animation)}",
-            "UPLOAD CHECK 3 OK"
-        )
-
-
-        # =====================================================
-        # DEBUG 4/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 4/10\n\n"
-            "Ana sauke original media zuwa local file.",
-            "UPLOAD CHECK 4"
-        )
-
+        # -----------------------------------------------------
+        # STEP 4 — MEDIA INFORMATION
+        # -----------------------------------------------------
 
         media_type = "UNKNOWN"
-
         media_size = 0
 
         media_file_name = (
@@ -1296,14 +868,11 @@ async def run_pyrogram_task(
             or "unknown"
         )
 
-
         if msg.video:
-
             media_type = "VIDEO"
 
             media_size = (
-                msg.video.file_size
-                or 0
+                msg.video.file_size or 0
             )
 
             media_file_name = (
@@ -1312,14 +881,11 @@ async def run_pyrogram_task(
                 or "video.mp4"
             )
 
-
         elif msg.document:
-
             media_type = "DOCUMENT"
 
             media_size = (
-                msg.document.file_size
-                or 0
+                msg.document.file_size or 0
             )
 
             media_file_name = (
@@ -1328,14 +894,11 @@ async def run_pyrogram_task(
                 or "file"
             )
 
-
         elif msg.animation:
-
             media_type = "ANIMATION"
 
             media_size = (
-                msg.animation.file_size
-                or 0
+                msg.animation.file_size or 0
             )
 
             media_file_name = (
@@ -1344,266 +907,99 @@ async def run_pyrogram_task(
                 or "animation"
             )
 
-
         else:
-
             raise Exception(
                 "Original message ba ya dauke da "
                 "video/document/animation."
             )
 
+        # -----------------------------------------------------
+        # STEP 5 — DOWNLOAD
+        # -----------------------------------------------------
 
-        file_path = await asyncio.wait_for(
-            pyro_bot.download_media(
-                message=msg
-            ),
-            timeout=1800
-        )
-
-
-        if not file_path:
-
-            raise Exception(
-                "Pyrogram ya kasa samar da local file."
-            )
-
-
-        if not os.path.exists(file_path):
-
-            raise Exception(
-                f"Local file bai wanzu ba:\n{file_path}"
-            )
-
-
-        local_size = os.path.getsize(
-            file_path
-        )
-
-
-        if local_size <= 0:
-
-            raise Exception(
-                "Local file yana da size 0 bytes."
-            )
-
-
-        if not os.access(
-            file_path,
-            os.R_OK
-        ):
-
-            raise Exception(
-                "Local file ba readable ba ne."
-            )
-
-
-        disk = shutil.disk_usage(
-            os.path.dirname(file_path)
-            or "/"
-        )
-
-
-        await async_admin_debug(
-            "🟢 LOCAL FILE VERIFIED\n\n"
-            f"Path: {file_path}\n"
-            f"Telegram Type: {media_type}\n"
-            f"Selected Mode: {selected_mode}\n"
-            f"Name: {media_file_name}\n"
-            f"Size: {humanbytes(local_size)}\n"
-            f"Readable: {os.access(file_path, os.R_OK)}\n"
-            f"Disk Free: {humanbytes(disk.free)}",
-            "UPLOAD CHECK 4 OK"
-        )
-
-
-        # =====================================================
-        # DEBUG 5/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 5/10\n\n"
-            "Ana tabbatar da zabin Video/File.",
-            "UPLOAD CHECK 5"
-        )
-
-
-        if as_video:
-
-            upload_method = "send_video"
-            destination_type = "VIDEO"
-
-        else:
-
-            upload_method = "send_document"
-            destination_type = "DOCUMENT"
-
-
-        await async_admin_debug(
-            "🟢 UPLOAD MODE LOCKED\n\n"
-            f"Admin Selected: {selected_mode}\n"
-            f"Original Telegram Type: {media_type}\n"
-            f"Pyrogram Method: {upload_method}\n"
-            f"Destination Type: {destination_type}\n\n"
-            "Ba za a canza zabin ba yayin upload.",
-            "UPLOAD CHECK 5 OK"
-        )
-
+        download_start = time.time()
 
         await edit_status(
             chat_id,
             status_msg_id,
-            "⬆️ Ana Turawa...\n\n"
-            f"📁 {media_file_name}\n"
-            f"🎯 {selected_mode}"
+            (
+                "⬇️ *Ana sauke file...*\n\n"
+                f"📁 `{media_file_name}`\n"
+                f"📦 `{humanbytes(media_size)}`"
+            )
         )
 
-
-        # =====================================================
-        # DEBUG 6/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 6/10\n\n"
-            "Ana shirin kiran Telegram send method.\n\n"
-            f"Destination Chat: {chat_id}\n"
-            f"File Path: {file_path}\n"
-            f"File Size: {humanbytes(local_size)}\n"
-            f"Method: {upload_method}\n"
-            f"Mode: {selected_mode}",
-            "TELEGRAM SEND PRECHECK"
+        file_path = await pyro_bot.download_media(
+            message=msg,
+            progress=progress_args,
+            progress_args=(
+                "⬇️ *Ana Sauke...*",
+                chat_id,
+                status_msg_id,
+                download_start,
+                "DOWNLOAD"
+            )
         )
 
+        download_time = time.time() - download_start
+
+        if not file_path:
+            raise Exception(
+                "Pyrogram ya kasa samar da local file."
+            )
+
+        if not os.path.exists(file_path):
+            raise Exception(
+                f"Local file bai wanzu ba:\n{file_path}"
+            )
+
+        local_size = os.path.getsize(file_path)
+
+        if local_size <= 0:
+            raise Exception(
+                "Local file yana da size 0 bytes."
+            )
+
+        if not os.access(file_path, os.R_OK):
+            raise Exception(
+                "Local file ba readable ba ne."
+            )
+
+        # -----------------------------------------------------
+        # STEP 6 — UPLOAD
+        # -----------------------------------------------------
+
+        upload_method = (
+            "send_video"
+            if as_video
+            else "send_document"
+        )
+
+        await edit_status(
+            chat_id,
+            status_msg_id,
+            (
+                "⬆️ *Ana Turawa Telegram...*\n\n"
+                f"📁 `{media_file_name}`\n"
+                f"📦 `{humanbytes(local_size)}`\n"
+                f"🎯 `{selected_mode}`"
+            )
+        )
 
         upload_start = time.time()
 
-
-        # =====================================================
-        # DEBUG 7/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🚨 UPLOAD DEBUG 7/10 — SEND YANZU\n\n"
-            f"Telegram Method: {upload_method}\n"
-            f"Chat ID: {chat_id}\n"
-            f"File: {file_path}\n"
-            f"Size: {humanbytes(local_size)}\n\n"
-            "Daga nan Telegram/Pyrogram ne zai amsa.\n"
-            "An saka timeout domin kada send ya rataye har abada.",
-            "TELEGRAM SEND START"
+        result = await upload_to_telegram(
+            chat_id=chat_id,
+            file_path=file_path,
+            as_video=as_video,
+            status_msg_id=status_msg_id
         )
 
+        upload_time = time.time() - upload_start
 
-        # =====================================================
-        # ACTUAL SEND
-        # =====================================================
-
-        if as_video:
-
-            await async_admin_debug(
-                "🎬 ANA KIRAN send_video()\n\n"
-                f"chat_id: {chat_id}\n"
-                f"video: {file_path}\n"
-                f"size: {humanbytes(local_size)}\n"
-                "supports_streaming: True",
-                "SEND VIDEO CALL"
-            )
-
-
-            result = await asyncio.wait_for(
-
-                pyro_bot.send_video(
-                    chat_id=chat_id,
-                    video=file_path,
-                    caption=(
-                        "🎬 An kammala sarrafa "
-                        "bidiyon ku lafiya!"
-                    ),
-                    supports_streaming=True,
-                    progress=progress_args,
-                    progress_args=(
-                        "⬆️ Ana Turawa (Video)...",
-                        chat_id,
-                        status_msg_id,
-                        upload_start,
-                        "UPLOAD_VIDEO"
-                    )
-                ),
-
-                timeout=1800
-            )
-
-
-        else:
-
-            await async_admin_debug(
-                "📁 ANA KIRAN send_document()\n\n"
-                f"chat_id: {chat_id}\n"
-                f"document: {file_path}\n"
-                f"size: {humanbytes(local_size)}",
-                "SEND DOCUMENT CALL"
-            )
-
-
-            result = await asyncio.wait_for(
-
-                pyro_bot.send_document(
-                    chat_id=chat_id,
-                    document=file_path,
-                    caption=(
-                        "📁 An kammala sarrafa "
-                        "fayil ɗin ku lafiya!"
-                    ),
-                    progress=progress_args,
-                    progress_args=(
-                        "⬆️ Ana Turawa (File)...",
-                        chat_id,
-                        status_msg_id,
-                        upload_start,
-                        "UPLOAD_DOCUMENT"
-                    )
-                ),
-
-                timeout=1800
-            )
-
-
-        # =====================================================
-        # DEBUG 8/10
-        # =====================================================
-
-        upload_time = (
-            time.time() - upload_start
-        )
-
-
-        await async_admin_debug(
-            "🟢 UPLOAD DEBUG 8/10 — TELEGRAM YA AMSA\n\n"
-            f"Result Exists: {bool(result)}\n"
-            f"Result Type: {type(result).__name__}\n"
-            f"Upload Time: {upload_time:.2f}s\n"
-            f"Mode: {selected_mode}",
-            "TELEGRAM SEND RETURN"
-        )
-
-
-        if not result:
-
-            raise Exception(
-                "Telegram/Pyrogram send method ya dawo "
-                "da empty result."
-            )
-
-
-        # =====================================================
-        # DEBUG 9/10
-        # =====================================================
-
-        await async_admin_debug(
-            "🔎 UPLOAD DEBUG 9/10\n\n"
-            "Ana tabbatar da Telegram Message object.",
-            "DELIVERY VERIFY"
-        )
-
+        # -----------------------------------------------------
+        # STEP 7 — VERIFY RESULT
+        # -----------------------------------------------------
 
         sent_message_id = getattr(
             result,
@@ -1611,155 +1007,117 @@ async def run_pyrogram_task(
             None
         )
 
-
         sent_chat_id = getattr(
             getattr(result, "chat", None),
             "id",
             None
         )
 
-
         if not sent_message_id:
-
             raise Exception(
-                "Telegram ya dawo result amma babu "
-                "Message ID."
+                "Telegram ya dawo result amma babu Message ID."
             )
 
-
-        await async_admin_debug(
-            "🟢 TELEGRAM DELIVERY VERIFIED\n\n"
-            f"Sent Message ID: {sent_message_id}\n"
-            f"Sent Chat ID: {sent_chat_id}\n"
-            f"Expected Chat ID: {chat_id}\n"
-            f"Mode: {selected_mode}\n"
-            f"Upload Time: {upload_time:.2f}s\n"
-            f"Size: {humanbytes(local_size)}",
-            "DELIVERY VERIFIED"
-        )
-
+        # -----------------------------------------------------
+        # STEP 8 — SUCCESS
+        # -----------------------------------------------------
 
         await edit_status(
             chat_id,
             status_msg_id,
-            "🎉 An gama aikin lafiya!\n\n"
-            "🟢 Upload: OK\n"
-            "🟢 Telegram: OK\n"
-            "🟢 Delivery: OK"
+            (
+                "🎉 *An gama aikin lafiya!*\n\n"
+                "🟢 Download: OK\n"
+                "🟢 Local File: OK\n"
+                "🟢 Telegram Upload: OK\n"
+                "🟢 Delivery: OK"
+            )
         )
 
+        total_time = time.time() - task_started
 
-        # =====================================================
-        # DEBUG 10/10
-        # =====================================================
+        # Only ONE concise admin notification on success.
+        try:
+            bot.send_message(
+                ADMIN_ID,
+                (
+                    "✅ *Aiki ya kammala*\n\n"
+                    f"📁 `{media_file_name}`\n"
+                    f"📦 `{humanbytes(local_size)}`\n"
+                    f"🎯 `{selected_mode}`\n"
+                    f"⏱️ Download: `{download_time:.1f}s`\n"
+                    f"⏱️ Upload: `{upload_time:.1f}s`\n"
+                    f"⏱️ Total: `{total_time:.1f}s`\n"
+                    f"🆔 Message ID: `{sent_message_id}`"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as admin_error:
+            print(f"[SUCCESS ADMIN NOTICE ERROR] {admin_error}")
 
-        total_time = (
-            time.time() - task_started
+        print(
+            f"[SUCCESS] "
+            f"{media_file_name} | "
+            f"{humanbytes(local_size)} | "
+            f"{upload_method} | "
+            f"message={sent_message_id}"
         )
-
-
-        await async_admin_debug(
-            "🏆 UPLOAD DEBUG 10/10 — COMPLETE\n\n"
-            f"File: {media_file_name}\n"
-            f"Size: {humanbytes(local_size)}\n"
-            f"Original Type: {media_type}\n"
-            f"Selected Mode: {selected_mode}\n"
-            f"Send Method: {upload_method}\n"
-            f"Telegram Message ID: {sent_message_id}\n"
-            f"Upload Time: {upload_time:.2f}s\n"
-            f"Total Time: {total_time:.2f}s\n\n"
-            "🟢 PYROGRAM OK\n"
-            "🟢 LOCAL FILE OK\n"
-            "🟢 SEND METHOD OK\n"
-            "🟢 TELEGRAM RESPONSE OK\n"
-            "🟢 DELIVERY VERIFIED",
-            "TASK SUCCESS"
-        )
-
-
-    # =========================================================
-    # FLOOD WAIT
-    # =========================================================
 
     except FloodWait as e:
-
-        await async_admin_debug(
-            "⚠️ TELEGRAM FLOOD WAIT\n\n"
-            f"Seconds: {e.value}\n"
-            f"Mode: {selected_mode}\n"
-            f"File: {selected_file_name}\n\n"
-            "Telegram ne ya saka limit.",
-            "TELEGRAM FLOOD WAIT"
-        )
-
-
         try:
-
             await edit_status(
                 chat_id,
                 status_msg_id,
-                "⚠️ Telegram Limit.\n\n"
-                f"Jira daƙiƙa {e.value}."
+                (
+                    "⚠️ *Telegram Limit.*\n\n"
+                    f"Jira daƙiƙa `{e.value}`."
+                )
             )
-
         except Exception:
             pass
 
-
-    # =========================================================
-    # TIMEOUT
-    # =========================================================
-
-    except asyncio.TimeoutError as e:
-
-        elapsed = (
-            time.time() - upload_start
-            if "upload_start" in locals()
-            else 0
-        )
-
-
-        await async_admin_exception(
-            "⏰ TELEGRAM SEND TIMEOUT",
+        send_admin_exception(
+            "TELEGRAM FLOOD WAIT",
             e
         )
 
-
-        await async_admin_debug(
-            "🚨 TELEGRAM SEND YA RATAYE\n\n"
-            f"Method: {upload_method if 'upload_method' in locals() else 'UNKNOWN'}\n"
-            f"Chat ID: {chat_id}\n"
-            f"File: {file_path}\n"
-            f"Size: {humanbytes(os.path.getsize(file_path)) if file_path and os.path.exists(file_path) else 'UNKNOWN'}\n"
-            f"Elapsed: {elapsed:.2f}s\n\n"
-            "Telegram/Pyrogram bai dawo da response ba cikin timeout.",
-            "SEND TIMEOUT"
-        )
-
-
+    except asyncio.TimeoutError as e:
         try:
-
             await edit_status(
                 chat_id,
                 status_msg_id,
-                "⏰ Telegram Upload ya dauki lokaci sosai.\n\n"
-                "An dakatar da jira.\n\n"
-                "Duba DEBUG na admin."
+                (
+                    "⏰ *Upload ya ɗauki lokaci sosai.*\n\n"
+                    "An dakatar da shi domin kada bot ya rataye."
+                )
             )
-
         except Exception:
             pass
 
-
-    # =========================================================
-    # GENERAL ERROR
-    # =========================================================
+        send_admin_exception(
+            "TELEGRAM UPLOAD TIMEOUT",
+            e
+        )
 
     except Exception as e:
+        try:
+            await edit_status(
+                chat_id,
+                status_msg_id,
+                (
+                    "❌ *Aiki ya samu kuskure.*\n\n"
+                    "An kasa kammala upload."
+                )
+            )
+        except Exception as status_error:
+            print(
+                f"[STATUS ERROR AFTER TASK ERROR] "
+                f"{status_error}"
+            )
 
-        await async_admin_exception(
+        send_admin_exception(
             (
-                "💥 UPLOAD/SEND TASK YA CRASH\n"
+                "UPLOAD/SEND TASK YA KASA\n"
                 f"MODE={selected_mode}\n"
                 f"FILE={selected_file_name}\n"
                 f"ORIGINAL_TYPE={original_type}"
@@ -1767,145 +1125,130 @@ async def run_pyrogram_task(
             e
         )
 
-
-        try:
-
-            await edit_status(
-                chat_id,
-                status_msg_id,
-                "❌ Aiki ya samu kuskure.\n\n"
-                "Duba DEBUG na admin."
-            )
-
-        except Exception as status_error:
-
-            await async_admin_exception(
-                "STATUS UPDATE AFTER UPLOAD ERROR",
-                status_error
-            )
-
-
-    # =========================================================
-    # CLEANUP
-    # =========================================================
-
     finally:
-
-        print(
-            f"[CLEANUP] file={file_path}"
-        )
-
+        # -----------------------------------------------------
+        # CLEANUP
+        # -----------------------------------------------------
 
         if file_path and os.path.exists(file_path):
-
             try:
-
-                os.remove(
-                    file_path
-                )
-
-                print(
-                    f"[CLEANUP OK] {file_path}"
-                )
-
+                os.remove(file_path)
+                print(f"[CLEANUP] Removed: {file_path}")
             except Exception as e:
-
                 print(
-                    f"[CLEANUP ERROR] {e}"
+                    f"[CLEANUP ERROR] "
+                    f"{file_path}: {e}"
                 )
 
+        # Remove progress keys for this status message.
+        try:
+            keys_to_remove = [
+                key
+                for key in PROGRESS_STATE
+                if key[0] == chat_id
+                and key[1] == status_msg_id
+            ]
+
+            for key in keys_to_remove:
+                PROGRESS_STATE.pop(key, None)
+
+        except Exception:
+            pass
+
 
 # =============================================================
-# 25. RENDER HTTP SERVER
-#
-# BA ADMIN DEBUG.
+# 18. PYROGRAM THREAD
 # =============================================================
 
-class HealthHandler(
-    BaseHTTPRequestHandler
-):
+def start_pyro_loop():
+    try:
+        asyncio.set_event_loop(pyro_loop)
+
+        pyro_loop.run_until_complete(
+            pyro_main()
+        )
+
+    except Exception as e:
+        PYRO_FAILED.set()
+        PYRO_READY.clear()
+
+        send_admin_exception(
+            "PYROGRAM LOOP YA CRASH",
+            e
+        )
+
+    finally:
+        try:
+            if not pyro_loop.is_closed():
+                pyro_loop.close()
+        except Exception:
+            pass
+
+
+pyro_thread = threading.Thread(
+    target=start_pyro_loop,
+    name="PyrogramThread",
+    daemon=True
+)
+
+pyro_thread.start()
+
+
+# =============================================================
+# 19. RENDER HTTP SERVER
+# =============================================================
+
+class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-
         if self.path == "/":
-
             self.send_response(200)
-
             self.send_header(
                 "Content-Type",
                 "text/plain; charset=utf-8"
             )
-
             self.end_headers()
-
             self.wfile.write(
                 b"Converter Bot is running."
             )
-
             return
 
-
         if self.path == "/health":
-
             self.send_response(200)
-
             self.send_header(
                 "Content-Type",
                 "application/json"
             )
-
             self.end_headers()
-
             self.wfile.write(
                 b'{"status":"ok"}'
             )
-
             return
 
-
         self.send_response(404)
-
         self.end_headers()
 
-
-    def log_message(
-        self,
-        format,
-        *args
-    ):
-
+    def log_message(self, format, *args):
         return
 
 
-# =============================================================
-# 26. HTTP SERVER THREAD
-# =============================================================
-
 def start_http_server():
-
     try:
-
         server = HTTPServer(
-            (
-                "0.0.0.0",
-                PORT
-            ),
+            ("0.0.0.0", PORT),
             HealthHandler
         )
 
-
         print(
-            f"🌐 HTTP server yana sauraro a port {PORT}"
+            f"HTTP server yana sauraro a 0.0.0.0:{PORT}"
         )
-
 
         server.serve_forever()
 
-
     except Exception as e:
-
-        print(
-            f"❌ HTTP SERVER ERROR: {e}"
+        send_admin_exception(
+            "HTTP SERVER YA KASA",
+            e
         )
 
 
@@ -1919,63 +1262,67 @@ http_thread.start()
 
 
 # =============================================================
-# 27. TELEBOT STARTUP
+# 20. STARTUP MONITOR
+# =============================================================
+
+def startup_monitor():
+    time.sleep(5)
+
+    print(
+        "\n" + "=" * 70 +
+        "\nFULL STARTUP STATUS\n" +
+        "=" * 70
+    )
+
+    print(
+        f"PID: {os.getpid()}\n"
+        f"PORT: {PORT}\n"
+        f"HTTP Thread: {http_thread.name}\n"
+        f"Pyro Thread: {pyro_thread.name}\n"
+        f"Pyro Ready: {PYRO_READY.is_set()}\n"
+        f"Pyro Failed: {PYRO_FAILED.is_set()}\n"
+    )
+
+    print(system_info())
+
+
+threading.Thread(
+    target=startup_monitor,
+    name="StartupMonitor",
+    daemon=True
+).start()
+
+
+# =============================================================
+# 21. TELEBOT STARTUP + AUTO RETRY
 # =============================================================
 
 if __name__ == "__main__":
 
-    print("\n")
+    print("\n" + "=" * 70)
+    print("TELEBOT MAIN PROCESS")
     print("=" * 70)
-    print("🟢 TELEBOT MAIN PROCESS")
-    print("=" * 70)
-
-
-    # ---------------------------------------------------------
-    # REMOVE OLD WEBHOOK
-    # ---------------------------------------------------------
 
     try:
-
         bot.delete_webhook(
             drop_pending_updates=True
         )
-
-
-        print(
-            "🧹 An cire tsohon webhook."
-        )
-
+        print("An cire tsohon webhook.")
 
     except Exception as e:
-
         print(
-            f"⚠️ Webhook removal error: {e}"
+            f"Webhook removal error: {e}"
         )
-
 
     BOT_READY.set()
 
-
-    print(
-        "🟢 Telebot ready."
-    )
-
-
-    # =========================================================
-    # POLLING AUTO RETRY
-    # =========================================================
-
     retry_count = 0
 
-
     while True:
-
         try:
-
             print(
-                "\n🚀 Starting Telebot polling..."
+                "\nStarting Telebot polling..."
             )
-
 
             bot.infinity_polling(
                 skip_pending=True,
@@ -1984,80 +1331,42 @@ if __name__ == "__main__":
                 allowed_updates=None
             )
 
-
             retry_count += 1
 
-
             print(
-                f"⚠️ Polling ya tsaya. Retry #{retry_count}"
+                f"Polling ya tsaya. "
+                f"Retry #{retry_count}. "
+                f"Ana jira 5 seconds..."
             )
-
 
             time.sleep(5)
 
-
         except KeyboardInterrupt:
-
-            print(
-                "🛑 Bot an dakatar da shi."
-            )
-
+            print("Bot an dakatar da shi.")
             break
 
-
         except Exception as e:
-
             retry_count += 1
 
-
-            print(
-                "\n❌ POLLING ERROR"
-            )
-
-            traceback.print_exc()
-
-
-            print(
-                f"\nRetry #{retry_count}"
+            send_admin_exception(
+                f"POLLING CRASH - RETRY #{retry_count}",
+                e
             )
 
             print(
-                "⏳ Ana jira seconds 10..."
+                f"\nPolling error: {e}\n"
+                f"Retry #{retry_count}\n"
+                "Ana jira 10 seconds..."
             )
-
 
             time.sleep(10)
 
-
-            # -------------------------------------------------
-            # WEBHOOK SAFETY CLEANUP
-            # -------------------------------------------------
-
             try:
-
                 bot.delete_webhook(
                     drop_pending_updates=True
                 )
-
             except Exception as webhook_error:
-
                 print(
-                    f"⚠️ Webhook cleanup error: "
+                    f"Webhook cleanup error: "
                     f"{webhook_error}"
                 )
-
-
-            # -------------------------------------------------
-            # PYROGRAM STATUS
-            # -------------------------------------------------
-
-            if PYRO_FAILED.is_set():
-
-                print(
-                    "⚠️ WARNING: Pyrogram ya mutu."
-                )
-
-
-            print(
-                "🔄 Ana sake fara polling..."
-            )
