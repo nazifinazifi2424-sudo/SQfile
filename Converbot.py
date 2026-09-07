@@ -175,11 +175,6 @@ def TimeFormatter(milliseconds: int) -> str:
 # =============================================================
 # 7. ADMIN ERROR ONLY
 # =============================================================
-# Normal Video/File button clicks and upload progress no longer
-# send debug messages to ADMIN.
-#
-# This function is kept ONLY for serious unexpected errors.
-# =============================================================
 
 def send_admin_exception(title, exc):
     tb = traceback.format_exc()
@@ -362,7 +357,6 @@ async def progress_args(
             )
 
     except Exception as e:
-        # Progress error must NEVER kill the upload.
         print(
             f"[UPLOAD PROGRESS ERROR] "
             f"stage={stage} "
@@ -648,7 +642,6 @@ def process_conversion_callback(call):
             pyro_loop
         )
 
-        # Catch exceptions that escape the task itself.
         def future_done_callback(done_future):
             try:
                 exception = done_future.exception()
@@ -685,15 +678,6 @@ async def upload_to_telegram(
     as_video,
     status_msg_id
 ):
-    """
-    Uploads the local file with a hard timeout.
-
-    IMPORTANT:
-    The old code could wait forever inside send_video/send_document.
-    This function prevents that by wrapping every attempt in
-    asyncio.wait_for().
-    """
-
     last_error = None
 
     for attempt in range(1, UPLOAD_RETRIES + 2):
@@ -762,7 +746,6 @@ async def upload_to_telegram(
                 f"mode={'VIDEO' if as_video else 'DOCUMENT'}"
             )
 
-            # Do not retry if this was the final attempt.
             if attempt >= UPLOAD_RETRIES + 1:
                 raise
 
@@ -811,20 +794,12 @@ async def run_pyrogram_task(
     )
 
     try:
-        # -----------------------------------------------------
-        # STEP 1 — CONNECTION
-        # -----------------------------------------------------
-
         me = await pyro_bot.get_me()
 
         if not me:
             raise Exception(
                 "Pyrogram bai dawo da bot information ba."
             )
-
-        # -----------------------------------------------------
-        # STEP 2 — STATUS MESSAGE
-        # -----------------------------------------------------
 
         status_msg = await pyro_bot.get_messages(
             chat_id,
@@ -842,10 +817,6 @@ async def run_pyrogram_task(
             "🔄 *Ana fara download...*"
         )
 
-        # -----------------------------------------------------
-        # STEP 3 — ORIGINAL MESSAGE
-        # -----------------------------------------------------
-
         msg = await pyro_bot.get_messages(
             chat_id,
             target_msg_id
@@ -855,10 +826,6 @@ async def run_pyrogram_task(
             raise Exception(
                 "Original message bai samu ba."
             )
-
-        # -----------------------------------------------------
-        # STEP 4 — MEDIA INFORMATION
-        # -----------------------------------------------------
 
         media_type = "UNKNOWN"
         media_size = 0
@@ -913,10 +880,6 @@ async def run_pyrogram_task(
                 "video/document/animation."
             )
 
-        # -----------------------------------------------------
-        # STEP 5 — DOWNLOAD
-        # -----------------------------------------------------
-
         download_start = time.time()
 
         await edit_status(
@@ -965,10 +928,6 @@ async def run_pyrogram_task(
                 "Local file ba readable ba ne."
             )
 
-        # -----------------------------------------------------
-        # STEP 6 — UPLOAD
-        # -----------------------------------------------------
-
         upload_method = (
             "send_video"
             if as_video
@@ -997,10 +956,6 @@ async def run_pyrogram_task(
 
         upload_time = time.time() - upload_start
 
-        # -----------------------------------------------------
-        # STEP 7 — VERIFY RESULT
-        # -----------------------------------------------------
-
         sent_message_id = getattr(
             result,
             "id",
@@ -1018,10 +973,6 @@ async def run_pyrogram_task(
                 "Telegram ya dawo result amma babu Message ID."
             )
 
-        # -----------------------------------------------------
-        # STEP 8 — SUCCESS
-        # -----------------------------------------------------
-
         await edit_status(
             chat_id,
             status_msg_id,
@@ -1036,7 +987,6 @@ async def run_pyrogram_task(
 
         total_time = time.time() - task_started
 
-        # Only ONE concise admin notification on success.
         try:
             bot.send_message(
                 ADMIN_ID,
@@ -1126,10 +1076,6 @@ async def run_pyrogram_task(
         )
 
     finally:
-        # -----------------------------------------------------
-        # CLEANUP
-        # -----------------------------------------------------
-
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -1140,7 +1086,6 @@ async def run_pyrogram_task(
                     f"{file_path}: {e}"
                 )
 
-        # Remove progress keys for this status message.
         try:
             keys_to_remove = [
                 key
@@ -1310,63 +1255,13 @@ if __name__ == "__main__":
         print("An cire tsohon webhook.")
 
     except Exception as e:
-        print(
-            f"Webhook removal error: {e}"
-        )
+        print(f"Gwarning: Ba a iya cire webhook ba: {e}")
 
-    BOT_READY.set()
-
-    retry_count = 0
+    print("Ana haɗa Telebot dinka...")
 
     while True:
         try:
-            print(
-                "\nStarting Telebot polling..."
-            )
-
-            bot.infinity_polling(
-                skip_pending=True,
-                timeout=60,
-                long_polling_timeout=60,
-                allowed_updates=None
-            )
-
-            retry_count += 1
-
-            print(
-                f"Polling ya tsaya. "
-                f"Retry #{retry_count}. "
-                f"Ana jira 5 seconds..."
-            )
-
-            time.sleep(5)
-
-        except KeyboardInterrupt:
-            print("Bot an dakatar da shi.")
-            break
-
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
-            retry_count += 1
-
-            send_admin_exception(
-                f"POLLING CRASH - RETRY #{retry_count}",
-                e
-            )
-
-            print(
-                f"\nPolling error: {e}\n"
-                f"Retry #{retry_count}\n"
-                "Ana jira 10 seconds..."
-            )
-
-            time.sleep(10)
-
-            try:
-                bot.delete_webhook(
-                    drop_pending_updates=True
-                )
-            except Exception as webhook_error:
-                print(
-                    f"Webhook cleanup error: "
-                    f"{webhook_error}"
-                )
+            print(f"[TELEBOT POLLING ERROR] {e}")
+            time.sleep(5)
