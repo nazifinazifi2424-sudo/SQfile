@@ -879,9 +879,87 @@ def waiting_text_handler(message):
     )
 
 
-# ============================================================
-# ERROR HANDLER
-# ============================================================
+
+# =============================================================
+# RENDER WEB SERVICE + TELEBOT + PYROGRAM
+# =============================================================
+
+from flask import Flask
+import os
+import time
+import threading
+
+
+# =============================================================
+# FLASK HEALTH SERVER
+# =============================================================
+
+server = Flask(__name__)
+
+
+@server.route("/")
+def home():
+    return "VD Bot is running successfully.", 200
+
+
+@server.route("/health")
+def health():
+    return "OK", 200
+
+
+@server.route("/status")
+def status():
+    return {
+        "status": "online",
+        "bot": "running",
+        "pyrogram": "running"
+    }, 200
+
+
+def run_web_server():
+    """
+    Render Web Service yana bukatar application
+    ya saurari PORT.
+    """
+
+    port_raw = os.getenv("PORT", "10000").strip()
+
+    try:
+        port = int(port_raw)
+    except ValueError:
+        port = 10000
+
+    logger.info(
+        "Starting Render HTTP server on 0.0.0.0:%s",
+        port
+    )
+
+    try:
+        server.run(
+            host="0.0.0.0",
+            port=port,
+            debug=False,
+            use_reloader=False,
+            threaded=True
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "HTTP server crashed: %s",
+            e
+        )
+
+        send_debug(
+            "🚨 RENDER HTTP SERVER CRASHED\n\n"
+            f"Error: {type(e).__name__}\n"
+            f"{str(e)[:1500]}"
+        )
+
+
+# =============================================================
+# TELEBOT POLLING
+# =============================================================
 
 def polling_loop():
 
@@ -889,7 +967,13 @@ def polling_loop():
 
         try:
 
-            logger.info("Starting TeleBot polling...")
+            logger.info(
+                "Starting TeleBot polling..."
+            )
+
+            send_debug(
+                "🔄 TeleBot polling is starting..."
+            )
 
             bot.infinity_polling(
                 timeout=60,
@@ -904,76 +988,211 @@ def polling_loop():
         except Exception as e:
 
             logger.exception(
-                "Polling crashed: %s",
+                "TeleBot polling crashed: %s",
                 e
             )
 
             send_debug(
-                f"POLLING CRASHED\n"
-                f"{type(e).__name__}: {str(e)[:1500]}"
+                "🚨 TELEBOT POLLING CRASHED\n\n"
+                f"Error Type: {type(e).__name__}\n"
+                f"Error: {str(e)[:2000]}\n\n"
+                "Bot zai sake kokarin tashi bayan seconds 5."
             )
 
             time.sleep(5)
 
+            logger.info(
+                "Restarting TeleBot polling..."
+            )
 
-# ============================================================
+
+# =============================================================
 # MAIN
-# ============================================================
+# =============================================================
 
 def main():
 
-    logger.info("======================================")
-    logger.info("Telegram VD Converter starting...")
-    logger.info("======================================")
+    logger.info(
+        "=============================================="
+    )
 
     logger.info(
-        "API_ID loaded: %s",
+        "🚀 VD BOT STARTING..."
+    )
+
+    logger.info(
+        "=============================================="
+    )
+
+
+    # ---------------------------------------------------------
+    # CHECK ENVIRONMENT VARIABLES
+    # ---------------------------------------------------------
+
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN is missing."
+        )
+
+    if not API_ID:
+        raise RuntimeError(
+            "API_ID is missing."
+        )
+
+    if not API_HASH:
+        raise RuntimeError(
+            "API_HASH is missing."
+        )
+
+
+    logger.info(
+        "BOT_TOKEN: LOADED"
+    )
+
+    logger.info(
+        "API_ID: %s",
         API_ID
     )
 
     logger.info(
-        "API_HASH loaded: YES"
+        "API_HASH: LOADED"
     )
 
-    logger.info(
-        "BOT_TOKEN loaded: YES"
-    )
 
     if ADMIN_ID:
+
         logger.info(
-            "ADMIN_ID loaded: %s",
+            "ADMIN_ID: %s",
             ADMIN_ID
         )
+
     else:
+
         logger.info(
-            "ADMIN_ID not configured."
+            "ADMIN_ID: NOT SET"
         )
 
-    # --------------------------------------------------------
-    # Start Pyrogram
-    # --------------------------------------------------------
+
+    # ---------------------------------------------------------
+    # START RENDER HTTP SERVER
+    # ---------------------------------------------------------
+
+    logger.info(
+        "Starting Render Web Service HTTP server..."
+    )
+
+    web_thread = threading.Thread(
+        target=run_web_server,
+        name="RenderHTTP",
+        daemon=True
+    )
+
+    web_thread.start()
+
+
+    # ---------------------------------------------------------
+    # START PYROGRAM
+    # ---------------------------------------------------------
 
     logger.info(
         "Starting Pyrogram..."
     )
 
-    app.start()
+    try:
 
-    logger.info(
-        "Pyrogram started successfully."
-    )
+        app.start()
+
+        logger.info(
+            "✅ Pyrogram started successfully."
+        )
+
+        send_debug(
+            "🟢 PYROGRAM STARTED\n\n"
+            "Telegram download/upload system is ready."
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Pyrogram failed to start."
+        )
+
+        send_debug(
+            "🚨 PYROGRAM START FAILED\n\n"
+            f"Error Type: {type(e).__name__}\n"
+            f"Error: {str(e)[:2000]}"
+        )
+
+        raise
+
+
+    # ---------------------------------------------------------
+    # BOT STARTED MESSAGE
+    # ---------------------------------------------------------
 
     send_debug(
-        "🚀 VD BOT STARTED\n\n"
-        "TeleBot + Pyrogram are ready."
+        "🚀 VD BOT STARTED SUCCESSFULLY\n\n"
+        "✅ Render HTTP Server\n"
+        "✅ TeleBot\n"
+        "✅ Pyrogram\n\n"
+        "All systems are ready."
     )
 
-    # --------------------------------------------------------
-    # Start TeleBot polling
-    # --------------------------------------------------------
+
+    logger.info(
+        "=============================================="
+    )
+
+    logger.info(
+        "🟢 ALL SYSTEMS ARE READY"
+    )
+
+    logger.info(
+        "=============================================="
+    )
+
+
+    # ---------------------------------------------------------
+    # START TELEBOT
+    # ---------------------------------------------------------
 
     polling_loop()
 
 
+# =============================================================
+# START APPLICATION
+# =============================================================
+
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        main()
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "Bot stopped manually."
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "FATAL APPLICATION ERROR"
+        )
+
+        try:
+
+            send_debug(
+                "💥 FATAL APPLICATION ERROR\n\n"
+                f"Error Type: {type(e).__name__}\n"
+                f"Error: {str(e)[:3000]}"
+            )
+
+        except Exception:
+            pass
+
+        # Kada mu mutu gaba daya nan take.
+        # Render zai sake tayar da service din.
+        raise
+
