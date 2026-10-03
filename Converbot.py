@@ -82,7 +82,7 @@ bot = telebot.TeleBot(
 # ============================================================
 # /VIDEOCON — LARGE VIDEO / FILE CONVERTER
 # ============================================================
-# FULL FIXED EDITION
+# CLEAN EDITION
 #
 # FLOW:
 #
@@ -98,26 +98,30 @@ bot = telebot.TeleBot(
 #      ↓
 # Render → Telegram UPLOAD
 #      ↓
-# Cleanup
+# CLEANUP
 #
 # IMPORTANT:
 # This code DOES NOT convert/compress media.
 # It transfers the same file and chooses whether Telegram
 # receives it as Document or Video.
 #
-# FIXES:
+# FEATURES:
 # - Render Web Service PORT
 # - Pyrogram dedicated event loop
-# - Blocking TeleBot progress calls removed from Pyrogram loop
-# - Upload/download timeout protection
-# - Pyrogram restart protection
-# - Thread exception logging
-# - Asyncio exception logging
-# - Disk/RAM/CPU diagnostics
-# - Telegram Admin debug logging
+# - Large file download/upload
+# - Progress update every 10 seconds
+# - Safe temporary file cleanup
+# - Disk space protection
 # - Download verification
 # - Upload verification
-# - Safe cleanup
+# - Admin-only /videocon
+# - Video → Video
+# - Video → File
+# - File → Video
+# - File → File
+# - Pyrogram startup protection
+# - Timeout protection
+# - No debug spam
 # ============================================================
 
 
@@ -126,18 +130,13 @@ bot = telebot.TeleBot(
 # ============================================================
 
 import os
-import sys
 import asyncio
 import tempfile
 import shutil
 import threading
 import time
-import traceback
-import queue
-import platform
-import socket
 import html
-from datetime import datetime
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from telebot import types
@@ -148,6 +147,7 @@ from pyrogram import Client
 # CONFIG
 # ============================================================
 
+# Maximum file size accepted.
 VIDEOCON_MAX_GB = 1.65
 
 VIDEOCON_MAX_BYTES = int(
@@ -157,26 +157,31 @@ VIDEOCON_MAX_BYTES = int(
     * 1024
 )
 
-# Minimum free space that must remain after allocating
-# space for the downloaded file.
+
+# Minimum free disk space that must remain.
 VIDEOCON_MIN_FREE_BYTES = (
     300 * 1024 * 1024
 )
 
-# User status message update interval.
-VIDEOCON_PROGRESS_INTERVAL = 5
 
-# Telegram debug message safety limit.
-VIDEOCON_DEBUG_MESSAGE_LIMIT = 3500
+# ============================================================
+# PROGRESS UPDATE INTERVAL
+# ============================================================
+#
+# Status message will be edited every 10 seconds.
+#
+VIDEOCON_PROGRESS_INTERVAL = 10
 
-# How long a Pyrogram coroutine may wait.
-# Large files can take a long time.
+
+# Maximum time allowed for one Pyrogram operation.
 VIDEOCON_OPERATION_TIMEOUT = (
     4 * 60 * 60
 )
 
-# How long to wait for Pyrogram startup.
+
+# Maximum time to wait for Pyrogram startup.
 VIDEOCON_ENGINE_START_TIMEOUT = 90
+
 
 # Render health server.
 VIDEOCON_HEALTH_ENABLED = (
@@ -184,12 +189,17 @@ VIDEOCON_HEALTH_ENABLED = (
         "VIDEOCON_HEALTH_ENABLED",
         "true"
     ).lower()
-    in ("1", "true", "yes", "on")
+    in (
+        "1",
+        "true",
+        "yes",
+        "on"
+    )
 )
 
 
 # ============================================================
-# ENVIRONMENT
+# ENVIRONMENT VARIABLES
 # ============================================================
 
 try:
@@ -281,23 +291,6 @@ _videocon_engine_lock = (
 
 
 # ============================================================
-# DEBUG QUEUE
-# ============================================================
-
-_videocon_debug_queue = (
-    queue.Queue(
-        maxsize=3000
-    )
-)
-
-_videocon_debug_sender_started = False
-
-_videocon_debug_sender_lock = (
-    threading.Lock()
-)
-
-
-# ============================================================
 # HEALTH SERVER STATE
 # ============================================================
 
@@ -308,364 +301,6 @@ _videocon_health_thread = None
 _videocon_health_lock = (
     threading.Lock()
 )
-
-
-# ============================================================
-# DEBUG FORMATTER
-# ============================================================
-
-def _videocon_debug_format(
-    level,
-    *args
-):
-
-    try:
-
-        timestamp = (
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-        )
-
-    except Exception:
-
-        timestamp = "UNKNOWN_TIME"
-
-
-    try:
-
-        thread_name = (
-            threading.current_thread().name
-        )
-
-    except Exception:
-
-        thread_name = "UNKNOWN_THREAD"
-
-
-    try:
-
-        message = " ".join(
-            str(x)
-            for x in args
-        )
-
-    except Exception:
-
-        message = repr(args)
-
-
-    return (
-        f"[{timestamp}] "
-        f"[VIDEOCON] "
-        f"[{level}] "
-        f"[{thread_name}] "
-        f"{message}"
-    )
-
-
-# ============================================================
-# TELEGRAM DEBUG SENDER
-# ============================================================
-
-def _videocon_debug_sender():
-
-    while True:
-
-        try:
-
-            first = (
-                _videocon_debug_queue.get()
-            )
-
-            lines = [
-                first
-            ]
-
-            deadline = (
-                time.time()
-                + 0.7
-            )
-
-            while (
-                time.time()
-                < deadline
-            ):
-
-                try:
-
-                    item = (
-                        _videocon_debug_queue.get(
-                            timeout=0.05
-                        )
-                    )
-
-                    lines.append(item)
-
-                except queue.Empty:
-
-                    pass
-
-
-            text = "\n".join(
-                lines
-            )
-
-
-            chunks = []
-
-            while len(text) > (
-                VIDEOCON_DEBUG_MESSAGE_LIMIT
-            ):
-
-                chunks.append(
-                    text[
-                        :VIDEOCON_DEBUG_MESSAGE_LIMIT
-                    ]
-                )
-
-                text = text[
-                    VIDEOCON_DEBUG_MESSAGE_LIMIT:
-                ]
-
-
-            if text:
-
-                chunks.append(
-                    text
-                )
-
-
-            if not ADMIN_ID:
-
-                continue
-
-
-            telegram_bot = (
-                globals().get(
-                    "bot"
-                )
-            )
-
-            if not telegram_bot:
-
-                continue
-
-
-            for chunk in chunks:
-
-                try:
-
-                    safe_chunk = (
-                        html.escape(
-                            chunk
-                        )
-                    )
-
-                    telegram_bot.send_message(
-
-                        ADMIN_ID,
-
-                        (
-                            "🛠 <b>VIDEOCON DEBUG</b>\n\n"
-                            "<code>"
-                            + safe_chunk
-                            + "</code>"
-                        ),
-
-                        parse_mode="HTML"
-
-                    )
-
-                except Exception as e:
-
-                    try:
-
-                        print(
-                            "❌ VIDEOCON DEBUG SEND ERROR:",
-                            repr(e),
-                            flush=True
-                        )
-
-                    except Exception:
-
-                        pass
-
-
-        except Exception as e:
-
-            try:
-
-                print(
-                    "❌ VIDEOCON DEBUG SENDER ERROR:",
-                    repr(e),
-                    flush=True
-                )
-
-            except Exception:
-
-                pass
-
-            time.sleep(1)
-
-
-# ============================================================
-# START DEBUG SENDER
-# ============================================================
-
-def start_videocon_debug_sender():
-
-    global _videocon_debug_sender_started
-
-    with _videocon_debug_sender_lock:
-
-        if _videocon_debug_sender_started:
-
-            return
-
-
-        thread = threading.Thread(
-
-            target=_videocon_debug_sender,
-
-            daemon=True,
-
-            name="videocon-debug-sender"
-
-        )
-
-        thread.start()
-
-        _videocon_debug_sender_started = True
-
-
-# ============================================================
-# MAIN DEBUG
-# ============================================================
-
-def videocon_debug(
-    *args,
-    level="INFO",
-    telegram=True
-):
-
-    try:
-
-        line = (
-            _videocon_debug_format(
-                level,
-                *args
-            )
-        )
-
-    except Exception:
-
-        line = repr(args)
-
-
-    # Render console
-
-    try:
-
-        print(
-            line,
-            flush=True
-        )
-
-    except Exception:
-
-        pass
-
-
-    if not telegram:
-
-        return
-
-
-    try:
-
-        start_videocon_debug_sender()
-
-    except Exception:
-
-        pass
-
-
-    try:
-
-        if (
-            _videocon_debug_queue.full()
-        ):
-
-            try:
-
-                _videocon_debug_queue.get_nowait()
-
-            except Exception:
-
-                pass
-
-
-        _videocon_debug_queue.put_nowait(
-            line
-        )
-
-    except Exception:
-
-        pass
-
-
-# ============================================================
-# EXCEPTION DEBUG
-# ============================================================
-
-def videocon_debug_exception(
-    title,
-    exception
-):
-
-    try:
-
-        videocon_debug(
-            "================================",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            title,
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "ERROR TYPE =",
-            type(exception).__name__,
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "ERROR =",
-            repr(exception),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "TRACEBACK:",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            traceback.format_exc(),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "================================",
-            level="ERROR"
-        )
-
-    except Exception:
-
-        pass
 
 
 # ============================================================
@@ -710,7 +345,7 @@ def videocon_size(value):
 
 
 # ============================================================
-# PERCENT
+# PROGRESS PERCENT
 # ============================================================
 
 def videocon_progress_percent(
@@ -737,252 +372,524 @@ def videocon_progress_percent(
 
 
 # ============================================================
-# SYSTEM DEBUG
+# PROGRESS BAR
 # ============================================================
 
-def videocon_system_debug():
-
-    videocon_debug(
-        "===== SYSTEM DEBUG ====="
-    )
-
-
-    try:
-
-        videocon_debug(
-            "PYTHON VERSION =",
-            sys.version
-        )
-
-    except Exception as e:
-
-        videocon_debug(
-            "PYTHON ERROR =",
-            repr(e),
-            level="ERROR"
-        )
-
+def videocon_progress_bar(
+    current,
+    total,
+    length=10
+):
 
     try:
 
-        videocon_debug(
-            "PLATFORM =",
-            platform.platform()
+        if not total:
+
+            return "░" * length
+
+
+        percent = (
+            current / total
         )
 
-        videocon_debug(
-            "SYSTEM =",
-            platform.system()
+        filled = int(
+            percent * length
         )
 
-        videocon_debug(
-            "RELEASE =",
-            platform.release()
+        if filled > length:
+
+            filled = length
+
+
+        empty = (
+            length - filled
         )
 
-        videocon_debug(
-            "MACHINE =",
-            platform.machine()
+
+        return (
+            "█" * filled
+            +
+            "░" * empty
         )
 
-    except Exception as e:
+    except Exception:
 
-        videocon_debug(
-            "PLATFORM ERROR =",
-            repr(e),
-            level="ERROR"
-        )
+        return "░" * length
 
+
+# ============================================================
+# SPEED
+# ============================================================
+
+def videocon_speed(
+    current,
+    progress_state
+):
 
     try:
 
-        videocon_debug(
-            "HOSTNAME =",
-            socket.gethostname()
-        )
+        now = time.time()
 
-    except Exception as e:
-
-        videocon_debug(
-            "HOSTNAME ERROR =",
-            repr(e),
-            level="ERROR"
-        )
-
-
-    try:
-
-        videocon_debug(
-            "CURRENT DIRECTORY =",
-            os.getcwd()
-        )
-
-    except Exception as e:
-
-        videocon_debug(
-            "CWD ERROR =",
-            repr(e),
-            level="ERROR"
-        )
-
-
-    try:
-
-        total, used, free = (
-            shutil.disk_usage(
-                os.getcwd()
+        first_time = (
+            progress_state.get(
+                "start_time"
             )
         )
 
-        videocon_debug(
-            "DISK TOTAL =",
-            videocon_size(total)
+        first_bytes = (
+            progress_state.get(
+                "start_bytes",
+                0
+            )
         )
 
-        videocon_debug(
-            "DISK USED =",
-            videocon_size(used)
+
+        if not first_time:
+
+            progress_state[
+                "start_time"
+            ] = now
+
+            progress_state[
+                "start_bytes"
+            ] = current
+
+            return "Calculating..."
+
+
+        elapsed = (
+            now - first_time
         )
 
-        videocon_debug(
-            "DISK FREE =",
-            videocon_size(free)
+
+        if elapsed <= 0:
+
+            return "Calculating..."
+
+
+        transferred = (
+            current - first_bytes
         )
 
-    except Exception as e:
 
-        videocon_debug(
-            "DISK ERROR =",
-            repr(e),
-            level="ERROR"
+        speed = (
+            transferred / elapsed
         )
+
+
+        if speed <= 0:
+
+            return "Calculating..."
+
+
+        return (
+            f"{videocon_size(speed)}/s"
+        )
+
+    except Exception:
+
+        return "Calculating..."
+
+
+# ============================================================
+# ETA
+# ============================================================
+
+def videocon_eta(
+    current,
+    total,
+    progress_state
+):
+
+    try:
+
+        if not total:
+
+            return "--:--"
+
+
+        now = time.time()
+
+        start_time = (
+            progress_state.get(
+                "start_time"
+            )
+        )
+
+        start_bytes = (
+            progress_state.get(
+                "start_bytes",
+                0
+            )
+        )
+
+
+        if not start_time:
+
+            return "--:--"
+
+
+        elapsed = (
+            now - start_time
+        )
+
+
+        if elapsed <= 0:
+
+            return "--:--"
+
+
+        transferred = (
+            current - start_bytes
+        )
+
+
+        if transferred <= 0:
+
+            return "--:--"
+
+
+        speed = (
+            transferred / elapsed
+        )
+
+
+        if speed <= 0:
+
+            return "--:--"
+
+
+        remaining = (
+            total - current
+        )
+
+
+        seconds = (
+            remaining / speed
+        )
+
+
+        if seconds < 0:
+
+            seconds = 0
+
+
+        seconds = int(seconds)
+
+
+        hours = (
+            seconds // 3600
+        )
+
+        minutes = (
+            (seconds % 3600)
+            // 60
+        )
+
+        secs = (
+            seconds % 60
+        )
+
+
+        if hours > 0:
+
+            return (
+                f"{hours:02d}:"
+                f"{minutes:02d}:"
+                f"{secs:02d}"
+            )
+
+
+        return (
+            f"{minutes:02d}:"
+            f"{secs:02d}"
+        )
+
+    except Exception:
+
+        return "--:--"
+
+
+# ============================================================
+# STATUS EDIT
+# ============================================================
+
+def videocon_edit_status(
+    status_message,
+    text
+):
+
+    if not status_message:
+
+        return False
 
 
     try:
 
-        import psutil
-
-        memory = (
-            psutil.virtual_memory()
-        )
-
-        videocon_debug(
-            "RAM TOTAL =",
-            videocon_size(
-                memory.total
+        telegram_bot = (
+            globals().get(
+                "bot"
             )
         )
 
-        videocon_debug(
-            "RAM USED =",
-            videocon_size(
-                memory.used
-            )
-        )
+        if not telegram_bot:
 
-        videocon_debug(
-            "RAM AVAILABLE =",
-            videocon_size(
-                memory.available
-            )
-        )
+            return False
 
-        videocon_debug(
-            "RAM PERCENT =",
-            memory.percent
-        )
 
-        videocon_debug(
-            "CPU COUNT =",
-            psutil.cpu_count()
-        )
+        telegram_bot.edit_message_text(
 
-        videocon_debug(
-            "CPU USAGE =",
-            psutil.cpu_percent(
-                interval=0.1
+            chat_id=(
+                status_message.chat.id
             ),
-            "%"
+
+            message_id=(
+                status_message.message_id
+            ),
+
+            text=text,
+
+            parse_mode="HTML"
+
         )
 
-        try:
+        return True
 
-            process = (
-                psutil.Process(
-                    os.getpid()
-                )
-            )
 
-            process_memory = (
-                process.memory_info()
-            )
+    except Exception:
 
-            videocon_debug(
-                "PROCESS RAM =",
-                videocon_size(
-                    process_memory.rss
-                )
-            )
+        return False
 
-        except Exception as e:
 
-            videocon_debug(
-                "PROCESS RAM ERROR =",
-                repr(e),
-                level="ERROR"
-            )
+# ============================================================
+# ASYNC STATUS EDIT
+# ============================================================
 
-    except Exception as e:
-
-        videocon_debug(
-            "PSUTIL ERROR =",
-            repr(e),
-            level="WARNING"
-        )
-
+async def _videocon_async_status_edit(
+    status_message,
+    text
+):
 
     try:
 
-        videocon_debug(
-            "API_ID PRESENT =",
-            bool(API_ID)
+        await asyncio.to_thread(
+
+            videocon_edit_status,
+
+            status_message,
+
+            text
+
         )
 
-        videocon_debug(
-            "API_HASH PRESENT =",
-            bool(API_HASH)
+    except Exception:
+
+        pass
+
+
+# ============================================================
+# PROGRESS TEXT
+# ============================================================
+
+def videocon_build_progress_text(
+
+    mode,
+
+    current,
+
+    total,
+
+    progress_state
+
+):
+
+    percent = (
+        videocon_progress_percent(
+            current,
+            total
+        )
+    )
+
+
+    bar = (
+        videocon_progress_bar(
+            current,
+            total
+        )
+    )
+
+
+    speed = (
+        videocon_speed(
+            current,
+            progress_state
+        )
+    )
+
+
+    eta = (
+        videocon_eta(
+            current,
+            total,
+            progress_state
+        )
+    )
+
+
+    if mode == "download":
+
+        title = (
+            "⬇️ <b>DOWNLOADING...</b>"
         )
 
-        videocon_debug(
-            "BOT_TOKEN PRESENT =",
-            bool(BOT_TOKEN)
+        direction = (
+            "Telegram → Render"
         )
 
-        videocon_debug(
-            "ADMIN_ID =",
-            ADMIN_ID
+    else:
+
+        title = (
+            "📤 <b>UPLOADING...</b>"
         )
 
-        videocon_debug(
-            "PORT =",
-            os.getenv(
-                "PORT",
-                "NOT_SET"
+        direction = (
+            "Render → Telegram"
+        )
+
+
+    return (
+
+        f"{title}\n\n"
+
+        f"<code>"
+        f"{bar}"
+        f"</code> "
+        f"<b>{percent:.1f}%</b>\n\n"
+
+        f"📦 "
+        f"<b>{videocon_size(current)}</b>"
+        f" / "
+        f"<b>{videocon_size(total)}</b>\n\n"
+
+        f"⚡ Speed: "
+        f"<b>{speed}</b>\n"
+
+        f"⏱ ETA: "
+        f"<b>{eta}</b>\n\n"
+
+        f"🔄 {direction}\n\n"
+
+        "⏳ Please wait..."
+
+    )
+
+
+# ============================================================
+# TRANSFER PROGRESS
+# ============================================================
+
+async def videocon_transfer_progress(
+
+    current,
+
+    total,
+
+    status_message,
+
+    mode,
+
+    progress_state
+
+):
+
+    try:
+
+        if not total:
+
+            return
+
+
+        now = time.time()
+
+
+        if not progress_state.get(
+            "start_time"
+        ):
+
+            progress_state[
+                "start_time"
+            ] = now
+
+            progress_state[
+                "start_bytes"
+            ] = current
+
+
+        last_time = (
+            progress_state.get(
+                "time",
+                0
             )
         )
 
-    except Exception as e:
 
-        videocon_debug(
-            "ENV DEBUG ERROR =",
-            repr(e),
-            level="ERROR"
+        # ----------------------------------------------------
+        # EDIT EVERY 10 SECONDS
+        # ----------------------------------------------------
+
+        if (
+
+            current < total
+
+            and
+
+            last_time
+
+            and
+
+            (
+                now - last_time
+            )
+            <
+            VIDEOCON_PROGRESS_INTERVAL
+
+        ):
+
+            return
+
+
+        progress_state[
+            "time"
+        ] = now
+
+
+        text = (
+            videocon_build_progress_text(
+
+                mode,
+
+                current,
+
+                total,
+
+                progress_state
+
+            )
         )
 
 
-    videocon_debug(
-        "===== END SYSTEM DEBUG ====="
-    )
+        await _videocon_async_status_edit(
+
+            status_message,
+
+            text
+
+        )
+
+
+    except Exception:
+
+        pass
 
 
 # ============================================================
@@ -1023,7 +930,6 @@ class _VideoconHealthHandler(
         *args
     ):
 
-        # Don't spam Render logs.
         return
 
 
@@ -1039,24 +945,20 @@ def start_videocon_health_server():
 
     if not VIDEOCON_HEALTH_ENABLED:
 
-        videocon_debug(
-            "Health server disabled."
-        )
-
         return
 
 
     with _videocon_health_lock:
 
         if (
-            _videocon_health_thread
-            and
-            _videocon_health_thread.is_alive()
-        ):
 
-            videocon_debug(
-                "Health server already running."
-            )
+            _videocon_health_thread
+
+            and
+
+            _videocon_health_thread.is_alive()
+
+        ):
 
             return
 
@@ -1112,332 +1014,14 @@ def start_videocon_health_server():
             _videocon_health_thread.start()
 
 
-            videocon_debug(
-                "================================"
-            )
+        except OSError:
 
-            videocon_debug(
-                "✅ RENDER HEALTH SERVER STARTED"
-            )
-
-            videocon_debug(
-                "HOST = 0.0.0.0"
-            )
-
-            videocon_debug(
-                "PORT =",
-                port
-            )
-
-            videocon_debug(
-                "================================"
-            )
-
-
-        except OSError as e:
-
-            # If another part of the main bot already owns
-            # the Render PORT, don't crash the bot.
-            videocon_debug(
-                "HEALTH SERVER PORT ALREADY IN USE OR FAILED:",
-                repr(e),
-                level="WARNING"
-            )
-
-            videocon_debug(
-                "If your main bot already has a Flask/HTTP server, "
-                "this is normally OK.",
-                level="WARNING"
-            )
-
-
-        except Exception as e:
-
-            videocon_debug_exception(
-                "HEALTH SERVER START ERROR",
-                e
-            )
-
-
-# ============================================================
-# SAFE STATUS EDIT
-# ============================================================
-
-def videocon_edit_status(
-    status_message,
-    text
-):
-
-    if not status_message:
-
-        return False
-
-
-    try:
-
-        telegram_bot = (
-            globals().get(
-                "bot"
-            )
-        )
-
-        if not telegram_bot:
-
-            return False
-
-
-        telegram_bot.edit_message_text(
-
-            chat_id=(
-                status_message.chat.id
-            ),
-
-            message_id=(
-                status_message.message_id
-            ),
-
-            text=text,
-
-            parse_mode="HTML"
-
-        )
-
-        return True
-
-
-    except Exception as e:
-
-        videocon_debug(
-            "STATUS EDIT ERROR =",
-            repr(e),
-            level="WARNING"
-        )
-
-        return False
-
-
-# ============================================================
-# PROGRESS TEXT
-# ============================================================
-
-def videocon_build_progress_text(
-    mode,
-    current,
-    total
-):
-
-    percent = (
-        videocon_progress_percent(
-            current,
-            total
-        )
-    )
-
-
-    if mode == "download":
-
-        title = (
-            "⬇️ <b>DOWNLOADING...</b>"
-        )
-
-        direction = (
-            "Telegram → Render"
-        )
-
-    else:
-
-        title = (
-            "📤 <b>UPLOADING...</b>"
-        )
-
-        direction = (
-            "Render → Telegram"
-        )
-
-
-    return (
-
-        f"{title}\n\n"
-
-        f"📊 Progress: "
-        f"<b>{percent:.1f}%</b>\n"
-
-        f"📦 <b>{videocon_size(current)}</b>"
-        f" / "
-        f"<b>{videocon_size(total)}</b>\n\n"
-
-        f"🔄 {direction}\n\n"
-
-        "⏳ Please wait..."
-
-    )
-
-
-# ============================================================
-# NON-BLOCKING STATUS UPDATE
-# ============================================================
-#
-# THIS IS ONE OF THE IMPORTANT FIXES.
-#
-# We NEVER call TeleBot's synchronous edit_message_text()
-# directly inside Pyrogram's event loop.
-#
-# Instead:
-#
-# Pyrogram event loop
-#        ↓
-# asyncio.to_thread()
-#        ↓
-# TeleBot edit
-#
-# Therefore the Pyrogram transfer loop remains free.
-# ============================================================
-
-async def _videocon_async_status_edit(
-    status_message,
-    text
-):
-
-    try:
-
-        await asyncio.to_thread(
-
-            videocon_edit_status,
-
-            status_message,
-
-            text
-
-        )
-
-    except Exception as e:
-
-        videocon_debug(
-            "ASYNC STATUS EDIT ERROR =",
-            repr(e),
-            level="WARNING"
-        )
-
-
-# ============================================================
-# TRANSFER PROGRESS
-# ============================================================
-
-async def videocon_transfer_progress(
-
-    current,
-
-    total,
-
-    status_message,
-
-    mode,
-
-    progress_state
-
-):
-
-    try:
-
-        if not total:
-
-            return
-
-
-        percent = (
-            videocon_progress_percent(
-                current,
-                total
-            )
-        )
-
-
-        now = time.time()
-
-        last_time = (
-            progress_state.get(
-                "time",
-                0
-            )
-        )
-
-
-        if (
-
-            percent < 100
-
-            and
-
-            (
-                now - last_time
-            )
-            <
-            VIDEOCON_PROGRESS_INTERVAL
-
-        ):
-
-            return
-
-
-        progress_state["time"] = now
-
-
-        videocon_debug(
-            mode.upper(),
-            f"{percent:.1f}%",
-            videocon_size(current),
-            "/",
-            videocon_size(total)
-        )
-
-
-        try:
-
-            _, _, free_disk = (
-                shutil.disk_usage(
-                    os.getcwd()
-                )
-            )
-
-            videocon_debug(
-                mode.upper(),
-                "DISK FREE =",
-                videocon_size(
-                    free_disk
-                )
-            )
+            # The main bot may already own PORT.
+            pass
 
         except Exception:
 
             pass
-
-
-        text = (
-            videocon_build_progress_text(
-                mode,
-                current,
-                total
-            )
-        )
-
-
-        # IMPORTANT:
-        # Don't block Pyrogram.
-        await _videocon_async_status_edit(
-
-            status_message,
-
-            text
-
-        )
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "PROGRESS CALLBACK ERROR",
-            e
-        )
 
 
 # ============================================================
@@ -1456,30 +1040,8 @@ def _videocon_pyrogram_thread():
 
     try:
 
-        videocon_debug(
-            "================================"
-        )
-
-        videocon_debug(
-            "PYROGRAM THREAD STARTING"
-        )
-
-        videocon_debug(
-            "THREAD =",
-            threading.current_thread().name
-        )
-
-        videocon_debug(
-            "THREAD ID =",
-            threading.get_ident()
-        )
-
-
-        videocon_system_debug()
-
-
         # ----------------------------------------------------
-        # ENV VALIDATION
+        # ENVIRONMENT VALIDATION
         # ----------------------------------------------------
 
         if not API_ID:
@@ -1507,11 +1069,6 @@ def _videocon_pyrogram_thread():
         # EVENT LOOP
         # ----------------------------------------------------
 
-        videocon_debug(
-            "Creating dedicated asyncio event loop..."
-        )
-
-
         _videocon_loop = (
             asyncio.new_event_loop()
         )
@@ -1519,11 +1076,6 @@ def _videocon_pyrogram_thread():
 
         asyncio.set_event_loop(
             _videocon_loop
-        )
-
-
-        videocon_debug(
-            "Asyncio event loop created."
         )
 
 
@@ -1536,34 +1088,8 @@ def _videocon_pyrogram_thread():
             context
         ):
 
-            try:
-
-                videocon_debug(
-                    "ASYNCIO UNHANDLED ERROR",
-                    context.get(
-                        "message"
-                    ),
-                    level="ERROR"
-                )
-
-
-                exception = (
-                    context.get(
-                        "exception"
-                    )
-                )
-
-
-                if exception:
-
-                    videocon_debug_exception(
-                        "ASYNCIO EXCEPTION",
-                        exception
-                    )
-
-            except Exception:
-
-                pass
+            # Don't send debug messages.
+            pass
 
 
         _videocon_loop.set_exception_handler(
@@ -1574,11 +1100,6 @@ def _videocon_pyrogram_thread():
         # ----------------------------------------------------
         # PYROGRAM CLIENT
         # ----------------------------------------------------
-
-        videocon_debug(
-            "Creating Pyrogram Client..."
-        )
-
 
         _videocon_pyro = Client(
 
@@ -1599,81 +1120,14 @@ def _videocon_pyrogram_thread():
         )
 
 
-        videocon_debug(
-            "Pyrogram Client object created."
-        )
-
-
         # ----------------------------------------------------
-        # START
+        # START CLIENT
         # ----------------------------------------------------
 
         async def start_client():
 
-            videocon_debug(
-                "Calling Pyrogram start()..."
-            )
-
-
             await _videocon_pyro.start()
 
-
-            videocon_debug(
-                "✅ PYROGRAM start() SUCCESS."
-            )
-
-
-            try:
-
-                videocon_debug(
-                    "Calling Pyrogram get_me()..."
-                )
-
-
-                me = (
-                    await _videocon_pyro.get_me()
-                )
-
-
-                videocon_debug(
-                    "PYROGRAM USERNAME =",
-                    getattr(
-                        me,
-                        "username",
-                        None
-                    )
-                )
-
-                videocon_debug(
-                    "PYROGRAM FIRST NAME =",
-                    getattr(
-                        me,
-                        "first_name",
-                        None
-                    )
-                )
-
-                videocon_debug(
-                    "PYROGRAM ID =",
-                    getattr(
-                        me,
-                        "id",
-                        None
-                    )
-                )
-
-
-            except Exception as e:
-
-                videocon_debug_exception(
-                    "PYROGRAM get_me() ERROR",
-                    e
-                )
-
-
-        # ----------------------------------------------------
-        # START CLIENT
-        # ----------------------------------------------------
 
         _videocon_loop.run_until_complete(
             start_client()
@@ -1687,23 +1141,6 @@ def _videocon_pyrogram_thread():
         _videocon_ready.set()
 
 
-        videocon_debug(
-            "================================"
-        )
-
-        videocon_debug(
-            "✅ VIDEOCON MTProto ENGINE READY"
-        )
-
-        videocon_debug(
-            "Pyrogram event loop is running."
-        )
-
-        videocon_debug(
-            "================================"
-        )
-
-
         # ----------------------------------------------------
         # KEEP LOOP ALIVE
         # ----------------------------------------------------
@@ -1715,21 +1152,12 @@ def _videocon_pyrogram_thread():
 
         _videocon_start_error = e
 
-        videocon_debug_exception(
-            "❌ PYROGRAM START ERROR",
-            e
-        )
-
-
         _videocon_ready.set()
 
 
     finally:
 
-        videocon_debug(
-            "PYROGRAM THREAD EXITED.",
-            level="WARNING"
-        )
+        pass
 
 
 # ============================================================
@@ -1739,12 +1167,13 @@ def _videocon_pyrogram_thread():
 def start_videocon_engine():
 
     global _videocon_loop_thread
+    global _videocon_start_error
 
 
     with _videocon_engine_lock:
 
         # ----------------------------------------------------
-        # Already running
+        # ALREADY RUNNING
         # ----------------------------------------------------
 
         if (
@@ -1758,20 +1187,20 @@ def start_videocon_engine():
         ):
 
             if (
-                _videocon_loop
-                and
-                not _videocon_loop.is_closed()
-            ):
 
-                videocon_debug(
-                    "Pyrogram engine already running."
-                )
+                _videocon_loop
+
+                and
+
+                not _videocon_loop.is_closed()
+
+            ):
 
                 return
 
 
         # ----------------------------------------------------
-        # Reset
+        # RESET
         # ----------------------------------------------------
 
         _videocon_ready.clear()
@@ -1779,10 +1208,9 @@ def start_videocon_engine():
         _videocon_start_error = None
 
 
-        videocon_debug(
-            "Starting new Pyrogram engine thread..."
-        )
-
+        # ----------------------------------------------------
+        # NEW THREAD
+        # ----------------------------------------------------
 
         _videocon_loop_thread = (
             threading.Thread(
@@ -1802,18 +1230,16 @@ def start_videocon_engine():
         _videocon_loop_thread.start()
 
 
-        videocon_debug(
-            "Pyrogram engine thread STARTED."
-        )
-
-
 # ============================================================
 # RUN COROUTINE SAFELY
 # ============================================================
 
 def videocon_run_async(
+
     coro,
+
     timeout=VIDEOCON_OPERATION_TIMEOUT
+
 ):
 
     if not _videocon_loop:
@@ -1850,9 +1276,13 @@ def videocon_run_async(
 
 
     if (
+
         not _videocon_loop_thread
+
         or
+
         not _videocon_loop_thread.is_alive()
+
     ):
 
         try:
@@ -1868,50 +1298,38 @@ def videocon_run_async(
         )
 
 
+    future = (
+        asyncio.run_coroutine_threadsafe(
+
+            coro,
+
+            _videocon_loop
+
+        )
+    )
+
+
     try:
 
-        future = (
-            asyncio.run_coroutine_threadsafe(
-
-                coro,
-
-                _videocon_loop
-
-            )
+        return future.result(
+            timeout=timeout
         )
 
+    except TimeoutError:
 
-        try:
+        future.cancel()
 
-            return future.result(
-                timeout=timeout
-            )
+        raise RuntimeError(
 
-        except TimeoutError:
+            "Pyrogram operation ta wuce "
+            f"timeout na "
+            f"{timeout // 60} minutes."
 
-            future.cancel()
-
-            raise RuntimeError(
-
-                "Pyrogram operation ta wuce "
-                f"timeout na "
-                f"{timeout // 60} minutes."
-
-            )
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "RUN COROUTINE ERROR",
-            e
         )
-
-        raise
 
 
 # ============================================================
-# /VIDEOCON
+# /VIDEOCON COMMAND
 # ============================================================
 
 @bot.message_handler(
@@ -1926,42 +1344,11 @@ def videocon_command(
     )
 
 
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "/VIDEOCON COMMAND RECEIVED"
-    )
-
-    videocon_debug(
-        "USER ID =",
-        user_id
-    )
-
-    videocon_debug(
-        "CHAT ID =",
-        message.chat.id
-    )
-
-    videocon_debug(
-        "MESSAGE ID =",
-        message.message_id
-    )
-
-
     # --------------------------------------------------------
     # ADMIN ONLY
     # --------------------------------------------------------
 
     if user_id != ADMIN_ID:
-
-        videocon_debug(
-            "NON-ADMIN ATTEMPTED /videocon",
-            user_id,
-            level="WARNING"
-        )
-
 
         try:
 
@@ -1974,39 +1361,28 @@ def videocon_command(
 
             )
 
-        except Exception as e:
+        except Exception:
 
-            videocon_debug_exception(
-                "NON-ADMIN REPLY ERROR",
-                e
-            )
+            pass
 
         return
 
 
-    videocon_debug(
-        "ADMIN VERIFIED."
-    )
-
-
     # --------------------------------------------------------
-    # START ENGINE
+    # START PYROGRAM
     # --------------------------------------------------------
 
     try:
 
         start_videocon_engine()
 
-    except Exception as e:
+    except Exception:
 
-        videocon_debug_exception(
-            "ENGINE START ERROR",
-            e
-        )
+        pass
 
 
     # --------------------------------------------------------
-    # SESSION
+    # CREATE SESSION
     # --------------------------------------------------------
 
     with _videocon_jobs_lock:
@@ -2019,11 +1395,6 @@ def videocon_command(
             user_id,
             None
         )
-
-
-    videocon_debug(
-        "ADMIN SESSION CREATED."
-    )
 
 
     # --------------------------------------------------------
@@ -2054,18 +1425,9 @@ def videocon_command(
 
         )
 
+    except Exception:
 
-        videocon_debug(
-            "COMMAND REPLY SENT."
-        )
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "COMMAND REPLY ERROR",
-            e
-        )
+        pass
 
 
 # ============================================================
@@ -2090,31 +1452,11 @@ def videocon_receive_video(
     )
 
 
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "VIDEO MESSAGE RECEIVED"
-    )
-
-    videocon_debug(
-        "USER =",
-        user_id
-    )
-
-    videocon_debug(
-        "MESSAGE ID =",
-        message.message_id
-    )
-
+    # --------------------------------------------------------
+    # ADMIN CHECK
+    # --------------------------------------------------------
 
     if user_id != ADMIN_ID:
-
-        videocon_debug(
-            "VIDEO FROM NON-ADMIN REJECTED",
-            level="WARNING"
-        )
 
         with _videocon_jobs_lock:
 
@@ -2152,24 +1494,8 @@ def videocon_receive_video(
         )
 
 
-        videocon_debug(
-            "VIDEO FILE ID =",
-            file_id
-        )
-
-        videocon_debug(
-            "VIDEO FILE NAME =",
-            file_name
-        )
-
-        videocon_debug(
-            "VIDEO SIZE =",
-            videocon_size(file_size)
-        )
-
-
         # ----------------------------------------------------
-        # SIZE
+        # SIZE CHECK
         # ----------------------------------------------------
 
         if file_size <= 0:
@@ -2239,18 +1565,6 @@ def videocon_receive_video(
             }
 
 
-        videocon_debug(
-            "VIDEO JOB SAVED."
-        )
-
-        videocon_debug(
-            "JOB =",
-            repr(
-                _videocon_jobs[user_id]
-            )
-        )
-
-
         # ----------------------------------------------------
         # BUTTONS
         # ----------------------------------------------------
@@ -2297,17 +1611,18 @@ def videocon_receive_video(
         )
 
 
-        videocon_debug(
-            "VIDEO CHOICE BUTTONS SENT."
-        )
+    except Exception:
 
+        try:
 
-    except Exception as e:
+            bot.reply_to(
+                message,
+                "❌ An samu matsala wajen karɓar video."
+            )
 
-        videocon_debug_exception(
-            "RECEIVE VIDEO ERROR",
-            e
-        )
+        except Exception:
+
+            pass
 
 
 # ============================================================
@@ -2332,31 +1647,11 @@ def videocon_receive_document(
     )
 
 
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "DOCUMENT MESSAGE RECEIVED"
-    )
-
-    videocon_debug(
-        "USER =",
-        user_id
-    )
-
-    videocon_debug(
-        "MESSAGE ID =",
-        message.message_id
-    )
-
+    # --------------------------------------------------------
+    # ADMIN CHECK
+    # --------------------------------------------------------
 
     if user_id != ADMIN_ID:
-
-        videocon_debug(
-            "DOCUMENT FROM NON-ADMIN REJECTED",
-            level="WARNING"
-        )
 
         with _videocon_jobs_lock:
 
@@ -2394,24 +1689,8 @@ def videocon_receive_document(
         )
 
 
-        videocon_debug(
-            "DOCUMENT FILE ID =",
-            file_id
-        )
-
-        videocon_debug(
-            "DOCUMENT FILE NAME =",
-            file_name
-        )
-
-        videocon_debug(
-            "DOCUMENT SIZE =",
-            videocon_size(file_size)
-        )
-
-
         # ----------------------------------------------------
-        # SIZE
+        # SIZE CHECK
         # ----------------------------------------------------
 
         if file_size <= 0:
@@ -2481,18 +1760,6 @@ def videocon_receive_document(
             }
 
 
-        videocon_debug(
-            "DOCUMENT JOB SAVED."
-        )
-
-        videocon_debug(
-            "JOB =",
-            repr(
-                _videocon_jobs[user_id]
-            )
-        )
-
-
         # ----------------------------------------------------
         # BUTTONS
         # ----------------------------------------------------
@@ -2542,17 +1809,18 @@ def videocon_receive_document(
         )
 
 
-        videocon_debug(
-            "DOCUMENT CHOICE BUTTONS SENT."
-        )
+    except Exception:
 
+        try:
 
-    except Exception as e:
+            bot.reply_to(
+                message,
+                "❌ An samu matsala wajen karɓar file."
+            )
 
-        videocon_debug_exception(
-            "RECEIVE DOCUMENT ERROR",
-            e
-        )
+        except Exception:
+
+            pass
 
 
 # ============================================================
@@ -2578,32 +1846,8 @@ def videocon_callback(
     )
 
 
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "VIDEOCON CALLBACK RECEIVED"
-    )
-
-    videocon_debug(
-        "CALL ID =",
-        call.id
-    )
-
-    videocon_debug(
-        "USER =",
-        user_id
-    )
-
-    videocon_debug(
-        "CALL DATA =",
-        call.data
-    )
-
-
     # --------------------------------------------------------
-    # ADMIN
+    # ADMIN ONLY
     # --------------------------------------------------------
 
     if user_id != ADMIN_ID:
@@ -2611,8 +1855,11 @@ def videocon_callback(
         try:
 
             bot.answer_callback_query(
+
                 call.id,
+
                 "❌ Admin kawai."
+
             )
 
         except Exception:
@@ -2623,7 +1870,7 @@ def videocon_callback(
 
 
     # --------------------------------------------------------
-    # PARSE
+    # PARSE CHOICE
     # --------------------------------------------------------
 
     try:
@@ -2635,12 +1882,7 @@ def videocon_callback(
             )[1]
         )
 
-    except Exception as e:
-
-        videocon_debug_exception(
-            "CALLBACK DATA ERROR",
-            e
-        )
+    except Exception:
 
         return
 
@@ -2653,8 +1895,11 @@ def videocon_callback(
         try:
 
             bot.answer_callback_query(
+
                 call.id,
+
                 "❌ Invalid option."
+
             )
 
         except Exception:
@@ -2679,20 +1924,16 @@ def videocon_callback(
 
     if not job:
 
-        videocon_debug(
-            "NO JOB FOUND.",
-            level="ERROR"
-        )
-
-
         try:
 
             bot.answer_callback_query(
 
                 call.id,
 
-                "❌ Session ta ƙare. "
-                "Ka sake amfani da /videocon."
+                (
+                    "❌ Session ta ƙare. "
+                    "Ka sake amfani da /videocon."
+                )
 
             )
 
@@ -2701,21 +1942,6 @@ def videocon_callback(
             pass
 
         return
-
-
-    videocon_debug(
-        "JOB FOUND."
-    )
-
-    videocon_debug(
-        "INPUT TYPE =",
-        job.get("file_type")
-    )
-
-    videocon_debug(
-        "OUTPUT TYPE =",
-        choice
-    )
 
 
     # --------------------------------------------------------
@@ -2738,13 +1964,9 @@ def videocon_callback(
 
         )
 
-    except Exception as e:
+    except Exception:
 
-        videocon_debug(
-            "REMOVE BUTTON ERROR =",
-            repr(e),
-            level="WARNING"
-        )
+        pass
 
 
     # --------------------------------------------------------
@@ -2767,7 +1989,7 @@ def videocon_callback(
 
 
     # --------------------------------------------------------
-    # STATUS
+    # STATUS MESSAGE
     # --------------------------------------------------------
 
     status_message = None
@@ -2784,7 +2006,9 @@ def videocon_callback(
                     "🚀 <b>AN FARA AIKI...</b>\n\n"
 
                     f"📥 Input: "
-                    f"<b>{html.escape(str(job.get('file_type')))}</b>\n"
+                    f"<b>"
+                    f"{html.escape(str(job.get('file_type')))}"
+                    f"</b>\n"
 
                     f"📤 Output: "
                     f"<b>{html.escape(choice)}</b>\n"
@@ -2802,13 +2026,9 @@ def videocon_callback(
             )
         )
 
+    except Exception:
 
-    except Exception as e:
-
-        videocon_debug_exception(
-            "STATUS MESSAGE ERROR",
-            e
-        )
+        pass
 
 
     # --------------------------------------------------------
@@ -2842,23 +2062,21 @@ def videocon_callback(
 
         worker.start()
 
+    except Exception:
 
-        videocon_debug(
-            "WORKER THREAD STARTED."
-        )
+        try:
 
-        videocon_debug(
-            "WORKER ID =",
-            worker.ident
-        )
+            bot.send_message(
 
+                user_id,
 
-    except Exception as e:
+                "❌ An kasa fara aikin converter."
 
-        videocon_debug_exception(
-            "WORKER START ERROR",
-            e
-        )
+            )
+
+        except Exception:
+
+            pass
 
 
 # ============================================================
@@ -2886,62 +2104,6 @@ def _videocon_process(
 
     try:
 
-        videocon_debug(
-            "================================"
-        )
-
-        videocon_debug(
-            "🚀 NEW VIDEOCON JOB"
-        )
-
-        videocon_debug(
-            "USER =",
-            user_id
-        )
-
-        videocon_debug(
-            "INPUT =",
-            job.get("file_type")
-        )
-
-        videocon_debug(
-            "OUTPUT =",
-            choice
-        )
-
-        videocon_debug(
-            "EXPECTED SIZE =",
-            videocon_size(
-                job.get(
-                    "file_size",
-                    0
-                )
-            )
-        )
-
-        videocon_debug(
-            "MESSAGE ID =",
-            job.get("message_id")
-        )
-
-        videocon_debug(
-            "CHAT ID =",
-            job.get("chat_id")
-        )
-
-        videocon_debug(
-            "FILE ID =",
-            job.get("file_id")
-        )
-
-
-        # ----------------------------------------------------
-        # SYSTEM
-        # ----------------------------------------------------
-
-        videocon_system_debug()
-
-
         # ----------------------------------------------------
         # STATUS
         # ----------------------------------------------------
@@ -2962,13 +2124,8 @@ def _videocon_process(
 
 
         # ----------------------------------------------------
-        # ENGINE
+        # WAIT FOR PYROGRAM
         # ----------------------------------------------------
-
-        videocon_debug(
-            "WAITING FOR PYROGRAM..."
-        )
-
 
         if not _videocon_ready.wait(
             timeout=VIDEOCON_ENGINE_START_TIMEOUT
@@ -2999,11 +2156,6 @@ def _videocon_process(
             )
 
 
-        videocon_debug(
-            "✅ PYROGRAM READY."
-        )
-
-
         # ----------------------------------------------------
         # TEMP DIRECTORY
         # ----------------------------------------------------
@@ -3012,12 +2164,6 @@ def _videocon_process(
             tempfile.mkdtemp(
                 prefix="videocon_"
             )
-        )
-
-
-        videocon_debug(
-            "TEMP DIR =",
-            temp_dir
         )
 
 
@@ -3032,40 +2178,12 @@ def _videocon_process(
         )
 
 
-        videocon_debug(
-            "DISK BEFORE DOWNLOAD:"
-        )
-
-        videocon_debug(
-            "TOTAL =",
-            videocon_size(total)
-        )
-
-        videocon_debug(
-            "USED =",
-            videocon_size(used)
-        )
-
-        videocon_debug(
-            "FREE =",
-            videocon_size(free)
-        )
-
-
         required_space = (
             int(
                 job["file_size"]
             )
             +
             VIDEOCON_MIN_FREE_BYTES
-        )
-
-
-        videocon_debug(
-            "REQUIRED SPACE =",
-            videocon_size(
-                required_space
-            )
         )
 
 
@@ -3080,11 +2198,6 @@ def _videocon_process(
                 f"Required: {videocon_size(required_space)}"
 
             )
-
-
-        videocon_debug(
-            "✅ DISK SPACE CHECK PASSED."
-        )
 
 
         # ----------------------------------------------------
@@ -3103,8 +2216,6 @@ def _videocon_process(
             original_name
         )
 
-
-        # Prevent strange/unsafe path names.
 
         original_name = (
             original_name
@@ -3132,14 +2243,8 @@ def _videocon_process(
         )
 
 
-        videocon_debug(
-            "INPUT PATH =",
-            input_file
-        )
-
-
         # ----------------------------------------------------
-        # GET ORIGINAL MESSAGE
+        # CHECK ORIGINAL MESSAGE
         # ----------------------------------------------------
 
         videocon_edit_status(
@@ -3156,11 +2261,6 @@ def _videocon_process(
                 f"</b>"
             )
 
-        )
-
-
-        videocon_debug(
-            "GETTING ORIGINAL TELEGRAM MESSAGE..."
         )
 
 
@@ -3189,24 +2289,9 @@ def _videocon_process(
             )
 
 
-        videocon_debug(
-            "✅ ORIGINAL MESSAGE FOUND."
-        )
-
-
-        videocon_debug(
-            "PYROGRAM MESSAGE ID =",
-            getattr(
-                pyro_message,
-                "id",
-                None
-            )
-        )
-
-
-        # ----------------------------------------------------
+        # ====================================================
         # DOWNLOAD
-        # ----------------------------------------------------
+        # ====================================================
 
         videocon_edit_status(
 
@@ -3215,10 +2300,21 @@ def _videocon_process(
             (
                 "⬇️ <b>DOWNLOADING...</b>\n\n"
 
-                f"📦 Expected: "
+                "<code>"
+                "░░░░░░░░░░"
+                "</code> "
+                "<b>0.0%</b>\n\n"
+
+                f"📦 "
+                f"<b>0 B</b>"
+                f" / "
                 f"<b>"
                 f"{videocon_size(job['file_size'])}"
                 f"</b>\n\n"
+
+                "⚡ Speed: <b>Calculating...</b>\n"
+
+                "⏱ ETA: <b>--:--</b>\n\n"
 
                 "🔄 Telegram → Render\n\n"
 
@@ -3228,22 +2324,14 @@ def _videocon_process(
         )
 
 
-        videocon_debug(
-            "================================"
-        )
-
-        videocon_debug(
-            "⬇️ DOWNLOAD STARTED"
-        )
-
-        videocon_debug(
-            "TARGET =",
-            input_file
-        )
-
-
         download_state = {
-            "time": 0
+
+            "time": 0,
+
+            "start_time": 0,
+
+            "start_bytes": 0
+
         }
 
 
@@ -3266,12 +2354,6 @@ def _videocon_process(
         )
 
 
-        videocon_debug(
-            "DOWNLOAD RETURNED =",
-            downloaded_path
-        )
-
-
         if not downloaded_path:
 
             raise RuntimeError(
@@ -3285,7 +2367,7 @@ def _videocon_process(
 
 
         # ----------------------------------------------------
-        # VERIFY
+        # VERIFY DOWNLOAD
         # ----------------------------------------------------
 
         if not os.path.exists(
@@ -3304,98 +2386,11 @@ def _videocon_process(
         )
 
 
-        videocon_debug(
-            "DOWNLOAD EXISTS = TRUE"
-        )
-
-        videocon_debug(
-            "DOWNLOADED SIZE =",
-            videocon_size(
-                downloaded_size
-            )
-        )
-
-
         if downloaded_size <= 0:
 
             raise RuntimeError(
                 "Downloaded file empty ne."
             )
-
-
-        expected_size = int(
-            job.get(
-                "file_size",
-                0
-            )
-        )
-
-
-        videocon_debug(
-            "EXPECTED SIZE =",
-            videocon_size(
-                expected_size
-            )
-        )
-
-        videocon_debug(
-            "ACTUAL SIZE =",
-            videocon_size(
-                downloaded_size
-            )
-        )
-
-
-        if expected_size:
-
-            difference = (
-                downloaded_size
-                -
-                expected_size
-            )
-
-            videocon_debug(
-                "SIZE DIFFERENCE =",
-                videocon_size(
-                    abs(difference)
-                )
-            )
-
-
-            # Telegram should normally return the same size.
-            # We log differences instead of rejecting because
-            # Telegram metadata can occasionally differ.
-
-            if downloaded_size != expected_size:
-
-                videocon_debug(
-                    "WARNING: downloaded size differs from Telegram metadata.",
-                    level="WARNING"
-                )
-
-
-        # ----------------------------------------------------
-        # DISK AFTER DOWNLOAD
-        # ----------------------------------------------------
-
-        try:
-
-            _, _, free_after = (
-                shutil.disk_usage(
-                    temp_dir
-                )
-            )
-
-            videocon_debug(
-                "DISK FREE AFTER DOWNLOAD =",
-                videocon_size(
-                    free_after
-                )
-            )
-
-        except Exception:
-
-            pass
 
 
         # ----------------------------------------------------
@@ -3428,15 +2423,6 @@ def _videocon_process(
 
         if choice == "file":
 
-            videocon_debug(
-                "================================"
-            )
-
-            videocon_debug(
-                "📤 DOCUMENT UPLOAD START"
-            )
-
-
             videocon_edit_status(
 
                 status_message,
@@ -3444,10 +2430,21 @@ def _videocon_process(
                 (
                     "📤 <b>UPLOADING AS FILE...</b>\n\n"
 
-                    f"📦 Size: "
+                    "<code>"
+                    "░░░░░░░░░░"
+                    "</code> "
+                    "<b>0.0%</b>\n\n"
+
+                    f"📦 "
+                    f"<b>0 B</b>"
+                    f" / "
                     f"<b>"
                     f"{videocon_size(downloaded_size)}"
                     f"</b>\n\n"
+
+                    "⚡ Speed: <b>Calculating...</b>\n"
+
+                    "⏱ ETA: <b>--:--</b>\n\n"
 
                     "🔄 Render → Telegram\n\n"
 
@@ -3458,7 +2455,13 @@ def _videocon_process(
 
 
             upload_state = {
-                "time": 0
+
+                "time": 0,
+
+                "start_time": 0,
+
+                "start_bytes": 0
+
             }
 
 
@@ -3492,47 +2495,34 @@ def _videocon_process(
                 )
 
 
-            videocon_debug(
-                "DOCUMENT MESSAGE ID =",
-                getattr(
-                    result,
-                    "id",
-                    None
-                )
-            )
-
-
-            videocon_debug(
-                "📤 DOCUMENT UPLOAD FINISHED."
-            )
-
-
         # ====================================================
         # UPLOAD AS VIDEO
         # ====================================================
 
         elif choice == "video":
 
-            videocon_debug(
-                "================================"
-            )
-
-            videocon_debug(
-                "🎬 VIDEO UPLOAD START"
-            )
-
-
             videocon_edit_status(
 
                 status_message,
 
                 (
-                    "📤 <b>UPLOADING AS VIDEO...</b>\n\n"
+                    "🎬 <b>UPLOADING AS VIDEO...</b>\n\n"
 
-                    f"📦 Size: "
+                    "<code>"
+                    "░░░░░░░░░░"
+                    "</code> "
+                    "<b>0.0%</b>\n\n"
+
+                    f"📦 "
+                    f"<b>0 B</b>"
+                    f" / "
                     f"<b>"
                     f"{videocon_size(downloaded_size)}"
                     f"</b>\n\n"
+
+                    "⚡ Speed: <b>Calculating...</b>\n"
+
+                    "⏱ ETA: <b>--:--</b>\n\n"
 
                     "🔄 Render → Telegram\n\n"
 
@@ -3543,7 +2533,13 @@ def _videocon_process(
 
 
             upload_state = {
-                "time": 0
+
+                "time": 0,
+
+                "start_time": 0,
+
+                "start_bytes": 0
+
             }
 
 
@@ -3577,24 +2573,9 @@ def _videocon_process(
                 )
 
 
-            videocon_debug(
-                "VIDEO MESSAGE ID =",
-                getattr(
-                    result,
-                    "id",
-                    None
-                )
-            )
-
-
-            videocon_debug(
-                "🎬 VIDEO UPLOAD FINISHED."
-            )
-
-
-        # ----------------------------------------------------
+        # ====================================================
         # SUCCESS
-        # ----------------------------------------------------
+        # ====================================================
 
         returned_as = (
             "VIDEO"
@@ -3625,185 +2606,10 @@ def _videocon_process(
         )
 
 
-        videocon_debug(
-            "================================"
-        )
-
-        videocon_debug(
-            "✅ JOB COMPLETE"
-        )
-
-        videocon_debug(
-            "USER =",
-            user_id
-        )
-
-        videocon_debug(
-            "INPUT =",
-            job.get("file_type")
-        )
-
-        videocon_debug(
-            "OUTPUT =",
-            choice
-        )
-
-        videocon_debug(
-            "SIZE =",
-            videocon_size(
-                downloaded_size
-            )
-        )
-
-        videocon_debug(
-            "STATUS = SUCCESS"
-        )
-
-        videocon_debug(
-            "================================"
-        )
-
-
     except Exception as e:
 
-        # ====================================================
-        # ERROR
-        # ====================================================
-
-        videocon_debug(
-            "================================",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "❌ VIDEOCON JOB FAILED",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "USER =",
-            user_id,
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "INPUT =",
-            job.get("file_type"),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "OUTPUT =",
-            choice,
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "MESSAGE ID =",
-            job.get("message_id"),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "CHAT ID =",
-            job.get("chat_id"),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "FILE ID =",
-            job.get("file_id"),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "ERROR TYPE =",
-            type(e).__name__,
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "ERROR =",
-            repr(e),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "TRACEBACK:",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            traceback.format_exc(),
-            level="ERROR"
-        )
-
-
         # ----------------------------------------------------
-        # SYSTEM
-        # ----------------------------------------------------
-
-        videocon_system_debug()
-
-
-        # ----------------------------------------------------
-        # FILE STATE
-        # ----------------------------------------------------
-
-        try:
-
-            videocon_debug(
-                "TEMP DIR =",
-                temp_dir,
-                level="ERROR"
-            )
-
-            videocon_debug(
-                "INPUT FILE =",
-                input_file,
-                level="ERROR"
-            )
-
-
-            if input_file:
-
-                exists = (
-                    os.path.exists(
-                        input_file
-                    )
-                )
-
-
-                videocon_debug(
-                    "INPUT EXISTS =",
-                    exists,
-                    level="ERROR"
-                )
-
-
-                if exists:
-
-                    videocon_debug(
-                        "INPUT SIZE =",
-                        videocon_size(
-                            os.path.getsize(
-                                input_file
-                            )
-                        ),
-                        level="ERROR"
-                    )
-
-        except Exception as file_error:
-
-            videocon_debug(
-                "FILE DEBUG ERROR =",
-                repr(file_error),
-                level="ERROR"
-            )
-
-
-        # ----------------------------------------------------
-        # USER NOTIFICATION
+        # ERROR TO USER ONLY
         # ----------------------------------------------------
 
         try:
@@ -3841,8 +2647,7 @@ def _videocon_process(
                         f"{safe_error}"
                         f"</code>\n\n"
 
-                        "🔎 An aika cikakken error "
-                        "zuwa Admin Telegram da Render Logs."
+                        "Ka sake gwadawa."
                     )
 
                 )
@@ -3866,13 +2671,9 @@ def _videocon_process(
                 )
 
 
-        except Exception as notify_error:
+        except Exception:
 
-            videocon_debug(
-                "ERROR NOTIFICATION FAILED =",
-                repr(notify_error),
-                level="ERROR"
-            )
+            pass
 
 
     finally:
@@ -3880,31 +2681,27 @@ def _videocon_process(
         # ====================================================
         # CLEANUP
         # ====================================================
-
-        videocon_debug(
-            "================================"
-        )
-
-        videocon_debug(
-            "CLEANUP STARTED"
-        )
-
+        #
+        # Wannan shi ne muhimmin bangare domin Render
+        # kada ya tara manyan files bayan aiki.
+        #
+        # Duk abin da aka sauke zuwa Render yana cikin
+        # temp_dir, sannan a goge shi bayan job.
+        # ====================================================
 
         try:
 
             if (
+
                 temp_dir
+
                 and
+
                 os.path.exists(
                     temp_dir
                 )
+
             ):
-
-                videocon_debug(
-                    "Deleting temp directory...",
-                    temp_dir
-                )
-
 
                 shutil.rmtree(
 
@@ -3914,28 +2711,13 @@ def _videocon_process(
 
                 )
 
+        except Exception:
 
-                videocon_debug(
-                    "🧹 TEMP FILES DELETED."
-                )
-
-            else:
-
-                videocon_debug(
-                    "NO TEMP DIRECTORY."
-                )
-
-
-        except Exception as e:
-
-            videocon_debug_exception(
-                "CLEANUP ERROR",
-                e
-            )
+            pass
 
 
         # ----------------------------------------------------
-        # STATE
+        # REMOVE JOB STATE
         # ----------------------------------------------------
 
         try:
@@ -3951,56 +2733,9 @@ def _videocon_process(
                     user_id
                 )
 
+        except Exception:
 
-            videocon_debug(
-                "JOB STATE REMOVED."
-            )
-
-
-        except Exception as e:
-
-            videocon_debug_exception(
-                "JOB STATE CLEANUP ERROR",
-                e
-            )
-
-
-        # ----------------------------------------------------
-        # FINAL DISK
-        # ----------------------------------------------------
-
-        try:
-
-            _, _, free = (
-                shutil.disk_usage(
-                    os.getcwd()
-                )
-            )
-
-
-            videocon_debug(
-                "FINAL DISK FREE =",
-                videocon_size(
-                    free
-                )
-            )
-
-        except Exception as e:
-
-            videocon_debug(
-                "FINAL DISK CHECK ERROR =",
-                repr(e),
-                level="WARNING"
-            )
-
-
-        videocon_debug(
-            "VIDEOCON SESSION CLOSED."
-        )
-
-        videocon_debug(
-            "================================"
-        )
+            pass
 
 
 # ============================================================
@@ -4015,75 +2750,24 @@ async def _videocon_get_message(
 
 ):
 
-    videocon_debug(
-        "================================"
-    )
+    message = (
+        await
+        _videocon_pyro.get_messages(
 
-    videocon_debug(
-        "PYROGRAM get_messages() START"
-    )
+            chat_id,
 
-    videocon_debug(
-        "CHAT ID =",
-        chat_id
-    )
+            message_id
 
-    videocon_debug(
-        "MESSAGE ID =",
-        message_id
+        )
     )
 
 
-    try:
+    if not message:
 
-        message = (
-            await
-            _videocon_pyro.get_messages(
-
-                chat_id,
-
-                message_id
-
-            )
-        )
+        return None
 
 
-        if not message:
-
-            videocon_debug(
-                "get_messages() RETURNED NONE",
-                level="ERROR"
-            )
-
-            return None
-
-
-        videocon_debug(
-            "PYROGRAM get_messages() SUCCESS"
-        )
-
-
-        videocon_debug(
-            "RETURNED MESSAGE ID =",
-            getattr(
-                message,
-                "id",
-                None
-            )
-        )
-
-
-        return message
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "PYROGRAM get_messages() ERROR",
-            e
-        )
-
-        raise
+    return message
 
 
 # ============================================================
@@ -4101,20 +2785,6 @@ async def _videocon_download(
     progress_state
 
 ):
-
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "PYROGRAM download_media() START"
-    )
-
-    videocon_debug(
-        "OUTPUT PATH =",
-        output_path
-    )
-
 
     async def progress(
         current,
@@ -4136,39 +2806,21 @@ async def _videocon_download(
         )
 
 
-    try:
+    result = (
+        await
+        _videocon_pyro.download_media(
 
-        result = (
-            await
-            _videocon_pyro.download_media(
+            message,
 
-                message,
+            file_name=output_path,
 
-                file_name=output_path,
+            progress=progress
 
-                progress=progress
-
-            )
         )
+    )
 
 
-        videocon_debug(
-            "PYROGRAM download_media() RETURNED =",
-            result
-        )
-
-
-        return result
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "PYROGRAM DOWNLOAD ERROR",
-            e
-        )
-
-        raise
+    return result
 
 
 # ============================================================
@@ -4191,32 +2843,6 @@ async def _videocon_upload_document(
 
 ):
 
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "PYROGRAM send_document() START"
-    )
-
-    videocon_debug(
-        "USER ID =",
-        user_id
-    )
-
-    videocon_debug(
-        "FILE =",
-        input_file
-    )
-
-    videocon_debug(
-        "FILE SIZE =",
-        videocon_size(
-            file_size
-        )
-    )
-
-
     async def progress(
         current,
         total
@@ -4237,54 +2863,39 @@ async def _videocon_upload_document(
         )
 
 
-    try:
+    result = (
+        await
+        _videocon_pyro.send_document(
 
-        result = (
-            await
-            _videocon_pyro.send_document(
+            chat_id=user_id,
 
-                chat_id=user_id,
+            document=input_file,
 
-                document=input_file,
+            caption=(
 
-                caption=(
+                "✅ <b>File Converted</b>\n\n"
 
-                    "✅ <b>File Converted</b>\n\n"
+                f"📄 Name: "
+                f"<b>"
+                f"{html.escape(original_name)}"
+                f"</b>\n\n"
 
-                    f"📄 Name: "
-                    f"<b>{html.escape(original_name)}</b>\n\n"
+                f"📦 Size: "
+                f"<b>"
+                f"{videocon_size(file_size)}"
+                f"</b>\n\n"
 
-                    f"📦 Size: "
-                    f"<b>"
-                    f"{videocon_size(file_size)}"
-                    f"</b>\n\n"
+                "📁 Video Converter"
 
-                    "📁 Video Converter"
+            ),
 
-                ),
+            progress=progress
 
-                progress=progress
-
-            )
         )
+    )
 
 
-        videocon_debug(
-            "PYROGRAM send_document() SUCCESS"
-        )
-
-
-        return result
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "PYROGRAM DOCUMENT UPLOAD ERROR",
-            e
-        )
-
-        raise
+    return result
 
 
 # ============================================================
@@ -4307,32 +2918,6 @@ async def _videocon_upload_video(
 
 ):
 
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "PYROGRAM send_video() START"
-    )
-
-    videocon_debug(
-        "USER ID =",
-        user_id
-    )
-
-    videocon_debug(
-        "FILE =",
-        input_file
-    )
-
-    videocon_debug(
-        "FILE SIZE =",
-        videocon_size(
-            file_size
-        )
-    )
-
-
     async def progress(
         current,
         total
@@ -4353,142 +2938,36 @@ async def _videocon_upload_video(
         )
 
 
-    try:
+    result = (
+        await
+        _videocon_pyro.send_video(
 
-        result = (
-            await
-            _videocon_pyro.send_video(
+            chat_id=user_id,
 
-                chat_id=user_id,
+            video=input_file,
 
-                video=input_file,
+            caption=(
 
-                caption=(
+                "✅ <b>Video Converted</b>\n\n"
 
-                    "✅ <b>Video Converted</b>\n\n"
+                f"📦 Size: "
+                f"<b>"
+                f"{videocon_size(file_size)}"
+                f"</b>\n\n"
 
-                    f"📦 Size: "
-                    f"<b>"
-                    f"{videocon_size(file_size)}"
-                    f"</b>\n\n"
+                "🎬 Video Converter"
 
-                    "🎬 Video Converter"
-
-                ),
-
-                supports_streaming=True,
-
-                progress=progress
-
-            )
-        )
-
-
-        videocon_debug(
-            "PYROGRAM send_video() SUCCESS"
-        )
-
-
-        return result
-
-
-    except Exception as e:
-
-        videocon_debug_exception(
-            "PYROGRAM VIDEO UPLOAD ERROR",
-            e
-        )
-
-        raise
-
-
-# ============================================================
-# GLOBAL THREAD EXCEPTION HOOK
-# ============================================================
-
-def _videocon_thread_exception_hook(
-    args
-):
-
-    try:
-
-        videocon_debug(
-            "================================",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "UNCAUGHT THREAD EXCEPTION",
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "THREAD =",
-            getattr(
-                args.thread,
-                "name",
-                None
             ),
-            level="ERROR"
+
+            supports_streaming=True,
+
+            progress=progress
+
         )
-
-        videocon_debug(
-            "EXCEPTION TYPE =",
-            getattr(
-                args.exc_type,
-                "__name__",
-                None
-            ),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "EXCEPTION =",
-            repr(
-                args.exc_value
-            ),
-            level="ERROR"
-        )
-
-        videocon_debug(
-            "".join(
-                traceback.format_exception(
-                    args.exc_type,
-                    args.exc_value,
-                    args.exc_traceback
-                )
-            ),
-            level="ERROR"
-        )
-
-    except Exception:
-
-        pass
-
-
-# ============================================================
-# INSTALL THREAD HOOK
-# ============================================================
-
-try:
-
-    threading.excepthook = (
-        _videocon_thread_exception_hook
     )
 
-except Exception as e:
 
-    try:
-
-        print(
-            "Could not install threading hook:",
-            repr(e),
-            flush=True
-        )
-
-    except Exception:
-
-        pass
+    return result
 
 
 # ============================================================
@@ -4497,64 +2976,11 @@ except Exception as e:
 
 try:
 
-    start_videocon_debug_sender()
+    start_videocon_health_server()
 
 except Exception:
 
     pass
-
-
-try:
-
-    videocon_debug(
-        "================================"
-    )
-
-    videocon_debug(
-        "VIDEOCON MODULE LOADED"
-    )
-
-    videocon_debug(
-        "MAX FILE SIZE =",
-        VIDEOCON_MAX_GB,
-        "GB"
-    )
-
-    videocon_system_debug()
-
-    videocon_debug(
-        "================================"
-    )
-
-except Exception as e:
-
-    try:
-
-        print(
-            "VIDEOCON INITIAL DEBUG ERROR:",
-            repr(e),
-            flush=True
-        )
-
-    except Exception:
-
-        pass
-
-
-# ============================================================
-# START RENDER HEALTH SERVER
-# ============================================================
-
-try:
-
-    start_videocon_health_server()
-
-except Exception as e:
-
-    videocon_debug_exception(
-        "HEALTH SERVER INITIALIZATION ERROR",
-        e
-    )
 
 
 # ============================================================
@@ -4563,22 +2989,13 @@ except Exception as e:
 
 try:
 
-    videocon_debug(
-        "Starting Videocon Pyrogram engine..."
-    )
-
     start_videocon_engine()
 
-    videocon_debug(
-        "Initial Pyrogram engine start command completed."
-    )
+except Exception:
 
-except Exception as e:
+    pass
 
-    videocon_debug_exception(
-        "INITIAL VIDEOCON ENGINE START FAILED",
-        e
-    )
+
 
 
 
