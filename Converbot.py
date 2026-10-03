@@ -79,62 +79,68 @@ bot = telebot.TeleBot(
 
 
 # ============================================================
-# /VIDEOCON — VIDEO / FILE CONVERTER TEST
+# /VIDEOCON — LARGE VIDEO / FILE CONVERTER TEST
 # ============================================================
 #
-# FLOW:
+# TELEBOT:
+#   - /videocon
+#   - receive Video / Document
+#   - buttons
 #
-# /videocon
-#      ↓
-# Admin sends VIDEO or DOCUMENT
-#      ↓
-# Bot detects type
-#      ↓
-# Bot asks:
-# "Me kake so na dawo maka da shi?"
+# PYROGRAM / MTProto:
+#   - LARGE DOWNLOAD
+#   - LARGE UPLOAD
 #
-# 🎬 Video       📁 File
+# TEST:
+#   - Maximum: 1.65 GB
+#   - NO DATABASE
+#   - NO FFMPEG
+#   - NO COMPRESSION
+#   - TEMP FILE ONLY
 #
-# VIDEO:
-#      ↓
-# Download
-#      ↓
-# Upload as VIDEO
-#
-# FILE:
-#      ↓
-# Download
-#      ↓
-# Upload as DOCUMENT
-#
-# TEST LIMIT:
-# 20 MB
-#
-# NO DATABASE
-# NO FFmpeg
-# NO compression
-# Temporary files are deleted
+# DEBUG:
+#   - Telegram receive
+#   - Telegram download
+#   - Render disk
+#   - RAM
+#   - upload progress
+#   - exceptions
 # ============================================================
-
 
 import os
+import asyncio
 import tempfile
 import shutil
 import threading
+import time
+import traceback
+import shutil as diskutil
 
 from telebot import types
-from telebot.apihelper import ApiTelegramException
+
+from pyrogram import Client
 
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-VIDEOCON_MAX_MB = 20
+VIDEOCON_MAX_GB = 1.65
 
-VIDEOCON_MAX_BYTES = (
-    VIDEOCON_MAX_MB * 1024 * 1024
+VIDEOCON_MAX_BYTES = int(
+    VIDEOCON_MAX_GB * 1024 * 1024 * 1024
 )
+
+# Existing ENV variables
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+
+# Pyrogram session
+VIDEOCON_SESSION_NAME = "videocon_mtproto"
+
+# Minimum free disk safety margin
+VIDEOCON_MIN_FREE_BYTES = 300 * 1024 * 1024
 
 
 # ============================================================
@@ -146,6 +152,433 @@ _videocon_waiting = set()
 _videocon_jobs = {}
 
 _videocon_lock = threading.Lock()
+
+
+# ============================================================
+# PYROGRAM ENGINE
+# ============================================================
+
+_videocon_loop = None
+
+_videocon_loop_thread = None
+
+_videocon_pyro = None
+
+_videocon_ready = threading.Event()
+
+_videocon_start_error = None
+
+
+# ============================================================
+# DEBUG
+# ============================================================
+
+def videocon_debug(*args):
+
+    try:
+
+        print(
+            "🔎 [VIDEOCON DEBUG]",
+            *args,
+            flush=True
+        )
+
+    except Exception:
+        pass
+
+
+# ============================================================
+# FORMAT BYTES
+# ============================================================
+
+def videocon_size(value):
+
+    try:
+
+        value = float(value)
+
+    except Exception:
+
+        return "0 B"
+
+    if value >= 1024 ** 3:
+
+        return f"{value / (1024 ** 3):.2f} GB"
+
+    if value >= 1024 ** 2:
+
+        return f"{value / (1024 ** 2):.2f} MB"
+
+    if value >= 1024:
+
+        return f"{value / 1024:.2f} KB"
+
+    return f"{int(value)} B"
+
+
+# ============================================================
+# SYSTEM DEBUG
+# ============================================================
+
+def videocon_system_debug():
+
+    try:
+
+        total, used, free = diskutil.disk_usage(
+            os.getcwd()
+        )
+
+        videocon_debug(
+            "DISK TOTAL =",
+            videocon_size(total)
+        )
+
+        videocon_debug(
+            "DISK USED =",
+            videocon_size(used)
+        )
+
+        videocon_debug(
+            "DISK FREE =",
+            videocon_size(free)
+        )
+
+    except Exception as e:
+
+        videocon_debug(
+            "DISK CHECK ERROR =",
+            repr(e)
+        )
+
+    try:
+
+        import psutil
+
+        memory = psutil.virtual_memory()
+
+        videocon_debug(
+            "RAM TOTAL =",
+            videocon_size(memory.total)
+        )
+
+        videocon_debug(
+            "RAM USED =",
+            videocon_size(memory.used)
+        )
+
+        videocon_debug(
+            "RAM AVAILABLE =",
+            videocon_size(memory.available)
+        )
+
+        videocon_debug(
+            "RAM PERCENT =",
+            memory.percent
+        )
+
+    except Exception as e:
+
+        videocon_debug(
+            "RAM CHECK ERROR =",
+            repr(e)
+        )
+
+
+# ============================================================
+# PROGRESS FORMAT
+# ============================================================
+
+def videocon_progress_percent(
+    current,
+    total
+):
+
+    if not total:
+
+        return 0
+
+    return (
+        current * 100
+    ) / total
+
+
+# ============================================================
+# PYROGRAM STARTER
+# ============================================================
+
+def _videocon_pyrogram_thread():
+
+    global _videocon_loop
+    global _videocon_pyro
+    global _videocon_start_error
+
+    try:
+
+        videocon_debug(
+            "Starting Pyrogram MTProto engine..."
+        )
+
+        videocon_debug(
+            "API_ID present =",
+            bool(API_ID)
+        )
+
+        videocon_debug(
+            "API_HASH present =",
+            bool(API_HASH)
+        )
+
+        videocon_debug(
+            "BOT_TOKEN present =",
+            bool(BOT_TOKEN)
+        )
+
+        _videocon_loop = asyncio.new_event_loop()
+
+        asyncio.set_event_loop(
+            _videocon_loop
+        )
+
+        # ====================================================
+        # IMPORTANT:
+        # no_updates=True
+        #
+        # Pyrogram is used only for file transfer.
+        # TeleBot remains responsible for bot updates.
+        # ====================================================
+
+        _videocon_pyro = Client(
+
+            VIDEOCON_SESSION_NAME,
+
+            api_id=API_ID,
+
+            api_hash=API_HASH,
+
+            bot_token=BOT_TOKEN,
+
+            no_updates=True,
+
+            max_concurrent_transmissions=1,
+
+            sleep_threshold=30
+        )
+
+        async def start_client():
+
+            await _videocon_pyro.start()
+
+            videocon_debug(
+                "✅ Pyrogram connected to Telegram."
+            )
+
+            try:
+
+                me = await _videocon_pyro.get_me()
+
+                videocon_debug(
+                    "Pyrogram bot:",
+                    getattr(me, "username", None),
+                    getattr(me, "id", None)
+                )
+
+            except Exception as e:
+
+                videocon_debug(
+                    "get_me debug error:",
+                    repr(e)
+                )
+
+        _videocon_loop.run_until_complete(
+            start_client()
+        )
+
+        _videocon_ready.set()
+
+        videocon_debug(
+            "✅ VIDEOCON MTProto ENGINE READY."
+        )
+
+        # Keep loop alive
+        _videocon_loop.run_forever()
+
+    except Exception as e:
+
+        _videocon_start_error = e
+
+        videocon_debug(
+            "❌ PYROGRAM START ERROR =",
+            repr(e)
+        )
+
+        videocon_debug(
+            traceback.format_exc()
+        )
+
+        _videocon_ready.set()
+
+
+# ============================================================
+# START PYROGRAM ENGINE
+# ============================================================
+
+def start_videocon_engine():
+
+    global _videocon_loop_thread
+
+    if _videocon_loop_thread:
+
+        return
+
+    _videocon_loop_thread = threading.Thread(
+
+        target=_videocon_pyrogram_thread,
+
+        daemon=True,
+
+        name="videocon-mtproto"
+    )
+
+    _videocon_loop_thread.start()
+
+    videocon_debug(
+        "Pyrogram engine thread started."
+    )
+
+
+# ============================================================
+# RUN COROUTINE IN PYROGRAM LOOP
+# ============================================================
+
+def videocon_run_async(coro):
+
+    if not _videocon_loop:
+
+        raise RuntimeError(
+            "Pyrogram event loop bai fara ba."
+        )
+
+    future = asyncio.run_coroutine_threadsafe(
+
+        coro,
+
+        _videocon_loop
+    )
+
+    return future.result()
+
+
+# ============================================================
+# PROGRESS CALLBACK
+# ============================================================
+
+async def videocon_transfer_progress(
+
+    current,
+
+    total,
+
+    status_message,
+
+    mode,
+
+    last_state
+):
+
+    try:
+
+        if not total:
+
+            return
+
+        percent = videocon_progress_percent(
+            current,
+            total
+        )
+
+        now = time.time()
+
+        last_time = last_state.get(
+            "time",
+            0
+        )
+
+        # Don't spam Telegram
+        if (
+
+            percent < 100
+
+            and now - last_time < 5
+
+        ):
+
+            return
+
+        last_state["time"] = now
+
+        text = (
+
+            "⬇️ <b>DOWNLOADING...</b>"
+            if mode == "download"
+            else
+            "📤 <b>UPLOADING...</b>"
+        )
+
+        text += (
+
+            "\n\n"
+
+            f"📊 Progress: "
+            f"<b>{percent:.1f}%</b>\n"
+
+            f"📦 {videocon_size(current)}"
+            f" / "
+            f"{videocon_size(total)}\n\n"
+
+            "⏳ Please wait..."
+        )
+
+        videocon_debug(
+
+            mode.upper(),
+
+            f"{percent:.1f}%",
+
+            videocon_size(current),
+
+            "/",
+
+            videocon_size(total)
+        )
+
+        try:
+
+            await asyncio.to_thread(
+
+                bot.edit_message_text,
+
+                chat_id=status_message.chat.id,
+
+                message_id=status_message.id,
+
+                text=text,
+
+                parse_mode="HTML"
+            )
+
+        except Exception as e:
+
+            videocon_debug(
+                "Progress message update failed:",
+                repr(e)
+            )
+
+    except Exception as e:
+
+        videocon_debug(
+            "Progress callback error:",
+            repr(e)
+        )
 
 
 # ============================================================
@@ -179,12 +612,27 @@ def videocon_command(message):
         return
 
     # ========================================================
+    # START ENGINE IF NECESSARY
+    # ========================================================
+
+    try:
+
+        start_videocon_engine()
+
+    except Exception as e:
+
+        videocon_debug(
+            "Engine start error:",
+            repr(e)
+        )
+
+    # ========================================================
     # START SESSION
     # ========================================================
 
-    _videocon_waiting.add(user_id)
-
-    # Remove old job if any
+    _videocon_waiting.add(
+        user_id
+    )
 
     _videocon_jobs.pop(
         user_id,
@@ -192,7 +640,7 @@ def videocon_command(message):
     )
 
     # ========================================================
-    # ASK FOR VIDEO / FILE
+    # ASK
     # ========================================================
 
     bot.reply_to(
@@ -207,7 +655,7 @@ def videocon_command(message):
             "mu canza.\n\n"
 
             f"📦 Maximum: "
-            f"<b>{VIDEOCON_MAX_MB} MB</b>\n\n"
+            f"<b>{VIDEOCON_MAX_GB} GB</b>\n\n"
 
             "⏳ Bayan ka turo shi zan tambaye ka "
             "irin yadda kake son na dawo maka da shi."
@@ -222,18 +670,17 @@ def videocon_command(message):
 # ============================================================
 
 @bot.message_handler(
+
     content_types=["video"],
+
     func=lambda message:
-        message.from_user.id in _videocon_waiting
+        message.from_user.id
+        in _videocon_waiting
 )
 def videocon_receive_video(message):
 
     user_id = message.from_user.id
 
-    # ========================================================
-    # ADMIN CHECK
-    # ========================================================
-
     if user_id != ADMIN_ID:
 
         _videocon_waiting.discard(
@@ -242,138 +689,168 @@ def videocon_receive_video(message):
 
         return
 
-    # ========================================================
-    # GET SIZE
-    # ========================================================
+    try:
 
-    file_size = (
+        file_size = (
 
-        getattr(
-            message.video,
-            "file_size",
-            None
+            getattr(
+                message.video,
+                "file_size",
+                None
+            )
+
+            or 0
         )
 
-        or 0
-    )
-
-    if file_size <= 0:
-
-        bot.reply_to(
-            message,
-            "❌ An kasa gano girman video."
+        videocon_debug(
+            "VIDEO RECEIVED"
         )
 
-        return
+        videocon_debug(
+            "message_id =",
+            message.message_id
+        )
 
-    # ========================================================
-    # 20 MB LIMIT
-    # ========================================================
+        videocon_debug(
+            "file_id =",
+            message.video.file_id
+        )
 
-    if file_size > VIDEOCON_MAX_BYTES:
+        videocon_debug(
+            "size =",
+            videocon_size(file_size)
+        )
+
+        # ====================================================
+        # SIZE CHECK
+        # ====================================================
+
+        if file_size <= 0:
+
+            bot.reply_to(
+                message,
+                "❌ An kasa gano girman video."
+            )
+
+            return
+
+        if file_size > VIDEOCON_MAX_BYTES:
+
+            bot.reply_to(
+
+                message,
+
+                (
+                    "❌ <b>Video ya yi girma.</b>\n\n"
+
+                    f"📦 Size: "
+                    f"<b>{videocon_size(file_size)}</b>\n"
+
+                    f"📦 Maximum: "
+                    f"<b>{VIDEOCON_MAX_GB} GB</b>"
+                ),
+
+                parse_mode="HTML"
+            )
+
+            return
+
+        # ====================================================
+        # SAVE
+        # ====================================================
+
+        _videocon_waiting.discard(
+            user_id
+        )
+
+        _videocon_jobs[user_id] = {
+
+            "file_id":
+                message.video.file_id,
+
+            "file_type":
+                "video",
+
+            "file_name":
+                "converted_video.mp4",
+
+            "file_size":
+                file_size,
+
+            "message_id":
+                message.message_id,
+
+            "chat_id":
+                message.chat.id
+        }
+
+        # ====================================================
+        # BUTTONS
+        # ====================================================
+
+        keyboard = types.InlineKeyboardMarkup(
+            row_width=2
+        )
+
+        keyboard.add(
+
+            types.InlineKeyboardButton(
+                "🎬 Video",
+                callback_data="videocon:video"
+            ),
+
+            types.InlineKeyboardButton(
+                "📁 File",
+                callback_data="videocon:file"
+            )
+        )
 
         bot.reply_to(
 
             message,
 
             (
-                "❌ <b>Video ya yi girma.</b>\n\n"
+                "✅ <b>VIDEO RECEIVED</b>\n\n"
 
                 f"📦 Size: "
-                f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n"
+                f"<b>{videocon_size(file_size)}</b>\n\n"
 
-                f"📦 Maximum: "
-                f"<b>{VIDEOCON_MAX_MB} MB</b>"
+                "❓ <b>Me kake so na dawo maka da shi?</b>"
             ),
+
+            reply_markup=keyboard,
 
             parse_mode="HTML"
         )
 
-        return
+    except Exception as e:
 
-    # ========================================================
-    # SAVE SESSION
-    # ========================================================
-
-    _videocon_waiting.discard(
-        user_id
-    )
-
-    _videocon_jobs[user_id] = {
-
-        "file_id":
-            message.video.file_id,
-
-        "file_type":
-            "video",
-
-        "file_name":
-            "converted_video.mp4",
-
-        "file_size":
-            file_size,
-
-        "message_id":
-            message.message_id
-    }
-
-    # ========================================================
-    # CHOICE BUTTONS
-    # ========================================================
-
-    keyboard = types.InlineKeyboardMarkup(
-        row_width=2
-    )
-
-    keyboard.add(
-
-        types.InlineKeyboardButton(
-            "🎬 Video",
-            callback_data="videocon:video"
-        ),
-
-        types.InlineKeyboardButton(
-            "📁 File",
-            callback_data="videocon:file"
+        videocon_debug(
+            "RECEIVE VIDEO ERROR:",
+            repr(e)
         )
-    )
 
-    bot.reply_to(
-
-        message,
-
-        (
-            "✅ <b>VIDEO RECEIVED</b>\n\n"
-
-            f"📦 Size: "
-            f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n\n"
-
-            "❓ <b>Me kake so na dawo maka da shi?</b>"
-        ),
-
-        reply_markup=keyboard,
-
-        parse_mode="HTML"
-    )
+        videocon_debug(
+            traceback.format_exc()
+        )
 
 
 # ============================================================
-# RECEIVE DOCUMENT / FILE
+# RECEIVE DOCUMENT
 # ============================================================
 
 @bot.message_handler(
+
     content_types=["document"],
+
     func=lambda message:
-        message.from_user.id in _videocon_waiting
+        message.from_user.id
+        in _videocon_waiting
 )
 def videocon_receive_document(message):
 
     user_id = message.from_user.id
 
-    # ========================================================
-    # ADMIN CHECK
-    # ========================================================
-
     if user_id != ADMIN_ID:
 
         _videocon_waiting.discard(
@@ -382,148 +859,177 @@ def videocon_receive_document(message):
 
         return
 
-    # ========================================================
-    # GET SIZE
-    # ========================================================
+    try:
 
-    file_size = (
+        file_size = (
 
-        getattr(
-            message.document,
-            "file_size",
-            None
+            getattr(
+                message.document,
+                "file_size",
+                None
+            )
+
+            or 0
         )
 
-        or 0
-    )
+        file_name = (
 
-    if file_size <= 0:
+            getattr(
+                message.document,
+                "file_name",
+                None
+            )
 
-        bot.reply_to(
-            message,
-            "❌ An kasa gano girman file."
+            or "converted_file"
         )
 
-        return
+        videocon_debug(
+            "DOCUMENT RECEIVED"
+        )
 
-    # ========================================================
-    # 20 MB LIMIT
-    # ========================================================
+        videocon_debug(
+            "message_id =",
+            message.message_id
+        )
 
-    if file_size > VIDEOCON_MAX_BYTES:
+        videocon_debug(
+            "file_name =",
+            file_name
+        )
+
+        videocon_debug(
+            "file_id =",
+            message.document.file_id
+        )
+
+        videocon_debug(
+            "size =",
+            videocon_size(file_size)
+        )
+
+        # ====================================================
+        # SIZE
+        # ====================================================
+
+        if file_size <= 0:
+
+            bot.reply_to(
+                message,
+                "❌ An kasa gano girman file."
+            )
+
+            return
+
+        if file_size > VIDEOCON_MAX_BYTES:
+
+            bot.reply_to(
+
+                message,
+
+                (
+                    "❌ <b>File ya yi girma.</b>\n\n"
+
+                    f"📦 Size: "
+                    f"<b>{videocon_size(file_size)}</b>\n"
+
+                    f"📦 Maximum: "
+                    f"<b>{VIDEOCON_MAX_GB} GB</b>"
+                ),
+
+                parse_mode="HTML"
+            )
+
+            return
+
+        # ====================================================
+        # SAVE
+        # ====================================================
+
+        _videocon_waiting.discard(
+            user_id
+        )
+
+        _videocon_jobs[user_id] = {
+
+            "file_id":
+                message.document.file_id,
+
+            "file_type":
+                "document",
+
+            "file_name":
+                file_name,
+
+            "file_size":
+                file_size,
+
+            "message_id":
+                message.message_id,
+
+            "chat_id":
+                message.chat.id
+        }
+
+        # ====================================================
+        # BUTTONS
+        # ====================================================
+
+        keyboard = types.InlineKeyboardMarkup(
+            row_width=2
+        )
+
+        keyboard.add(
+
+            types.InlineKeyboardButton(
+                "🎬 Video",
+                callback_data="videocon:video"
+            ),
+
+            types.InlineKeyboardButton(
+                "📁 File",
+                callback_data="videocon:file"
+            )
+        )
 
         bot.reply_to(
 
             message,
 
             (
-                "❌ <b>File ya yi girma.</b>\n\n"
+                "✅ <b>FILE RECEIVED</b>\n\n"
+
+                f"📄 Name: "
+                f"<b>{file_name}</b>\n"
 
                 f"📦 Size: "
-                f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n"
+                f"<b>{videocon_size(file_size)}</b>\n\n"
 
-                f"📦 Maximum: "
-                f"<b>{VIDEOCON_MAX_MB} MB</b>"
+                "❓ <b>Me kake so na dawo maka da shi?</b>"
             ),
+
+            reply_markup=keyboard,
 
             parse_mode="HTML"
         )
 
-        return
+    except Exception as e:
 
-    # ========================================================
-    # STOP WAITING
-    # ========================================================
-
-    _videocon_waiting.discard(
-        user_id
-    )
-
-    # ========================================================
-    # FILE NAME
-    # ========================================================
-
-    file_name = (
-
-        getattr(
-            message.document,
-            "file_name",
-            None
+        videocon_debug(
+            "RECEIVE DOCUMENT ERROR:",
+            repr(e)
         )
 
-        or "converted_file"
-    )
-
-    # ========================================================
-    # SAVE SESSION
-    # ========================================================
-
-    _videocon_jobs[user_id] = {
-
-        "file_id":
-            message.document.file_id,
-
-        "file_type":
-            "document",
-
-        "file_name":
-            file_name,
-
-        "file_size":
-            file_size,
-
-        "message_id":
-            message.message_id
-    }
-
-    # ========================================================
-    # CHOICE BUTTONS
-    # ========================================================
-
-    keyboard = types.InlineKeyboardMarkup(
-        row_width=2
-    )
-
-    keyboard.add(
-
-        types.InlineKeyboardButton(
-            "🎬 Video",
-            callback_data="videocon:video"
-        ),
-
-        types.InlineKeyboardButton(
-            "📁 File",
-            callback_data="videocon:file"
+        videocon_debug(
+            traceback.format_exc()
         )
-    )
-
-    bot.reply_to(
-
-        message,
-
-        (
-            "✅ <b>FILE RECEIVED</b>\n\n"
-
-            f"📄 Name: "
-            f"<b>{file_name}</b>\n"
-
-            f"📦 Size: "
-            f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n\n"
-
-            "❓ <b>Me kake so na dawo maka da shi?</b>"
-        ),
-
-        reply_markup=keyboard,
-
-        parse_mode="HTML"
-    )
 
 
 # ============================================================
-# BUTTON
+# CALLBACK
 # ============================================================
 
 @bot.callback_query_handler(
+
     func=lambda call:
         call.data.startswith(
             "videocon:"
@@ -534,7 +1040,7 @@ def videocon_callback(call):
     user_id = call.from_user.id
 
     # ========================================================
-    # ADMIN ONLY
+    # ADMIN
     # ========================================================
 
     if user_id != ADMIN_ID:
@@ -549,7 +1055,7 @@ def videocon_callback(call):
         return
 
     # ========================================================
-    # GET CHOICE
+    # CHOICE
     # ========================================================
 
     choice = call.data.split(
@@ -570,7 +1076,7 @@ def videocon_callback(call):
         return
 
     # ========================================================
-    # GET JOB
+    # JOB
     # ========================================================
 
     job = _videocon_jobs.get(
@@ -589,6 +1095,27 @@ def videocon_callback(call):
 
         return
 
+    videocon_debug(
+        "BUTTON SELECTED"
+    )
+
+    videocon_debug(
+        "input type =",
+        job.get("file_type")
+    )
+
+    videocon_debug(
+        "output type =",
+        choice
+    )
+
+    videocon_debug(
+        "size =",
+        videocon_size(
+            job.get("file_size", 0)
+        )
+    )
+
     # ========================================================
     # REMOVE BUTTONS
     # ========================================================
@@ -604,12 +1131,15 @@ def videocon_callback(call):
             reply_markup=None
         )
 
-    except Exception:
+    except Exception as e:
 
-        pass
+        videocon_debug(
+            "Remove buttons error:",
+            repr(e)
+        )
 
     # ========================================================
-    # ANSWER BUTTON
+    # ANSWER
     # ========================================================
 
     bot.answer_callback_query(
@@ -633,19 +1163,24 @@ def videocon_callback(call):
             choice
         ),
 
-        daemon=True
+        daemon=True,
+
+        name="videocon-worker"
     )
 
     worker.start()
 
 
 # ============================================================
-# MAIN PROCESS
+# MAIN WORKER
 # ============================================================
 
 def _videocon_process(
+
     user_id,
+
     job,
+
     choice
 ):
 
@@ -658,6 +1193,69 @@ def _videocon_process(
     try:
 
         # ====================================================
+        # SYSTEM DEBUG
+        # ====================================================
+
+        videocon_debug(
+            "================================"
+        )
+
+        videocon_debug(
+            "NEW VIDEOCON JOB"
+        )
+
+        videocon_debug(
+            "USER =",
+            user_id
+        )
+
+        videocon_debug(
+            "INPUT =",
+            job.get("file_type")
+        )
+
+        videocon_debug(
+            "OUTPUT =",
+            choice
+        )
+
+        videocon_debug(
+            "EXPECTED SIZE =",
+            videocon_size(
+                job.get("file_size", 0)
+            )
+        )
+
+        videocon_system_debug()
+
+        # ====================================================
+        # WAIT FOR PYROGRAM
+        # ====================================================
+
+        videocon_debug(
+            "Waiting for Pyrogram engine..."
+        )
+
+        if not _videocon_ready.wait(
+            timeout=60
+        ):
+
+            raise RuntimeError(
+                "Pyrogram engine bai fara cikin seconds 60 ba."
+            )
+
+        if _videocon_start_error:
+
+            raise RuntimeError(
+                f"Pyrogram startup failed: "
+                f"{_videocon_start_error}"
+            )
+
+        videocon_debug(
+            "Pyrogram engine ready."
+        )
+
+        # ====================================================
         # TEMP DIRECTORY
         # ====================================================
 
@@ -665,15 +1263,59 @@ def _videocon_process(
             prefix="videocon_"
         )
 
+        videocon_debug(
+            "TEMP DIR =",
+            temp_dir
+        )
+
+        # ====================================================
+        # DISK CHECK
+        # ====================================================
+
+        total, used, free = diskutil.disk_usage(
+            temp_dir
+        )
+
+        videocon_debug(
+            "FREE DISK BEFORE DOWNLOAD =",
+            videocon_size(free)
+        )
+
+        required_space = (
+
+            job["file_size"]
+
+            + VIDEOCON_MIN_FREE_BYTES
+        )
+
+        if free < required_space:
+
+            raise RuntimeError(
+
+                "Render disk bai da isasshen wuri ba.\n\n"
+
+                f"Free: {videocon_size(free)}\n"
+
+                f"Required: "
+                f"{videocon_size(required_space)}"
+            )
+
         # ====================================================
         # FILE NAME
         # ====================================================
 
         original_name = (
+
             job.get(
                 "file_name"
             )
+
             or "converted_file"
+        )
+
+        # Prevent weird paths
+        original_name = os.path.basename(
+            original_name
         )
 
         # ====================================================
@@ -700,6 +1342,9 @@ def _videocon_process(
 
                 "🔧 Ana shirya file ɗinka.\n\n"
 
+                f"📦 Size: "
+                f"<b>{videocon_size(job['file_size'])}</b>\n\n"
+
                 "⏳ Please wait..."
             ),
 
@@ -707,7 +1352,35 @@ def _videocon_process(
         )
 
         # ====================================================
-        # GET TELEGRAM FILE
+        # DOWNLOAD MESSAGE THROUGH PYROGRAM
+        # ====================================================
+
+        videocon_debug(
+            "Getting original Telegram message..."
+        )
+
+        pyro_message = videocon_run_async(
+
+            _videocon_get_message(
+
+                job["chat_id"],
+
+                job["message_id"]
+            )
+        )
+
+        if not pyro_message:
+
+            raise RuntimeError(
+                "Pyrogram bai iya samun original message ba."
+            )
+
+        videocon_debug(
+            "Original Telegram message found."
+        )
+
+        # ====================================================
+        # DOWNLOAD
         # ====================================================
 
         bot.edit_message_text(
@@ -717,45 +1390,71 @@ def _videocon_process(
             message_id=status_message.message_id,
 
             text=(
+
                 "⬇️ <b>DOWNLOADING...</b>\n\n"
-                "⏳ Ana sauke file ɗinka..."
+
+                f"📦 Expected: "
+                f"<b>{videocon_size(job['file_size'])}</b>\n\n"
+
+                "⏳ Telegram → Render..."
             ),
 
             parse_mode="HTML"
         )
 
-        file_info = bot.get_file(
-            job["file_id"]
+        videocon_debug(
+            "DOWNLOAD STARTED"
+        )
+
+        download_state = {
+            "time": 0
+        }
+
+        downloaded_path = videocon_run_async(
+
+            _videocon_download(
+
+                pyro_message,
+
+                input_file,
+
+                status_message,
+
+                download_state
+            )
+        )
+
+        if not downloaded_path:
+
+            raise RuntimeError(
+                "Pyrogram download ya dawo babu file."
+            )
+
+        input_file = downloaded_path
+
+        videocon_debug(
+            "DOWNLOAD FINISHED"
         )
 
         # ====================================================
-        # DOWNLOAD
+        # VERIFY DISK FILE
         # ====================================================
 
-        file_data = bot.download_file(
+        if not os.path.exists(
+            input_file
+        ):
 
-            file_info.file_path
-        )
-
-        # ====================================================
-        # SAVE
-        # ====================================================
-
-        with open(
-            input_file,
-            "wb"
-        ) as f:
-
-            f.write(file_data)
-
-        del file_data
-
-        # ====================================================
-        # VERIFY
-        # ====================================================
+            raise RuntimeError(
+                "Downloaded file bai bayyana a disk ba."
+            )
 
         downloaded_size = os.path.getsize(
             input_file
+        )
+
+        videocon_debug(
+            "DOWNLOADED SIZE =",
+            videocon_size(downloaded_size)
         )
 
         if downloaded_size <= 0:
@@ -763,6 +1462,8 @@ def _videocon_process(
             raise RuntimeError(
                 "Downloaded file empty ne."
             )
+
+        videocon_system_debug()
 
         # ====================================================
         # FILE OUTPUT
@@ -777,47 +1478,51 @@ def _videocon_process(
                 message_id=status_message.message_id,
 
                 text=(
+
                     "📤 <b>UPLOADING AS FILE...</b>\n\n"
 
                     f"📦 Size: "
-                    f"<b>{downloaded_size / (1024 * 1024):.2f} MB</b>\n\n"
+                    f"<b>{videocon_size(downloaded_size)}</b>\n\n"
 
-                    "⏳ Please wait..."
+                    "⏳ Render → Telegram..."
                 ),
 
                 parse_mode="HTML"
             )
 
-            # ----------------------------------------------
-            # UPLOAD AS DOCUMENT
-            # ----------------------------------------------
+            videocon_debug(
+                "UPLOAD AS DOCUMENT STARTED"
+            )
 
-            with open(
-                input_file,
-                "rb"
-            ) as document_file:
+            upload_state = {
+                "time": 0
+            }
 
-                bot.send_document(
+            result = videocon_run_async(
+
+                _videocon_upload_document(
 
                     user_id,
 
-                    document_file,
+                    input_file,
 
-                    caption=(
-                        "✅ <b>File Converted</b>\n\n"
+                    original_name,
 
-                        f"📦 Size: "
-                        f"<b>"
-                        f"{downloaded_size / (1024 * 1024):.2f} MB"
-                        f"</b>\n\n"
+                    downloaded_size,
 
-                        "📁 Video Converter"
-                    ),
-
-                    parse_mode="HTML",
-
-                    timeout=600
+                    upload_state
                 )
+            )
+
+            if not result:
+
+                raise RuntimeError(
+                    "Telegram bai dawo da upload result ba."
+                )
+
+            videocon_debug(
+                "DOCUMENT UPLOAD FINISHED"
+            )
 
         # ====================================================
         # VIDEO OUTPUT
@@ -832,49 +1537,51 @@ def _videocon_process(
                 message_id=status_message.message_id,
 
                 text=(
+
                     "📤 <b>UPLOADING AS VIDEO...</b>\n\n"
 
                     f"📦 Size: "
-                    f"<b>{downloaded_size / (1024 * 1024):.2f} MB</b>\n\n"
+                    f"<b>{videocon_size(downloaded_size)}</b>\n\n"
 
-                    "⏳ Please wait..."
+                    "⏳ Render → Telegram..."
                 ),
 
                 parse_mode="HTML"
             )
 
-            # ----------------------------------------------
-            # UPLOAD AS VIDEO
-            # ----------------------------------------------
+            videocon_debug(
+                "UPLOAD AS VIDEO STARTED"
+            )
 
-            with open(
-                input_file,
-                "rb"
-            ) as video_file:
+            upload_state = {
+                "time": 0
+            }
 
-                bot.send_video(
+            result = videocon_run_async(
+
+                _videocon_upload_video(
 
                     user_id,
 
-                    video_file,
+                    input_file,
 
-                    caption=(
-                        "✅ <b>Video Converted</b>\n\n"
+                    original_name,
 
-                        f"📦 Size: "
-                        f"<b>"
-                        f"{downloaded_size / (1024 * 1024):.2f} MB"
-                        f"</b>\n\n"
+                    downloaded_size,
 
-                        "🎬 Video Converter"
-                    ),
-
-                    parse_mode="HTML",
-
-                    supports_streaming=True,
-
-                    timeout=600
+                    upload_state
                 )
+            )
+
+            if not result:
+
+                raise RuntimeError(
+                    "Telegram bai dawo da video upload result ba."
+                )
+
+            videocon_debug(
+                "VIDEO UPLOAD FINISHED"
+            )
 
         # ====================================================
         # COMPLETE
@@ -887,18 +1594,21 @@ def _videocon_process(
             message_id=status_message.message_id,
 
             text=(
+
                 "✅ <b>CONVERSION COMPLETE</b>\n\n"
 
-                f"📦 Original: "
-                f"<b>"
-                f"{downloaded_size / (1024 * 1024):.2f} MB"
-                f"</b>\n\n"
+                f"📦 Size: "
+                f"<b>{videocon_size(downloaded_size)}</b>\n\n"
 
                 (
+
                     "🎬 Returned as: "
                     "<b>VIDEO</b>"
+
                     if choice == "video"
+
                     else
+
                     "📁 Returned as: "
                     "<b>FILE</b>"
                 )
@@ -907,13 +1617,36 @@ def _videocon_process(
             parse_mode="HTML"
         )
 
-        print(
-            "✅ VIDEOCON COMPLETE:",
-            user_id,
-            job["file_type"],
-            "→",
-            choice,
-            downloaded_size
+        videocon_debug(
+            "================================"
+        )
+
+        videocon_debug(
+            "✅ JOB COMPLETE"
+        )
+
+        videocon_debug(
+            "USER =",
+            user_id
+        )
+
+        videocon_debug(
+            "INPUT =",
+            job.get("file_type")
+        )
+
+        videocon_debug(
+            "OUTPUT =",
+            choice
+        )
+
+        videocon_debug(
+            "SIZE =",
+            videocon_size(downloaded_size)
+        )
+
+        videocon_debug(
+            "================================"
         )
 
     # ========================================================
@@ -922,9 +1655,30 @@ def _videocon_process(
 
     except Exception as e:
 
-        print(
-            "❌ VIDEOCON ERROR:",
+        videocon_debug(
+            "================================"
+        )
+
+        videocon_debug(
+            "❌ VIDEOCON ERROR"
+        )
+
+        videocon_debug(
+            "ERROR TYPE =",
+            type(e).__name__
+        )
+
+        videocon_debug(
+            "ERROR =",
             repr(e)
+        )
+
+        videocon_debug(
+            traceback.format_exc()
+        )
+
+        videocon_debug(
+            "================================"
         )
 
         try:
@@ -938,9 +1692,13 @@ def _videocon_process(
                     message_id=status_message.message_id,
 
                     text=(
+
                         "❌ <b>CONVERSION ERROR</b>\n\n"
 
                         f"<code>{str(e)}</code>\n\n"
+
+                        "🔎 An rubuta cikakken error "
+                        "a Render Logs.\n\n"
 
                         "Da fatan ka sake gwadawa."
                     ),
@@ -956,6 +1714,7 @@ def _videocon_process(
 
                     (
                         "❌ <b>Conversion Error</b>\n\n"
+
                         f"<code>{str(e)}</code>"
                     ),
 
@@ -964,8 +1723,8 @@ def _videocon_process(
 
         except Exception as notify_error:
 
-            print(
-                "VIDEOCON notification error:",
+            videocon_debug(
+                "ERROR NOTIFICATION FAILED:",
                 repr(notify_error)
             )
 
@@ -975,17 +1734,10 @@ def _videocon_process(
 
     finally:
 
-        # ----------------------------------------------------
-        # DELETE TEMP DIRECTORY
-        # ----------------------------------------------------
-
         try:
 
-            if (
+            if temp_dir and os.path.exists(
                 temp_dir
-                and os.path.exists(
-                    temp_dir
-                )
             ):
 
                 shutil.rmtree(
@@ -995,20 +1747,16 @@ def _videocon_process(
                     ignore_errors=True
                 )
 
-                print(
-                    "🧹 VIDEOCON temp files deleted."
+                videocon_debug(
+                    "🧹 TEMP FILES DELETED."
                 )
 
         except Exception as cleanup_error:
 
-            print(
-                "VIDEOCON cleanup error:",
+            videocon_debug(
+                "CLEANUP ERROR:",
                 repr(cleanup_error)
             )
-
-        # ----------------------------------------------------
-        # REMOVE SESSION
-        # ----------------------------------------------------
 
         _videocon_jobs.pop(
             user_id,
@@ -1018,6 +1766,236 @@ def _videocon_process(
         _videocon_waiting.discard(
             user_id
         )
+
+        videocon_debug(
+            "VIDEOCON SESSION CLOSED."
+        )
+
+
+# ============================================================
+# PYROGRAM: GET MESSAGE
+# ============================================================
+
+async def _videocon_get_message(
+
+    chat_id,
+
+    message_id
+):
+
+    videocon_debug(
+        "Pyrogram get_messages:",
+        chat_id,
+        message_id
+    )
+
+    message = await _videocon_pyro.get_messages(
+
+        chat_id,
+
+        message_id
+    )
+
+    return message
+
+
+# ============================================================
+# PYROGRAM: DOWNLOAD
+# ============================================================
+
+async def _videocon_download(
+
+    message,
+
+    output_path,
+
+    status_message,
+
+    progress_state
+):
+
+    videocon_debug(
+        "Pyrogram download_media() starting..."
+    )
+
+    async def progress(
+        current,
+        total
+    ):
+
+        await videocon_transfer_progress(
+
+            current,
+
+            total,
+
+            status_message,
+
+            "download",
+
+            progress_state
+        )
+
+    result = await _videocon_pyro.download_media(
+
+        message,
+
+        file_name=output_path,
+
+        progress=progress
+    )
+
+    videocon_debug(
+        "Pyrogram download_media() returned:",
+        result
+    )
+
+    return result
+
+
+# ============================================================
+# PYROGRAM: UPLOAD DOCUMENT
+# ============================================================
+
+async def _videocon_upload_document(
+
+    user_id,
+
+    input_file,
+
+    original_name,
+
+    file_size,
+
+    progress_state
+):
+
+    videocon_debug(
+        "Pyrogram send_document() starting..."
+    )
+
+    async def progress(
+        current,
+        total
+    ):
+
+        videocon_debug(
+
+            "UPLOAD FILE:",
+
+            f"{videocon_progress_percent(current, total):.1f}%",
+
+            videocon_size(current),
+
+            "/",
+
+            videocon_size(total)
+        )
+
+    result = await _videocon_pyro.send_document(
+
+        chat_id=user_id,
+
+        document=input_file,
+
+        caption=(
+
+            "✅ <b>File Converted</b>\n\n"
+
+            f"📄 Name: "
+            f"<b>{original_name}</b>\n\n"
+
+            f"📦 Size: "
+            f"<b>{videocon_size(file_size)}</b>\n\n"
+
+            "📁 Video Converter"
+        ),
+
+        progress=progress
+    )
+
+    return result
+
+
+# ============================================================
+# PYROGRAM: UPLOAD VIDEO
+# ============================================================
+
+async def _videocon_upload_video(
+
+    user_id,
+
+    input_file,
+
+    original_name,
+
+    file_size,
+
+    progress_state
+):
+
+    videocon_debug(
+        "Pyrogram send_video() starting..."
+    )
+
+    async def progress(
+        current,
+        total
+    ):
+
+        videocon_debug(
+
+            "UPLOAD VIDEO:",
+
+            f"{videocon_progress_percent(current, total):.1f}%",
+
+            videocon_size(current),
+
+            "/",
+
+            videocon_size(total)
+        )
+
+    result = await _videocon_pyro.send_video(
+
+        chat_id=user_id,
+
+        video=input_file,
+
+        caption=(
+
+            "✅ <b>Video Converted</b>\n\n"
+
+            f"📦 Size: "
+            f"<b>{videocon_size(file_size)}</b>\n\n"
+
+            "🎬 Video Converter"
+        ),
+
+        supports_streaming=True,
+
+        progress=progress
+    )
+
+    return result
+
+
+# ============================================================
+# START ENGINE IMMEDIATELY
+# ============================================================
+
+try:
+
+    start_videocon_engine()
+
+except Exception as e:
+
+    videocon_debug(
+        "Initial Videocon engine start failed:",
+        repr(e)
+    )
+
+
 
 
 
