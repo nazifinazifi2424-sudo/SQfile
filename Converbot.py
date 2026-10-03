@@ -203,41 +203,45 @@ else:
 print("===================================")
 
 
-
 # ============================================================
 # /COMP — ADMIN VIDEO COMPRESSOR
 # ============================================================
 #
-# REQUIREMENTS:
-#   pip install pyTelegramBotAPI
+# FLOW:
 #
-# SYSTEM REQUIREMENT:
-#   FFmpeg + FFprobe must be installed on the server.
-#
-# TEST:
-#   /comp
-#   -> send video
-#   -> bot downloads
-#   -> FFmpeg compresses
-#   -> bot sends compressed video back to ADMIN
-#
-# INPUT LIMIT:
-#   20 MB
-#
-# TELEGRAM PROGRESS EDIT:
-#   Maximum once every 30 seconds
+# /comp
+#    ↓
+# Admin sends VIDEO
+#    ↓
+# Bot reads REAL file size
+#    ↓
+# Bot shows target-size buttons
+#    ↓
+# Admin chooses target
+#    ↓
+# Download
+#    ↓
+# FFmpeg 2-pass compression
+#    ↓
+# Upload compressed video
 #
 # IMPORTANT:
-#   Wannan system ba ya taba DB ko sauran handlers.
+# - Admin only
+# - Does NOT touch your database
+# - Does NOT touch delivery system
+# - Progress Telegram edits are limited to once / 20 sec
+# - Original video is never modified
 # ============================================================
 
 import os
 import time
+import math
 import shutil
 import tempfile
 import subprocess
 import threading
 
+from telebot import types
 from telebot.apihelper import ApiTelegramException
 
 
@@ -248,23 +252,29 @@ from telebot.apihelper import ApiTelegramException
 COMP_MAX_INPUT_MB = 20
 COMP_MAX_INPUT_BYTES = COMP_MAX_INPUT_MB * 1024 * 1024
 
-# Telegram upload safety limit
 COMP_MAX_OUTPUT_MB = 50
 COMP_MAX_OUTPUT_BYTES = COMP_MAX_OUTPUT_MB * 1024 * 1024
 
-# Telegram edit interval
-COMP_PROGRESS_INTERVAL = 30
+# Telegram progress edit interval
+COMP_PROGRESS_INTERVAL = 20
 
-# FFmpeg settings
-COMP_CRF = "28"
+# Audio bitrate
+COMP_AUDIO_BITRATE = 64_000
+
+# FFmpeg
 COMP_PRESET = "fast"
 
-# Prevent two compressions at the same time
-_comp_lock = threading.Lock()
-_comp_running = False
+# ============================================================
+# SESSION STATE
+# ============================================================
 
-# Admin session
 _comp_waiting_for_video = set()
+
+_comp_pending_jobs = {}
+
+_comp_lock = threading.Lock()
+
+_comp_running = False
 
 
 # ============================================================
@@ -272,7 +282,9 @@ _comp_waiting_for_video = set()
 # ============================================================
 
 def _comp_format_size(size_bytes):
+
     try:
+
         size_bytes = float(size_bytes)
 
         if size_bytes < 1024:
@@ -287,76 +299,64 @@ def _comp_format_size(size_bytes):
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
     except Exception:
+
         return "Unknown"
 
 
 # ============================================================
-# SAFE TELEGRAM EDIT
+# TIME FORMAT
 # ============================================================
 
-def _comp_edit(message, text, force=False):
-    if not message:
-        return
-
-    now = time.monotonic()
-
-    last_edit = getattr(
-        message,
-        "_comp_last_edit",
-        0.0
-    )
-
-    # Never edit more often than configured interval
-    if not force:
-        if now - last_edit < COMP_PROGRESS_INTERVAL:
-            return
+def _comp_format_time(seconds):
 
     try:
-        bot.edit_message_text(
-            text,
-            chat_id=message.chat.id,
-            message_id=message.message_id
+
+        seconds = int(max(0, seconds))
+
+        hours = seconds // 3600
+
+        minutes = (seconds % 3600) // 60
+
+        secs = seconds % 60
+
+        if hours:
+
+            return (
+                f"{hours:02d}:"
+                f"{minutes:02d}:"
+                f"{secs:02d}"
+            )
+
+        return (
+            f"{minutes:02d}:"
+            f"{secs:02d}"
         )
 
-        message._comp_last_edit = now
+    except Exception:
 
-    except ApiTelegramException as e:
-
-        # Ignore "message is not modified"
-        if "message is not modified" in str(e).lower():
-            return
-
-        print(
-            "⚠️ COMP progress edit Telegram error:",
-            repr(e)
-        )
-
-    except Exception as e:
-        print(
-            "⚠️ COMP progress edit error:",
-            repr(e)
-        )
+        return "00:00"
 
 
 # ============================================================
-# CHECK FFMPEG
+# FFMPEG CHECK
 # ============================================================
 
 def _comp_check_ffmpeg():
 
     ffmpeg = shutil.which("ffmpeg")
+
     ffprobe = shutil.which("ffprobe")
 
     if not ffmpeg:
+
         raise RuntimeError(
-            "FFmpeg ba a samu a server ba.\n"
-            "Install FFmpeg sannan a sake gwadawa."
+            "FFmpeg ba a samu a server ba."
         )
 
     if not ffprobe:
+
         raise RuntimeError(
-            "FFprobe ba a samu a server ba.\n"
-            "Install FFmpeg/FFprobe sannan a sake gwadawa."
+            "FFprobe ba a samu a server ba."
         )
 
     return ffmpeg, ffprobe
@@ -375,24 +375,35 @@ def _comp_get_duration(ffprobe, input_file):
                 ffprobe,
                 "-v",
                 "error",
+
                 "-show_entries",
                 "format=duration",
+
                 "-of",
-                "default=noprint_wrappers=1:nokey=1",
+                "default="
+                "noprint_wrappers=1:"
+                "nokey=1",
+
                 input_file
             ],
+
             stdout=subprocess.PIPE,
+
             stderr=subprocess.PIPE,
+
             text=True,
-            timeout=30
+
+            timeout=60
         )
 
         if result.returncode != 0:
+
             return 0.0
 
         value = result.stdout.strip()
 
         if not value:
+
             return 0.0
 
         return float(value)
@@ -400,7 +411,7 @@ def _comp_get_duration(ffprobe, input_file):
     except Exception as e:
 
         print(
-            "⚠️ Could not read video duration:",
+            "COMP duration error:",
             repr(e)
         )
 
@@ -408,43 +419,263 @@ def _comp_get_duration(ffprobe, input_file):
 
 
 # ============================================================
-# FORMAT TIME
+# TELEGRAM SAFE EDIT
 # ============================================================
 
-def _comp_format_time(seconds):
+def _comp_safe_edit(
+    chat_id,
+    message_id,
+    text,
+    state
+):
+
+    now = time.monotonic()
+
+    with state["edit_lock"]:
+
+        last_edit = state.get(
+            "last_edit",
+            0.0
+        )
+
+        if (
+            now - last_edit
+            < COMP_PROGRESS_INTERVAL
+        ):
+
+            return False
+
+        try:
+
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode="HTML"
+            )
+
+            state["last_edit"] = now
+
+            return True
+
+        except ApiTelegramException as e:
+
+            if (
+                "message is not modified"
+                in str(e).lower()
+            ):
+
+                return False
+
+            print(
+                "COMP Telegram edit error:",
+                repr(e)
+            )
+
+            return False
+
+        except Exception as e:
+
+            print(
+                "COMP edit error:",
+                repr(e)
+            )
+
+            return False
+
+
+# ============================================================
+# FORCE EDIT
+# ============================================================
+
+def _comp_force_edit(
+    chat_id,
+    message_id,
+    text,
+    state
+):
 
     try:
-        seconds = int(max(0, seconds))
 
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML"
+        )
 
-        if hours:
-            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        with state["edit_lock"]:
 
-        return f"{minutes:02d}:{secs:02d}"
+            state["last_edit"] = time.monotonic()
 
-    except Exception:
-        return "00:00"
+        return True
+
+    except ApiTelegramException as e:
+
+        if (
+            "message is not modified"
+            in str(e).lower()
+        ):
+
+            return False
+
+        print(
+            "COMP force edit Telegram error:",
+            repr(e)
+        )
+
+        return False
+
+    except Exception as e:
+
+        print(
+            "COMP force edit error:",
+            repr(e)
+        )
+
+        return False
 
 
 # ============================================================
-# PARSE FFMPEG PROGRESS
+# PROGRESS HEARTBEAT
+#
+# Wannan yana aiki lokacin DOWNLOAD da UPLOAD.
+# Ba ya edit fiye da sau ɗaya cikin 20 sec.
 # ============================================================
 
-def _comp_parse_time(value):
+def _comp_heartbeat(
+    chat_id,
+    message_id,
+    state,
+    stop_event,
+    stage_text
+):
 
-    try:
-        value = int(value)
-        return value / 1_000_000
+    started = time.monotonic()
 
-    except Exception:
-        return 0.0
+    while not stop_event.wait(1):
+
+        elapsed = int(
+            time.monotonic() - started
+        )
+
+        if elapsed < COMP_PROGRESS_INTERVAL:
+
+            continue
+
+        text = (
+            f"{stage_text}\n\n"
+            f"⏱️ Time: "
+            f"<b>{_comp_format_time(elapsed)}</b>\n\n"
+            "⏳ Please wait..."
+        )
+
+        _comp_safe_edit(
+            chat_id,
+            message_id,
+            text,
+            state
+        )
 
 
 # ============================================================
-# RUN FFMPEG
+# TARGET SIZE BUTTONS
+#
+# Misali 14 MB:
+# 15% ≈ 2 MB
+# 45% ≈ 6 MB
+# 65% ≈ 9 MB
+#
+# Wannan yana bada irin tsarin da ka nema.
+# ============================================================
+
+def _comp_target_options(original_mb):
+
+    values = []
+
+    ratios = [
+        0.15,
+        0.45,
+        0.65
+    ]
+
+    for ratio in ratios:
+
+        target = max(
+            1,
+            int(original_mb * ratio)
+        )
+
+        if target >= original_mb:
+
+            target = max(
+                1,
+                int(original_mb) - 1
+            )
+
+        if target not in values:
+
+            values.append(target)
+
+    return values
+
+
+# ============================================================
+# CALCULATE VIDEO BITRATE
+# ============================================================
+
+def _comp_calculate_bitrate(
+    target_mb,
+    duration
+):
+
+    if duration <= 0:
+
+        raise RuntimeError(
+            "An kasa gano duration na video."
+        )
+
+    target_bytes = (
+        target_mb *
+        1024 *
+        1024
+    )
+
+    target_bits = (
+        target_bytes *
+        8
+    )
+
+    # Leave some space for MP4/container overhead
+    total_bitrate = (
+        target_bits /
+        duration *
+        0.92
+    )
+
+    audio_bitrate = COMP_AUDIO_BITRATE
+
+    video_bitrate = (
+        total_bitrate -
+        audio_bitrate
+    )
+
+    # Extremely low bitrates are unsafe
+    if video_bitrate < 24_000:
+
+        raise RuntimeError(
+            "Target size ya yi ƙanƙanta "
+            "ga tsawon wannan video."
+        )
+
+    return int(video_bitrate)
+
+
+# ============================================================
+# RUN FFMPEG 2-PASS
+#
+# 2-pass ne ake amfani da shi domin
+# kusantar target size sosai.
 # ============================================================
 
 def _comp_run_ffmpeg(
@@ -452,10 +683,32 @@ def _comp_run_ffmpeg(
     input_file,
     output_file,
     duration,
-    progress_message
+    target_mb,
+    progress_message,
+    state
 ):
 
-    command = [
+    video_bitrate = _comp_calculate_bitrate(
+        target_mb,
+        duration
+    )
+
+    bitrate_k = max(
+        24,
+        int(video_bitrate / 1000)
+    )
+
+    passlog = os.path.join(
+        os.path.dirname(output_file),
+        "comp_pass"
+    )
+
+    # ========================================================
+    # PASS 1
+    # ========================================================
+
+    command_pass1 = [
+
         ffmpeg,
 
         "-y",
@@ -463,28 +716,149 @@ def _comp_run_ffmpeg(
         "-i",
         input_file,
 
-        # Video
+        "-map",
+        "0:v:0",
+
         "-c:v",
         "libx264",
+
+        "-b:v",
+        f"{bitrate_k}k",
 
         "-preset",
         COMP_PRESET,
 
-        "-crf",
-        COMP_CRF,
+        "-pass",
+        "1",
 
-        # Audio
+        "-passlogfile",
+        passlog,
+
+        "-an",
+
+        "-f",
+        "null",
+
+        os.devnull
+    ]
+
+    print(
+        "COMP PASS 1:",
+        " ".join(command_pass1)
+    )
+
+    process1 = subprocess.Popen(
+        command_pass1,
+
+        stdout=subprocess.DEVNULL,
+
+        stderr=subprocess.PIPE,
+
+        text=True
+    )
+
+    last_edit = time.monotonic()
+
+    while True:
+
+        if process1.poll() is not None:
+
+            break
+
+        now = time.monotonic()
+
+        if (
+            now - last_edit
+            >= COMP_PROGRESS_INTERVAL
+        ):
+
+            _comp_force_edit(
+                progress_message.chat.id,
+                progress_message.message_id,
+
+                (
+                    "⚙️ <b>Compressing video...</b>\n\n"
+                    "🔧 Pass: <b>1 / 2</b>\n"
+                    f"🎯 Target: <b>{target_mb} MB</b>\n"
+                    f"📊 Video bitrate: "
+                    f"<b>{bitrate_k} kbps</b>\n\n"
+                    "⏳ Please wait..."
+                ),
+
+                state
+            )
+
+            last_edit = now
+
+        time.sleep(1)
+
+    stderr1 = ""
+
+    try:
+
+        stderr1 = process1.stderr.read()
+
+    except Exception:
+
+        pass
+
+    if process1.returncode != 0:
+
+        print(
+            "PASS 1 ERROR:",
+            stderr1[-5000:]
+        )
+
+        raise RuntimeError(
+            "FFmpeg Pass 1 ya kasa."
+        )
+
+    # ========================================================
+    # PASS 2
+    # ========================================================
+
+    command_pass2 = [
+
+        ffmpeg,
+
+        "-y",
+
+        "-i",
+        input_file,
+
+        "-map",
+        "0:v:0",
+
+        "-map",
+        "0:a?",
+
+        "-c:v",
+        "libx264",
+
+        "-b:v",
+        f"{bitrate_k}k",
+
+        "-preset",
+        COMP_PRESET,
+
+        "-pass",
+        "2",
+
+        "-passlogfile",
+        passlog,
+
         "-c:a",
         "aac",
 
         "-b:a",
-        "96k",
+        "64k",
 
-        # MP4 compatibility
         "-movflags",
         "+faststart",
 
-        # Progress output
+        "-pix_fmt",
+        "yuv420p",
+
         "-progress",
         "pipe:1",
 
@@ -494,146 +868,198 @@ def _comp_run_ffmpeg(
     ]
 
     print(
-        "🎬 Starting FFmpeg:",
-        " ".join(command)
+        "COMP PASS 2:",
+        " ".join(command_pass2)
     )
 
-    process = subprocess.Popen(
-        command,
+    process2 = subprocess.Popen(
+        command_pass2,
+
         stdout=subprocess.PIPE,
+
         stderr=subprocess.PIPE,
+
         text=True,
+
         bufsize=1
     )
 
-    last_progress_update = time.monotonic()
-
     current_time = 0.0
+
+    last_edit = time.monotonic()
+
+    while True:
+
+        line = process2.stdout.readline()
+
+        if not line:
+
+            if process2.poll() is not None:
+
+                break
+
+            time.sleep(0.2)
+
+            continue
+
+        line = line.strip()
+
+        if line.startswith(
+            "out_time_ms="
+        ):
+
+            try:
+
+                current_time = (
+                    int(
+                        line.split(
+                            "=",
+                            1
+                        )[1]
+                    ) / 1_000_000
+                )
+
+            except Exception:
+
+                pass
+
+        now = time.monotonic()
+
+        if (
+            now - last_edit
+            >= COMP_PROGRESS_INTERVAL
+        ):
+
+            if duration > 0:
+
+                percent = min(
+                    99,
+                    int(
+                        (
+                            current_time /
+                            duration
+                        ) * 100
+                    )
+                )
+
+            else:
+
+                percent = 0
+
+            _comp_force_edit(
+
+                progress_message.chat.id,
+
+                progress_message.message_id,
+
+                (
+                    "⚙️ <b>Compressing video...</b>\n\n"
+
+                    "🔧 Pass: <b>2 / 2</b>\n"
+
+                    f"📊 Progress: "
+                    f"<b>{percent}%</b>\n"
+
+                    f"⏱️ "
+                    f"<b>{_comp_format_time(current_time)}</b>"
+                    " / "
+                    f"<b>{_comp_format_time(duration)}</b>\n"
+
+                    f"🎯 Target: "
+                    f"<b>{target_mb} MB</b>\n\n"
+
+                    "⏳ Please wait..."
+                ),
+
+                state
+            )
+
+            last_edit = now
+
+    return_code = process2.wait()
+
+    stderr2 = ""
 
     try:
 
-        while True:
-
-            line = process.stdout.readline()
-
-            if not line:
-
-                if process.poll() is not None:
-                    break
-
-                time.sleep(0.2)
-                continue
-
-            line = line.strip()
-
-            if line.startswith("out_time_ms="):
-
-                current_time = _comp_parse_time(
-                    line.split("=", 1)[1]
-                )
-
-            now = time.monotonic()
-
-            # ================================================
-            # ONLY UPDATE TELEGRAM EVERY 30 SECONDS
-            # ================================================
-
-            if now - last_progress_update >= COMP_PROGRESS_INTERVAL:
-
-                if duration > 0:
-
-                    percent = min(
-                        99,
-                        int(
-                            (current_time / duration) * 100
-                        )
-                    )
-
-                    progress_text = (
-                        "⚙️ <b>Compressing video...</b>\n\n"
-                        f"📊 Progress: <b>{percent}%</b>\n"
-                        f"⏱️ Processed: "
-                        f"<b>{_comp_format_time(current_time)}</b> / "
-                        f"<b>{_comp_format_time(duration)}</b>\n\n"
-                        "⏳ Please wait..."
-                    )
-
-                else:
-
-                    progress_text = (
-                        "⚙️ <b>Compressing video...</b>\n\n"
-                        f"⏱️ Processed: "
-                        f"<b>{_comp_format_time(current_time)}</b>\n\n"
-                        "⏳ Please wait..."
-                    )
-
-                _comp_edit(
-                    progress_message,
-                    progress_text,
-                    force=True
-                )
-
-                last_progress_update = now
-
-        return_code = process.wait()
-
-        stderr_output = ""
-
-        try:
-            stderr_output = process.stderr.read()
-        except Exception:
-            pass
-
-        if return_code != 0:
-
-            print(
-                "❌ FFmpeg failed:",
-                stderr_output[-5000:]
-            )
-
-            raise RuntimeError(
-                "FFmpeg compression failed."
-            )
-
-        return True
+        stderr2 = process2.stderr.read()
 
     except Exception:
 
+        pass
+
+    if return_code != 0:
+
+        print(
+            "PASS 2 ERROR:",
+            stderr2[-5000:]
+        )
+
+        raise RuntimeError(
+            "FFmpeg Pass 2 ya kasa."
+        )
+
+    # ========================================================
+    # CLEAN PASS FILES
+    # ========================================================
+
+    for suffix in [
+        "-0.log",
+        "-0.log.mbtree"
+    ]:
+
         try:
-            process.kill()
+
+            path = (
+                passlog +
+                suffix
+            )
+
+            if os.path.exists(path):
+
+                os.remove(path)
+
         except Exception:
+
             pass
 
-        raise
+    return True
 
 
 # ============================================================
 # /COMP COMMAND
 # ============================================================
 
-@bot.message_handler(commands=["comp"])
+@bot.message_handler(
+    commands=["comp"]
+)
 def comp_command(message):
 
     global _comp_running
+
+    user_id = message.from_user.id
 
     # ========================================================
     # ADMIN ONLY
     # ========================================================
 
-    if message.from_user.id != ADMIN_ID:
+    if user_id != ADMIN_ID:
 
         try:
+
             bot.reply_to(
                 message,
                 "❌ Wannan command ɗin na Admin ne kawai."
             )
+
         except Exception:
+
             pass
 
         return
 
     # ========================================================
-    # CHECK FFMPEG BEFORE STARTING
+    # CHECK FFMPEG
     # ========================================================
 
     try:
@@ -644,51 +1070,917 @@ def comp_command(message):
 
         bot.reply_to(
             message,
+
             (
                 "❌ <b>FFmpeg ba a shirya ba.</b>\n\n"
                 f"<code>{str(e)}</code>"
             ),
+
             parse_mode="HTML"
         )
 
         return
 
     # ========================================================
-    # CHECK ANOTHER COMPRESSION
+    # PREVENT TWO JOBS
     # ========================================================
 
-    if _comp_running:
+    with _comp_lock:
 
-        bot.reply_to(
-            message,
-            (
-                "⚠️ <b>Compression yana gudana yanzu.</b>\n\n"
-                "Da fatan ka jira ya gama kafin ka fara wani."
-            ),
-            parse_mode="HTML"
-        )
+        if _comp_running:
 
-        return
+            bot.reply_to(
+                message,
+
+                (
+                    "⚠️ <b>Compression yana gudana yanzu.</b>\n\n"
+                    "Da fatan ka jira ya gama."
+                ),
+
+                parse_mode="HTML"
+            )
+
+            return
 
     # ========================================================
     # WAIT FOR VIDEO
     # ========================================================
 
     _comp_waiting_for_video.add(
-        message.from_user.id
+        user_id
     )
 
     bot.reply_to(
         message,
+
         (
             "🎬 <b>VIDEO COMPRESSOR</b>\n\n"
-            "Turo min video ɗin da kake son mu compress.\n\n"
-            f"📦 Maximum: <b>{COMP_MAX_INPUT_MB} MB</b>\n"
-            "🧪 Gwajin farko: <b>10 MB</b>\n\n"
-            "⏳ Bayan ka turo shi zan fara compression."
+
+            "Turo min video ɗin da kake son "
+            "mu compress.\n\n"
+
+            f"📦 Maximum: "
+            f"<b>{COMP_MAX_INPUT_MB} MB</b>\n\n"
+
+            "⏳ Bayan ka turo shi zan karanta "
+            "ainihin size ɗinsa sannan zan baka "
+            "zabukan size."
         ),
+
         parse_mode="HTML"
     )
+
+
+# ============================================================
+# RECEIVE VIDEO
+#
+# MUHIMMI:
+# Wannan handler ya kamata ya kasance KAFIN
+# wani generic video handler naka idan kana da shi.
+# ============================================================
+
+@bot.message_handler(
+    content_types=["video"],
+    func=lambda message:
+        message.from_user.id in
+        _comp_waiting_for_video
+)
+def comp_receive_video(message):
+
+    user_id = message.from_user.id
+
+    if user_id != ADMIN_ID:
+
+        _comp_waiting_for_video.discard(
+            user_id
+        )
+
+        return
+
+    # ========================================================
+    # STOP WAITING
+    # ========================================================
+
+    _comp_waiting_for_video.discard(
+        user_id
+    )
+
+    # ========================================================
+    # GET TELEGRAM FILE INFO
+    # ========================================================
+
+    try:
+
+        file_info = bot.get_file(
+            message.video.file_id
+        )
+
+    except Exception as e:
+
+        bot.reply_to(
+            message,
+
+            (
+                "❌ An kasa karɓar bayanan "
+                "video.\n\n"
+                f"<code>{str(e)}</code>"
+            ),
+
+            parse_mode="HTML"
+        )
+
+        return
+
+    # ========================================================
+    # REAL SIZE
+    # ========================================================
+
+    file_size = (
+        getattr(
+            file_info,
+            "file_size",
+            None
+        )
+        or
+        getattr(
+            message.video,
+            "file_size",
+            None
+        )
+    )
+
+    if not file_size:
+
+        bot.reply_to(
+            message,
+            "❌ An kasa gano ainihin girman video."
+        )
+
+        return
+
+    # ========================================================
+    # INPUT LIMIT
+    # ========================================================
+
+    if file_size > COMP_MAX_INPUT_BYTES:
+
+        bot.reply_to(
+
+            message,
+
+            (
+                "❌ <b>Video ya yi girma.</b>\n\n"
+
+                f"📦 Video: "
+                f"<b>{_comp_format_size(file_size)}</b>\n"
+
+                f"📦 Maximum: "
+                f"<b>{COMP_MAX_INPUT_MB} MB</b>"
+            ),
+
+            parse_mode="HTML"
+        )
+
+        return
+
+    original_mb = (
+        file_size /
+        (1024 * 1024)
+    )
+
+    # ========================================================
+    # GET DURATION FROM TELEGRAM FIRST
+    # ========================================================
+
+    duration = (
+        getattr(
+            message.video,
+            "duration",
+            0
+        )
+        or 0
+    )
+
+    # ========================================================
+    # TARGET BUTTONS
+    # ========================================================
+
+    targets = _comp_target_options(
+        original_mb
+    )
+
+    if not targets:
+
+        bot.reply_to(
+            message,
+            "❌ Babu target size mai kyau."
+        )
+
+        return
+
+    # ========================================================
+    # SAVE PENDING VIDEO
+    # ========================================================
+
+    _comp_pending_jobs[user_id] = {
+
+        "file_id":
+            message.video.file_id,
+
+        "file_size":
+            file_size,
+
+        "original_mb":
+            original_mb,
+
+        "duration":
+            duration,
+
+        "message_id":
+            message.message_id
+    }
+
+    # ========================================================
+    # BUTTONS
+    # ========================================================
+
+    kb = types.InlineKeyboardMarkup(
+        row_width=3
+    )
+
+    buttons = []
+
+    for target in targets:
+
+        buttons.append(
+            types.InlineKeyboardButton(
+                f"📦 {target} MB",
+                callback_data=(
+                    f"comp_target:{target}"
+                )
+            )
+        )
+
+    kb.add(*buttons)
+
+    # ========================================================
+    # ASK ADMIN
+    # ========================================================
+
+    bot.reply_to(
+
+        message,
+
+        (
+            "🎬 <b>VIDEO RECEIVED</b>\n\n"
+
+            f"📦 Original size: "
+            f"<b>{_comp_format_size(file_size)}</b>\n"
+
+            f"⏱️ Duration: "
+            f"<b>{_comp_format_time(duration)}</b>\n\n"
+
+            "❓ <b>MB nawa kake son "
+            "video ɗin ya koma?</b>\n\n"
+
+            "Zaɓi ɗaya daga cikin buttons:"
+        ),
+
+        reply_markup=kb,
+
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# TARGET BUTTON
+# ============================================================
+
+@bot.callback_query_handler(
+    func=lambda call:
+        call.data.startswith(
+            "comp_target:"
+        )
+)
+def comp_target_callback(call):
+
+    global _comp_running
+
+    user_id = call.from_user.id
+
+    # ========================================================
+    # ADMIN ONLY
+    # ========================================================
+
+    if user_id != ADMIN_ID:
+
+        bot.answer_callback_query(
+            call.id,
+            "❌ Admin kawai."
+        )
+
+        return
+
+    # ========================================================
+    # GET TARGET
+    # ========================================================
+
+    try:
+
+        target_mb = int(
+            call.data.split(
+                ":",
+                1
+            )[1]
+        )
+
+    except Exception:
+
+        bot.answer_callback_query(
+            call.id,
+            "Invalid target."
+        )
+
+        return
+
+    # ========================================================
+    # GET JOB
+    # ========================================================
+
+    job = _comp_pending_jobs.get(
+        user_id
+    )
+
+    if not job:
+
+        bot.answer_callback_query(
+            call.id,
+            "❌ Wannan compression session ta ƙare."
+        )
+
+        return
+
+    # ========================================================
+    # PREVENT TWO JOBS
+    # ========================================================
+
+    with _comp_lock:
+
+        if _comp_running:
+
+            bot.answer_callback_query(
+                call.id,
+                "Compression yana gudana."
+            )
+
+            return
+
+        _comp_running = True
+
+    # ========================================================
+    # REMOVE PENDING JOB
+    # ========================================================
+
+    _comp_pending_jobs.pop(
+        user_id,
+        None
+    )
+
+    bot.answer_callback_query(
+        call.id,
+        "Starting compression..."
+    )
+
+    # ========================================================
+    # START WORKER
+    # ========================================================
+
+    worker = threading.Thread(
+
+        target=_comp_process_job,
+
+        args=(
+            call,
+            job,
+            target_mb
+        ),
+
+        daemon=True
+    )
+
+    worker.start()
+
+
+# ============================================================
+# MAIN COMPRESSION WORKER
+# ============================================================
+
+def _comp_process_job(
+    call,
+    job,
+    target_mb
+):
+
+    global _comp_running
+
+    user_id = call.from_user.id
+
+    temp_dir = None
+
+    input_file = None
+
+    output_file = None
+
+    status_message = None
+
+    heartbeat_stop = None
+
+    heartbeat_thread = None
+
+    state = {
+
+        "last_edit": 0.0,
+
+        "edit_lock":
+            threading.Lock()
+    }
+
+    try:
+
+        # ====================================================
+        # TEMP DIRECTORY
+        # ====================================================
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="telegram_comp_"
+        )
+
+        input_file = os.path.join(
+            temp_dir,
+            "input.mp4"
+        )
+
+        output_file = os.path.join(
+            temp_dir,
+            "compressed.mp4"
+        )
+
+        # ====================================================
+        # INITIAL STATUS
+        # ====================================================
+
+        status_message = bot.send_message(
+
+            user_id,
+
+            (
+                "⏳ <b>Preparing...</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>{job['original_mb']:.2f} MB</b>\n"
+
+                f"🎯 Target: "
+                f"<b>{target_mb} MB</b>\n\n"
+
+                "🔧 Checking compression system..."
+            ),
+
+            parse_mode="HTML"
+        )
+
+        # ====================================================
+        # FFMPEG
+        # ====================================================
+
+        ffmpeg, ffprobe = (
+            _comp_check_ffmpeg()
+        )
+
+        # ====================================================
+        # DOWNLOAD
+        # ====================================================
+
+        _comp_force_edit(
+
+            user_id,
+
+            status_message.message_id,
+
+            (
+                "⬇️ <b>Downloading video...</b>\n\n"
+
+                f"📦 Size: "
+                f"<b>{job['original_mb']:.2f} MB</b>\n\n"
+
+                "⏳ Please wait..."
+            ),
+
+            state
+        )
+
+        heartbeat_stop = threading.Event()
+
+        heartbeat_thread = threading.Thread(
+
+            target=_comp_heartbeat,
+
+            args=(
+
+                user_id,
+
+                status_message.message_id,
+
+                state,
+
+                heartbeat_stop,
+
+                "⬇️ <b>Downloading video...</b>"
+            ),
+
+            daemon=True
+        )
+
+        heartbeat_thread.start()
+
+        # ====================================================
+        # ACTUAL DOWNLOAD
+        # ====================================================
+
+        file_data = bot.download_file(
+            bot.get_file(
+                job["file_id"]
+            ).file_path
+        )
+
+        with open(
+            input_file,
+            "wb"
+        ) as f:
+
+            f.write(file_data)
+
+        heartbeat_stop.set()
+
+        # ====================================================
+        # VERIFY DOWNLOAD
+        # ====================================================
+
+        downloaded_size = os.path.getsize(
+            input_file
+        )
+
+        if downloaded_size <= 0:
+
+            raise RuntimeError(
+                "Downloaded file empty ne."
+            )
+
+        # ====================================================
+        # GET REAL DURATION
+        # ====================================================
+
+        duration = (
+            _comp_get_duration(
+                ffprobe,
+                input_file
+            )
+        )
+
+        if duration <= 0:
+
+            duration = float(
+                job.get(
+                    "duration",
+                    0
+                )
+            )
+
+        if duration <= 0:
+
+            raise RuntimeError(
+                "An kasa gano duration na video."
+            )
+
+        # ====================================================
+        # DOWNLOAD COMPLETE
+        # ====================================================
+
+        _comp_force_edit(
+
+            user_id,
+
+            status_message.message_id,
+
+            (
+                "✅ <b>Download complete.</b>\n\n"
+
+                f"📦 Downloaded: "
+                f"<b>{_comp_format_size(downloaded_size)}</b>\n"
+
+                f"⏱️ Duration: "
+                f"<b>{_comp_format_time(duration)}</b>\n\n"
+
+                f"🎯 Target: "
+                f"<b>{target_mb} MB</b>\n\n"
+
+                "⚙️ Preparing compression..."
+            ),
+
+            state
+        )
+
+        time.sleep(1)
+
+        # ====================================================
+        # COMPRESS
+        # ====================================================
+
+        _comp_run_ffmpeg(
+
+            ffmpeg,
+
+            input_file,
+
+            output_file,
+
+            duration,
+
+            target_mb,
+
+            status_message,
+
+            state
+        )
+
+        # ====================================================
+        # CHECK OUTPUT
+        # ====================================================
+
+        if not os.path.exists(
+            output_file
+        ):
+
+            raise RuntimeError(
+                "FFmpeg bai samar da output file ba."
+            )
+
+        output_size = os.path.getsize(
+            output_file
+        )
+
+        if output_size <= 0:
+
+            raise RuntimeError(
+                "Compressed file empty ne."
+            )
+
+        # ====================================================
+        # OUTPUT TOO LARGE
+        # ====================================================
+
+        if output_size > COMP_MAX_OUTPUT_BYTES:
+
+            raise RuntimeError(
+                "Compressed video ya wuce "
+                f"{COMP_MAX_OUTPUT_MB} MB."
+            )
+
+        # ====================================================
+        # COMPRESSION COMPLETE
+        # ====================================================
+
+        _comp_force_edit(
+
+            user_id,
+
+            status_message.message_id,
+
+            (
+                "✅ <b>Compression complete!</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>{_comp_format_size(downloaded_size)}</b>\n"
+
+                f"📦 Compressed: "
+                f"<b>{_comp_format_size(output_size)}</b>\n"
+
+                f"🎯 Target: "
+                f"<b>{target_mb} MB</b>\n\n"
+
+                "📤 <b>Uploading compressed video...</b>\n\n"
+
+                "⏳ Please wait..."
+            ),
+
+            state
+        )
+
+        # ====================================================
+        # UPLOAD HEARTBEAT
+        # ====================================================
+
+        heartbeat_stop = threading.Event()
+
+        heartbeat_thread = threading.Thread(
+
+            target=_comp_heartbeat,
+
+            args=(
+
+                user_id,
+
+                status_message.message_id,
+
+                state,
+
+                heartbeat_stop,
+
+                "📤 <b>Uploading compressed video...</b>"
+            ),
+
+            daemon=True
+        )
+
+        heartbeat_thread.start()
+
+        # ====================================================
+        # UPLOAD TO ADMIN
+        # ====================================================
+
+        with open(
+            output_file,
+            "rb"
+        ) as video_file:
+
+            sent_message = bot.send_video(
+
+                user_id,
+
+                video_file,
+
+                caption=(
+
+                    "✅ <b>Compression Completed</b>\n\n"
+
+                    f"📦 Original: "
+                    f"<b>{_comp_format_size(downloaded_size)}</b>\n"
+
+                    f"📦 Compressed: "
+                    f"<b>{_comp_format_size(output_size)}</b>\n"
+
+                    f"🎯 Target: "
+                    f"<b>{target_mb} MB</b>\n\n"
+
+                    "🎬 Video Compressor"
+                ),
+
+                parse_mode="HTML",
+
+                supports_streaming=True,
+
+                timeout=600
+            )
+
+        heartbeat_stop.set()
+
+        # ====================================================
+        # FINAL STATUS
+        # ====================================================
+
+        _comp_force_edit(
+
+            user_id,
+
+            status_message.message_id,
+
+            (
+                "✅ <b>COMPRESSION COMPLETED</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>{_comp_format_size(downloaded_size)}</b>\n"
+
+                f"📦 Final: "
+                f"<b>{_comp_format_size(output_size)}</b>\n"
+
+                f"🎯 Target: "
+                f"<b>{target_mb} MB</b>\n\n"
+
+                "📤 Uploaded successfully ✅"
+            ),
+
+            state
+        )
+
+        print(
+            "✅ COMP completed:",
+            user_id,
+            _comp_format_size(
+                downloaded_size
+            ),
+            "→",
+            _comp_format_size(
+                output_size
+            )
+        )
+
+    # ========================================================
+    # ERROR HANDLING
+    # ========================================================
+
+    except Exception as e:
+
+        print(
+            "❌ COMP ERROR:",
+            repr(e)
+        )
+
+        try:
+
+            if status_message:
+
+                _comp_force_edit(
+
+                    user_id,
+
+                    status_message.message_id,
+
+                    (
+                        "❌ <b>COMPRESSION ERROR</b>\n\n"
+
+                        f"<code>{str(e)}</code>\n\n"
+
+                        "Da fatan ka sake gwadawa."
+                    ),
+
+                    state
+                )
+
+            else:
+
+                bot.send_message(
+
+                    user_id,
+
+                    (
+                        "❌ <b>Compression Error</b>\n\n"
+                        f"<code>{str(e)}</code>"
+                    ),
+
+                    parse_mode="HTML"
+                )
+
+        except Exception as notify_error:
+
+            print(
+                "COMP error notification failed:",
+                repr(notify_error)
+            )
+
+    finally:
+
+        # ====================================================
+        # STOP HEARTBEAT
+        # ====================================================
+
+        try:
+
+            if heartbeat_stop:
+
+                heartbeat_stop.set()
+
+        except Exception:
+
+            pass
+
+        # ====================================================
+        # DELETE TEMP FILES
+        # ====================================================
+
+        try:
+
+            if temp_dir and os.path.exists(
+                temp_dir
+            ):
+
+                shutil.rmtree(
+                    temp_dir,
+                    ignore_errors=True
+                )
+
+        except Exception as cleanup_error:
+
+            print(
+                "COMP cleanup error:",
+                repr(cleanup_error)
+            )
+
+        # ====================================================
+        # RELEASE LOCK
+        # ====================================================
+
+        with _comp_lock:
+
+            _comp_running = False
 
 
 
