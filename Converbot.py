@@ -79,6 +79,950 @@ bot = telebot.TeleBot(
 
 
 # ============================================================
+# /VIDEOCON — VIDEO / FILE CONVERTER TEST
+# ============================================================
+#
+# FLOW:
+#
+# /videocon
+#      ↓
+# Admin sends VIDEO or DOCUMENT
+#      ↓
+# Bot detects type
+#      ↓
+# Bot asks:
+# "Me kake so na dawo maka da shi?"
+#
+# 🎬 Video       📁 File
+#
+# VIDEO:
+#      ↓
+# Download
+#      ↓
+# Upload as VIDEO
+#
+# FILE:
+#      ↓
+# Download
+#      ↓
+# Upload as DOCUMENT
+#
+# TEST LIMIT:
+# 20 MB
+#
+# NO DATABASE
+# NO FFmpeg
+# NO compression
+# Temporary files are deleted
+# ============================================================
+
+
+import os
+import tempfile
+import shutil
+import threading
+
+from telebot import types
+from telebot.apihelper import ApiTelegramException
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+VIDEOCON_MAX_MB = 20
+
+VIDEOCON_MAX_BYTES = (
+    VIDEOCON_MAX_MB * 1024 * 1024
+)
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+_videocon_waiting = set()
+
+_videocon_jobs = {}
+
+_videocon_lock = threading.Lock()
+
+
+# ============================================================
+# /VIDEOCON
+# ============================================================
+
+@bot.message_handler(
+    commands=["videocon"]
+)
+def videocon_command(message):
+
+    user_id = message.from_user.id
+
+    # ========================================================
+    # ADMIN ONLY
+    # ========================================================
+
+    if user_id != ADMIN_ID:
+
+        try:
+
+            bot.reply_to(
+                message,
+                "❌ Wannan command ɗin na Admin ne kawai."
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+    # ========================================================
+    # START SESSION
+    # ========================================================
+
+    _videocon_waiting.add(user_id)
+
+    # Remove old job if any
+
+    _videocon_jobs.pop(
+        user_id,
+        None
+    )
+
+    # ========================================================
+    # ASK FOR VIDEO / FILE
+    # ========================================================
+
+    bot.reply_to(
+
+        message,
+
+        (
+            "🎬 <b>VIDEO CONVERTER</b>\n\n"
+
+            "Turo min <b>Video</b> ko "
+            "<b>File/Document</b> ɗin da kake son "
+            "mu canza.\n\n"
+
+            f"📦 Maximum: "
+            f"<b>{VIDEOCON_MAX_MB} MB</b>\n\n"
+
+            "⏳ Bayan ka turo shi zan tambaye ka "
+            "irin yadda kake son na dawo maka da shi."
+        ),
+
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# RECEIVE VIDEO
+# ============================================================
+
+@bot.message_handler(
+    content_types=["video"],
+    func=lambda message:
+        message.from_user.id in _videocon_waiting
+)
+def videocon_receive_video(message):
+
+    user_id = message.from_user.id
+
+    # ========================================================
+    # ADMIN CHECK
+    # ========================================================
+
+    if user_id != ADMIN_ID:
+
+        _videocon_waiting.discard(
+            user_id
+        )
+
+        return
+
+    # ========================================================
+    # GET SIZE
+    # ========================================================
+
+    file_size = (
+
+        getattr(
+            message.video,
+            "file_size",
+            None
+        )
+
+        or 0
+    )
+
+    if file_size <= 0:
+
+        bot.reply_to(
+            message,
+            "❌ An kasa gano girman video."
+        )
+
+        return
+
+    # ========================================================
+    # 20 MB LIMIT
+    # ========================================================
+
+    if file_size > VIDEOCON_MAX_BYTES:
+
+        bot.reply_to(
+
+            message,
+
+            (
+                "❌ <b>Video ya yi girma.</b>\n\n"
+
+                f"📦 Size: "
+                f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n"
+
+                f"📦 Maximum: "
+                f"<b>{VIDEOCON_MAX_MB} MB</b>"
+            ),
+
+            parse_mode="HTML"
+        )
+
+        return
+
+    # ========================================================
+    # SAVE SESSION
+    # ========================================================
+
+    _videocon_waiting.discard(
+        user_id
+    )
+
+    _videocon_jobs[user_id] = {
+
+        "file_id":
+            message.video.file_id,
+
+        "file_type":
+            "video",
+
+        "file_name":
+            "converted_video.mp4",
+
+        "file_size":
+            file_size,
+
+        "message_id":
+            message.message_id
+    }
+
+    # ========================================================
+    # CHOICE BUTTONS
+    # ========================================================
+
+    keyboard = types.InlineKeyboardMarkup(
+        row_width=2
+    )
+
+    keyboard.add(
+
+        types.InlineKeyboardButton(
+            "🎬 Video",
+            callback_data="videocon:video"
+        ),
+
+        types.InlineKeyboardButton(
+            "📁 File",
+            callback_data="videocon:file"
+        )
+    )
+
+    bot.reply_to(
+
+        message,
+
+        (
+            "✅ <b>VIDEO RECEIVED</b>\n\n"
+
+            f"📦 Size: "
+            f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n\n"
+
+            "❓ <b>Me kake so na dawo maka da shi?</b>"
+        ),
+
+        reply_markup=keyboard,
+
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# RECEIVE DOCUMENT / FILE
+# ============================================================
+
+@bot.message_handler(
+    content_types=["document"],
+    func=lambda message:
+        message.from_user.id in _videocon_waiting
+)
+def videocon_receive_document(message):
+
+    user_id = message.from_user.id
+
+    # ========================================================
+    # ADMIN CHECK
+    # ========================================================
+
+    if user_id != ADMIN_ID:
+
+        _videocon_waiting.discard(
+            user_id
+        )
+
+        return
+
+    # ========================================================
+    # GET SIZE
+    # ========================================================
+
+    file_size = (
+
+        getattr(
+            message.document,
+            "file_size",
+            None
+        )
+
+        or 0
+    )
+
+    if file_size <= 0:
+
+        bot.reply_to(
+            message,
+            "❌ An kasa gano girman file."
+        )
+
+        return
+
+    # ========================================================
+    # 20 MB LIMIT
+    # ========================================================
+
+    if file_size > VIDEOCON_MAX_BYTES:
+
+        bot.reply_to(
+
+            message,
+
+            (
+                "❌ <b>File ya yi girma.</b>\n\n"
+
+                f"📦 Size: "
+                f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n"
+
+                f"📦 Maximum: "
+                f"<b>{VIDEOCON_MAX_MB} MB</b>"
+            ),
+
+            parse_mode="HTML"
+        )
+
+        return
+
+    # ========================================================
+    # STOP WAITING
+    # ========================================================
+
+    _videocon_waiting.discard(
+        user_id
+    )
+
+    # ========================================================
+    # FILE NAME
+    # ========================================================
+
+    file_name = (
+
+        getattr(
+            message.document,
+            "file_name",
+            None
+        )
+
+        or "converted_file"
+    )
+
+    # ========================================================
+    # SAVE SESSION
+    # ========================================================
+
+    _videocon_jobs[user_id] = {
+
+        "file_id":
+            message.document.file_id,
+
+        "file_type":
+            "document",
+
+        "file_name":
+            file_name,
+
+        "file_size":
+            file_size,
+
+        "message_id":
+            message.message_id
+    }
+
+    # ========================================================
+    # CHOICE BUTTONS
+    # ========================================================
+
+    keyboard = types.InlineKeyboardMarkup(
+        row_width=2
+    )
+
+    keyboard.add(
+
+        types.InlineKeyboardButton(
+            "🎬 Video",
+            callback_data="videocon:video"
+        ),
+
+        types.InlineKeyboardButton(
+            "📁 File",
+            callback_data="videocon:file"
+        )
+    )
+
+    bot.reply_to(
+
+        message,
+
+        (
+            "✅ <b>FILE RECEIVED</b>\n\n"
+
+            f"📄 Name: "
+            f"<b>{file_name}</b>\n"
+
+            f"📦 Size: "
+            f"<b>{file_size / (1024 * 1024):.2f} MB</b>\n\n"
+
+            "❓ <b>Me kake so na dawo maka da shi?</b>"
+        ),
+
+        reply_markup=keyboard,
+
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# BUTTON
+# ============================================================
+
+@bot.callback_query_handler(
+    func=lambda call:
+        call.data.startswith(
+            "videocon:"
+        )
+)
+def videocon_callback(call):
+
+    user_id = call.from_user.id
+
+    # ========================================================
+    # ADMIN ONLY
+    # ========================================================
+
+    if user_id != ADMIN_ID:
+
+        bot.answer_callback_query(
+
+            call.id,
+
+            "❌ Admin kawai."
+        )
+
+        return
+
+    # ========================================================
+    # GET CHOICE
+    # ========================================================
+
+    choice = call.data.split(
+        ":",
+        1
+    )[1]
+
+    if choice not in (
+        "video",
+        "file"
+    ):
+
+        bot.answer_callback_query(
+            call.id,
+            "❌ Invalid option."
+        )
+
+        return
+
+    # ========================================================
+    # GET JOB
+    # ========================================================
+
+    job = _videocon_jobs.get(
+        user_id
+    )
+
+    if not job:
+
+        bot.answer_callback_query(
+
+            call.id,
+
+            "❌ Session ta ƙare. "
+            "Ka sake amfani da /videocon."
+        )
+
+        return
+
+    # ========================================================
+    # REMOVE BUTTONS
+    # ========================================================
+
+    try:
+
+        bot.edit_message_reply_markup(
+
+            chat_id=call.message.chat.id,
+
+            message_id=call.message.message_id,
+
+            reply_markup=None
+        )
+
+    except Exception:
+
+        pass
+
+    # ========================================================
+    # ANSWER BUTTON
+    # ========================================================
+
+    bot.answer_callback_query(
+
+        call.id,
+
+        "🚀 An fara aiki..."
+    )
+
+    # ========================================================
+    # START WORKER
+    # ========================================================
+
+    worker = threading.Thread(
+
+        target=_videocon_process,
+
+        args=(
+            user_id,
+            job,
+            choice
+        ),
+
+        daemon=True
+    )
+
+    worker.start()
+
+
+# ============================================================
+# MAIN PROCESS
+# ============================================================
+
+def _videocon_process(
+    user_id,
+    job,
+    choice
+):
+
+    temp_dir = None
+
+    input_file = None
+
+    status_message = None
+
+    try:
+
+        # ====================================================
+        # TEMP DIRECTORY
+        # ====================================================
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="videocon_"
+        )
+
+        # ====================================================
+        # FILE NAME
+        # ====================================================
+
+        original_name = (
+            job.get(
+                "file_name"
+            )
+            or "converted_file"
+        )
+
+        # ====================================================
+        # INPUT PATH
+        # ====================================================
+
+        input_file = os.path.join(
+
+            temp_dir,
+
+            original_name
+        )
+
+        # ====================================================
+        # STATUS
+        # ====================================================
+
+        status_message = bot.send_message(
+
+            user_id,
+
+            (
+                "⏳ <b>Preparing...</b>\n\n"
+
+                "🔧 Ana shirya file ɗinka.\n\n"
+
+                "⏳ Please wait..."
+            ),
+
+            parse_mode="HTML"
+        )
+
+        # ====================================================
+        # GET TELEGRAM FILE
+        # ====================================================
+
+        bot.edit_message_text(
+
+            chat_id=user_id,
+
+            message_id=status_message.message_id,
+
+            text=(
+                "⬇️ <b>DOWNLOADING...</b>\n\n"
+                "⏳ Ana sauke file ɗinka..."
+            ),
+
+            parse_mode="HTML"
+        )
+
+        file_info = bot.get_file(
+            job["file_id"]
+        )
+
+        # ====================================================
+        # DOWNLOAD
+        # ====================================================
+
+        file_data = bot.download_file(
+
+            file_info.file_path
+        )
+
+        # ====================================================
+        # SAVE
+        # ====================================================
+
+        with open(
+            input_file,
+            "wb"
+        ) as f:
+
+            f.write(file_data)
+
+        del file_data
+
+        # ====================================================
+        # VERIFY
+        # ====================================================
+
+        downloaded_size = os.path.getsize(
+            input_file
+        )
+
+        if downloaded_size <= 0:
+
+            raise RuntimeError(
+                "Downloaded file empty ne."
+            )
+
+        # ====================================================
+        # FILE OUTPUT
+        # ====================================================
+
+        if choice == "file":
+
+            bot.edit_message_text(
+
+                chat_id=user_id,
+
+                message_id=status_message.message_id,
+
+                text=(
+                    "📤 <b>UPLOADING AS FILE...</b>\n\n"
+
+                    f"📦 Size: "
+                    f"<b>{downloaded_size / (1024 * 1024):.2f} MB</b>\n\n"
+
+                    "⏳ Please wait..."
+                ),
+
+                parse_mode="HTML"
+            )
+
+            # ----------------------------------------------
+            # UPLOAD AS DOCUMENT
+            # ----------------------------------------------
+
+            with open(
+                input_file,
+                "rb"
+            ) as document_file:
+
+                bot.send_document(
+
+                    user_id,
+
+                    document_file,
+
+                    caption=(
+                        "✅ <b>File Converted</b>\n\n"
+
+                        f"📦 Size: "
+                        f"<b>"
+                        f"{downloaded_size / (1024 * 1024):.2f} MB"
+                        f"</b>\n\n"
+
+                        "📁 Video Converter"
+                    ),
+
+                    parse_mode="HTML",
+
+                    timeout=600
+                )
+
+        # ====================================================
+        # VIDEO OUTPUT
+        # ====================================================
+
+        elif choice == "video":
+
+            bot.edit_message_text(
+
+                chat_id=user_id,
+
+                message_id=status_message.message_id,
+
+                text=(
+                    "📤 <b>UPLOADING AS VIDEO...</b>\n\n"
+
+                    f"📦 Size: "
+                    f"<b>{downloaded_size / (1024 * 1024):.2f} MB</b>\n\n"
+
+                    "⏳ Please wait..."
+                ),
+
+                parse_mode="HTML"
+            )
+
+            # ----------------------------------------------
+            # UPLOAD AS VIDEO
+            # ----------------------------------------------
+
+            with open(
+                input_file,
+                "rb"
+            ) as video_file:
+
+                bot.send_video(
+
+                    user_id,
+
+                    video_file,
+
+                    caption=(
+                        "✅ <b>Video Converted</b>\n\n"
+
+                        f"📦 Size: "
+                        f"<b>"
+                        f"{downloaded_size / (1024 * 1024):.2f} MB"
+                        f"</b>\n\n"
+
+                        "🎬 Video Converter"
+                    ),
+
+                    parse_mode="HTML",
+
+                    supports_streaming=True,
+
+                    timeout=600
+                )
+
+        # ====================================================
+        # COMPLETE
+        # ====================================================
+
+        bot.edit_message_text(
+
+            chat_id=user_id,
+
+            message_id=status_message.message_id,
+
+            text=(
+                "✅ <b>CONVERSION COMPLETE</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>"
+                f"{downloaded_size / (1024 * 1024):.2f} MB"
+                f"</b>\n\n"
+
+                (
+                    "🎬 Returned as: "
+                    "<b>VIDEO</b>"
+                    if choice == "video"
+                    else
+                    "📁 Returned as: "
+                    "<b>FILE</b>"
+                )
+            ),
+
+            parse_mode="HTML"
+        )
+
+        print(
+            "✅ VIDEOCON COMPLETE:",
+            user_id,
+            job["file_type"],
+            "→",
+            choice,
+            downloaded_size
+        )
+
+    # ========================================================
+    # ERROR
+    # ========================================================
+
+    except Exception as e:
+
+        print(
+            "❌ VIDEOCON ERROR:",
+            repr(e)
+        )
+
+        try:
+
+            if status_message:
+
+                bot.edit_message_text(
+
+                    chat_id=user_id,
+
+                    message_id=status_message.message_id,
+
+                    text=(
+                        "❌ <b>CONVERSION ERROR</b>\n\n"
+
+                        f"<code>{str(e)}</code>\n\n"
+
+                        "Da fatan ka sake gwadawa."
+                    ),
+
+                    parse_mode="HTML"
+                )
+
+            else:
+
+                bot.send_message(
+
+                    user_id,
+
+                    (
+                        "❌ <b>Conversion Error</b>\n\n"
+                        f"<code>{str(e)}</code>"
+                    ),
+
+                    parse_mode="HTML"
+                )
+
+        except Exception as notify_error:
+
+            print(
+                "VIDEOCON notification error:",
+                repr(notify_error)
+            )
+
+    # ========================================================
+    # CLEANUP
+    # ========================================================
+
+    finally:
+
+        # ----------------------------------------------------
+        # DELETE TEMP DIRECTORY
+        # ----------------------------------------------------
+
+        try:
+
+            if (
+                temp_dir
+                and os.path.exists(
+                    temp_dir
+                )
+            ):
+
+                shutil.rmtree(
+
+                    temp_dir,
+
+                    ignore_errors=True
+                )
+
+                print(
+                    "🧹 VIDEOCON temp files deleted."
+                )
+
+        except Exception as cleanup_error:
+
+            print(
+                "VIDEOCON cleanup error:",
+                repr(cleanup_error)
+            )
+
+        # ----------------------------------------------------
+        # REMOVE SESSION
+        # ----------------------------------------------------
+
+        _videocon_jobs.pop(
+            user_id,
+            None
+        )
+
+        _videocon_waiting.discard(
+            user_id
+        )
+
+
+
+
+# ============================================================
 # PYROGRAM
 # ============================================================
 
