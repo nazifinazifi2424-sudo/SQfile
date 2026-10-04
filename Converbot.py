@@ -4054,11 +4054,3405 @@ def start_menu_callback(call):
         return
 
 
+#END== Converter 
 
 
 
+#Start==Conpresser
+
+# ============================================================
+# 🗜️ VIDEO COMPRESSER — NEW LARGE FILE SYSTEM
+# ============================================================
+#
+# NEW FLOW:
+#
+# /start
+#    ↓
+# 🗜️ Compresser
+#    ↓
+# Bot SENDS message:
+# "Turo File / Video"
+#    ↓
+# Admin sends VIDEO or DOCUMENT
+#    ↓
+# Bot detects real size
+#    ↓
+# Shows:
+#
+# 📦 Size
+# 🎬 Video
+# 📁 File
+#
+#    ↓
+# Admin chooses output type
+#    ↓
+# Bot EDITS message
+#    ↓
+# Calculates 3 target sizes dynamically:
+#
+# 30%  → calculated MB
+# 50%  → calculated MB
+# 70%  → calculated MB
+#
+# + Cancel
+#
+#    ↓
+# Admin chooses target
+#    ↓
+# DOWNLOAD
+#    ↓
+# FFMPEG COMPRESS
+#    ↓
+# UPLOAD using selected output type
+#    ↓
+# CLEANUP
+#
+# IMPORTANT:
+# - ADMIN ONLY
+# - NO ARTIFICIAL INPUT GB LIMIT
+# - NO DATABASE
+# - Original file is never modified
+# - Temporary files are deleted
+# - Output type is remembered
+# - File → Video supported
+# - Video → File supported
+# - Video → Video supported
+# - File → File supported
+# ============================================================
 
 
+# ============================================================
+# IMPORTS
+# ============================================================
+
+import os
+import time
+import html
+import shutil
+import tempfile
+import subprocess
+import threading
+
+from telebot import types
+from telebot.apihelper import ApiTelegramException
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+# Progress/status edit interval
+COMPRESSOR_PROGRESS_INTERVAL = 10
+
+
+# ============================================================
+# TARGET PERCENTAGES
+# ============================================================
+#
+# Waɗannan ba MB bane.
+#
+# Suna dogara da original file size.
+#
+# Misali:
+#
+# Original = 1.68 GB
+#
+# 30% → ~516 MB
+# 50% → ~860 MB
+# 70% → ~1.18 GB
+#
+# Idan original ya canza, targets ma suna canzawa.
+# ============================================================
+
+COMPRESSOR_TARGET_PERCENTAGES = (
+    30,
+    50,
+    70
+)
+
+
+# ============================================================
+# FFMPEG SETTINGS
+# ============================================================
+
+COMPRESSOR_PRESET = "veryfast"
+
+COMPRESSOR_THREADS = "0"
+
+
+# ============================================================
+# AUDIO SETTINGS
+# ============================================================
+
+COMPRESSOR_AUDIO_BITRATE = 64_000
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+_compressor_waiting = set()
+
+_compressor_jobs = {}
+
+_compressor_running = set()
+
+_compressor_cancel_events = {}
+
+_compressor_lock = threading.RLock()
+
+
+# ============================================================
+# SIZE FORMAT
+# ============================================================
+
+def compressor_format_size(value):
+
+    try:
+
+        value = float(value)
+
+    except Exception:
+
+        return "Unknown"
+
+
+    if value >= 1024 ** 4:
+
+        return (
+            f"{value / (1024 ** 4):.2f} TB"
+        )
+
+
+    if value >= 1024 ** 3:
+
+        return (
+            f"{value / (1024 ** 3):.2f} GB"
+        )
+
+
+    if value >= 1024 ** 2:
+
+        return (
+            f"{value / (1024 ** 2):.2f} MB"
+        )
+
+
+    if value >= 1024:
+
+        return (
+            f"{value / 1024:.2f} KB"
+        )
+
+
+    return f"{int(value)} B"
+
+
+# ============================================================
+# TIME FORMAT
+# ============================================================
+
+def compressor_format_time(seconds):
+
+    try:
+
+        seconds = int(
+            max(
+                0,
+                seconds
+            )
+        )
+
+    except Exception:
+
+        return "00:00"
+
+
+    hours = seconds // 3600
+
+    minutes = (
+        (seconds % 3600)
+        // 60
+    )
+
+    secs = (
+        seconds % 60
+    )
+
+
+    if hours:
+
+        return (
+            f"{hours:02d}:"
+            f"{minutes:02d}:"
+            f"{secs:02d}"
+        )
+
+
+    return (
+        f"{minutes:02d}:"
+        f"{secs:02d}"
+    )
+
+
+# ============================================================
+# FFMPEG CHECK
+# ============================================================
+
+def compressor_check_ffmpeg():
+
+    ffmpeg = shutil.which(
+        "ffmpeg"
+    )
+
+    ffprobe = shutil.which(
+        "ffprobe"
+    )
+
+
+    if not ffmpeg:
+
+        raise RuntimeError(
+            "FFmpeg ba a samu a server ba."
+        )
+
+
+    if not ffprobe:
+
+        raise RuntimeError(
+            "FFprobe ba a samu a server ba."
+        )
+
+
+    return (
+        ffmpeg,
+        ffprobe
+    )
+
+
+# ============================================================
+# CALCULATE TARGETS
+# ============================================================
+
+def compressor_target_options(
+    original_size
+):
+
+    targets = []
+
+    original_size = int(
+        original_size
+    )
+
+
+    for percentage in (
+        COMPRESSOR_TARGET_PERCENTAGES
+    ):
+
+        target_size = int(
+
+            original_size
+            *
+            percentage
+            /
+            100
+
+        )
+
+
+        # At least 1 MB
+        minimum_size = (
+            1 * 1024 * 1024
+        )
+
+
+        if target_size < minimum_size:
+
+            target_size = (
+                minimum_size
+            )
+
+
+        # Must actually be smaller
+        if target_size >= original_size:
+
+            continue
+
+
+        targets.append({
+
+            "percentage":
+                percentage,
+
+            "bytes":
+                target_size
+
+        })
+
+
+    # Remove duplicates
+    unique = {}
+
+    for item in targets:
+
+        unique[
+            item["bytes"]
+        ] = item
+
+
+    targets = list(
+        unique.values()
+    )
+
+
+    return targets
+
+
+# ============================================================
+# TARGET KEY
+# ============================================================
+
+def compressor_target_key(
+    percentage
+):
+
+    return (
+        f"compressor:target:{percentage}"
+    )
+
+
+# ============================================================
+# OUTPUT KEYBOARD
+# ============================================================
+
+def compressor_output_keyboard():
+
+    keyboard = (
+        types.InlineKeyboardMarkup(
+            row_width=2
+        )
+    )
+
+
+    keyboard.add(
+
+        types.InlineKeyboardButton(
+
+            "📁 File",
+
+            callback_data=(
+                "compressor:output:file"
+            )
+
+        ),
+
+        types.InlineKeyboardButton(
+
+            "🎬 Video",
+
+            callback_data=(
+                "compressor:output:video"
+            )
+
+        )
+
+    )
+
+
+    return keyboard
+
+
+# ============================================================
+# TARGET KEYBOARD
+# ============================================================
+
+def compressor_target_keyboard(
+    targets
+):
+
+    keyboard = (
+        types.InlineKeyboardMarkup(
+            row_width=2
+        )
+    )
+
+
+    buttons = []
+
+
+    for item in targets:
+
+        percentage = (
+            item["percentage"]
+        )
+
+        size_text = (
+            compressor_format_size(
+                item["bytes"]
+            )
+        )
+
+
+        buttons.append(
+
+            types.InlineKeyboardButton(
+
+                f"{percentage}% • {size_text}",
+
+                callback_data=(
+                    compressor_target_key(
+                        percentage
+                    )
+                )
+
+            )
+
+        )
+
+
+    # --------------------------------------------------------
+    # Three target buttons
+    # --------------------------------------------------------
+
+    if len(buttons) == 3:
+
+        keyboard.add(
+
+            buttons[0],
+            buttons[1]
+
+        )
+
+        keyboard.add(
+            buttons[2]
+        )
+
+    else:
+
+        for button in buttons:
+
+            keyboard.add(
+                button
+            )
+
+
+    # --------------------------------------------------------
+    # CANCEL
+    # --------------------------------------------------------
+
+    keyboard.add(
+
+        types.InlineKeyboardButton(
+
+            "❌ Cancel",
+
+            callback_data=(
+                "compressor:cancel"
+            )
+
+        )
+
+    )
+
+
+    return keyboard
+
+
+# ============================================================
+# /START COMPRESSER CALLBACK
+# ============================================================
+#
+# MUHIMMI:
+# Idan tsohon /start callback ɗinka yana da
+# videocon:compresser, ka cire wannan callback ɗin
+# daga tsohon start callback domin kada callbacks su
+# yi collision.
+#
+# Wannan callback ɗin shi ne wanda zai karɓi
+# "Compresser".
+# ============================================================
+
+@bot.callback_query_handler(
+
+    func=lambda call:
+
+        call.data
+        ==
+        "videocon:compresser"
+
+)
+def compressor_start_callback(
+    call
+):
+
+    user_id = (
+        call.from_user.id
+    )
+
+
+    # --------------------------------------------------------
+    # ADMIN ONLY
+    # --------------------------------------------------------
+
+    if user_id != ADMIN_ID:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Admin kawai."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    # --------------------------------------------------------
+    # ANSWER CALLBACK
+    # --------------------------------------------------------
+
+    try:
+
+        bot.answer_callback_query(
+
+            call.id,
+
+            "🗜️ Compresser"
+
+        )
+
+    except Exception:
+
+        pass
+
+
+    # --------------------------------------------------------
+    # CREATE WAITING SESSION
+    # --------------------------------------------------------
+
+    with _compressor_lock:
+
+        _compressor_waiting.add(
+            user_id
+        )
+
+        _compressor_jobs.pop(
+            user_id,
+            None
+        )
+
+        old_event = (
+            _compressor_cancel_events.pop(
+                user_id,
+                None
+            )
+        )
+
+        if old_event:
+
+            old_event.set()
+
+
+    # --------------------------------------------------------
+    # SEND — NOT EDIT
+    # --------------------------------------------------------
+
+    try:
+
+        bot.send_message(
+
+            user_id,
+
+            (
+                "🗜️ <b>VIDEO COMPRESSER</b>\n\n"
+
+                "📤 Turo min <b>File</b> ko "
+                "<b>Video</b> ɗin da kake son "
+                "mu rage masa size.\n\n"
+
+                "📦 Bayan na karɓa zan gaya maka "
+                "ainihin girman file ɗin.\n\n"
+
+                "⏳ Sai ka zaɓi irin file ɗin da "
+                "kake so a dawo maka da shi."
+            ),
+
+            parse_mode="HTML"
+
+        )
+
+    except Exception:
+
+        pass
+
+
+# ============================================================
+# RECEIVE VIDEO
+# ============================================================
+
+@bot.message_handler(
+
+    content_types=["video"],
+
+    func=lambda message:
+
+        message.from_user.id
+        in _compressor_waiting
+
+)
+def compressor_receive_video(
+    message
+):
+
+    user_id = (
+        message.from_user.id
+    )
+
+
+    if user_id != ADMIN_ID:
+
+        return
+
+
+    try:
+
+        file_size = int(
+
+            getattr(
+
+                message.video,
+
+                "file_size",
+
+                0
+
+            )
+
+            or 0
+
+        )
+
+
+        file_id = (
+            message.video.file_id
+        )
+
+
+        file_name = (
+
+            getattr(
+
+                message.video,
+
+                "file_name",
+
+                None
+
+            )
+
+            or
+            "compressed_video.mp4"
+
+        )
+
+
+        # ----------------------------------------------------
+        # SAVE JOB
+        # ----------------------------------------------------
+
+        with _compressor_lock:
+
+            _compressor_waiting.discard(
+                user_id
+            )
+
+
+            _compressor_jobs[user_id] = {
+
+                "file_id":
+                    file_id,
+
+                "file_type":
+                    "video",
+
+                "file_name":
+                    file_name,
+
+                "file_size":
+                    file_size,
+
+                "chat_id":
+                    message.chat.id,
+
+                "message_id":
+                    message.message_id
+
+            }
+
+
+        # ----------------------------------------------------
+        # OUTPUT TYPE
+        # ----------------------------------------------------
+
+        size_text = (
+
+            compressor_format_size(
+                file_size
+            )
+
+            if file_size > 0
+
+            else
+            "Unknown"
+
+        )
+
+
+        bot.send_message(
+
+            user_id,
+
+            (
+                "✅ <b>VIDEO AN KARƁA</b>\n\n"
+
+                f"🎬 Type: <b>Video</b>\n"
+
+                f"📦 Size: <b>{size_text}</b>\n\n"
+
+                "❓ <b>A wane nau'i kake so "
+                "a dawo maka da shi bayan "
+                "compression?</b>"
+            ),
+
+            reply_markup=(
+                compressor_output_keyboard()
+            ),
+
+            parse_mode="HTML"
+
+        )
+
+
+    except Exception as e:
+
+        try:
+
+            bot.send_message(
+
+                user_id,
+
+                (
+                    "❌ An samu matsala wajen "
+                    "karɓar video.\n\n"
+
+                    f"<code>"
+                    f"{html.escape(str(e))}"
+                    f"</code>"
+                ),
+
+                parse_mode="HTML"
+
+            )
+
+        except Exception:
+
+            pass
+
+
+# ============================================================
+# RECEIVE DOCUMENT / FILE
+# ============================================================
+
+@bot.message_handler(
+
+    content_types=["document"],
+
+    func=lambda message:
+
+        message.from_user.id
+        in _compressor_waiting
+
+)
+def compressor_receive_document(
+    message
+):
+
+    user_id = (
+        message.from_user.id
+    )
+
+
+    if user_id != ADMIN_ID:
+
+        return
+
+
+    try:
+
+        file_size = int(
+
+            getattr(
+
+                message.document,
+
+                "file_size",
+
+                0
+
+            )
+
+            or 0
+
+        )
+
+
+        file_id = (
+            message.document.file_id
+        )
+
+
+        file_name = (
+
+            getattr(
+
+                message.document,
+
+                "file_name",
+
+                None
+
+            )
+
+            or
+            "compressed_file"
+
+        )
+
+
+        with _compressor_lock:
+
+            _compressor_waiting.discard(
+                user_id
+            )
+
+
+            _compressor_jobs[user_id] = {
+
+                "file_id":
+                    file_id,
+
+                "file_type":
+                    "document",
+
+                "file_name":
+                    file_name,
+
+                "file_size":
+                    file_size,
+
+                "chat_id":
+                    message.chat.id,
+
+                "message_id":
+                    message.message_id
+
+            }
+
+
+        size_text = (
+
+            compressor_format_size(
+                file_size
+            )
+
+            if file_size > 0
+
+            else
+            "Unknown"
+
+        )
+
+
+        bot.send_message(
+
+            user_id,
+
+            (
+                "✅ <b>FILE AN KARƁA</b>\n\n"
+
+                f"📁 Type: <b>File</b>\n"
+
+                f"📦 Size: <b>{size_text}</b>\n\n"
+
+                "❓ <b>A wane nau'i kake so "
+                "a dawo maka da shi bayan "
+                "compression?</b>"
+            ),
+
+            reply_markup=(
+                compressor_output_keyboard()
+            ),
+
+            parse_mode="HTML"
+
+        )
+
+
+    except Exception as e:
+
+        try:
+
+            bot.send_message(
+
+                user_id,
+
+                (
+                    "❌ An samu matsala wajen "
+                    "karɓar file.\n\n"
+
+                    f"<code>"
+                    f"{html.escape(str(e))}"
+                    f"</code>"
+                ),
+
+                parse_mode="HTML"
+
+            )
+
+        except Exception:
+
+            pass
+
+
+# ============================================================
+# OUTPUT TYPE CALLBACK
+# ============================================================
+
+@bot.callback_query_handler(
+
+    func=lambda call:
+
+        call.data in (
+
+            "compressor:output:file",
+
+            "compressor:output:video"
+
+        )
+
+)
+def compressor_output_callback(
+    call
+):
+
+    user_id = (
+        call.from_user.id
+    )
+
+
+    if user_id != ADMIN_ID:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Admin kawai."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    output_type = (
+
+        "file"
+
+        if call.data.endswith(
+            ":file"
+        )
+
+        else
+        "video"
+
+    )
+
+
+    with _compressor_lock:
+
+        job = (
+            _compressor_jobs.get(
+                user_id
+            )
+        )
+
+
+    if not job:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Session ta ƙare."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    original_size = int(
+
+        job.get(
+            "file_size",
+            0
+        )
+
+        or 0
+
+    )
+
+
+    if original_size <= 0:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Ba a samu file size ba."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    targets = (
+        compressor_target_options(
+            original_size
+        )
+    )
+
+
+    if not targets:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ File ɗin ya yi ƙanƙanta."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    # --------------------------------------------------------
+    # SAVE OUTPUT TYPE
+    # --------------------------------------------------------
+
+    with _compressor_lock:
+
+        job["output_type"] = (
+            output_type
+        )
+
+        job["targets"] = targets
+
+
+    try:
+
+        bot.answer_callback_query(
+
+            call.id,
+
+            (
+                "An zaɓi "
+                + (
+                    "Video"
+                    if output_type == "video"
+                    else
+                    "File"
+                )
+            )
+
+        )
+
+    except Exception:
+
+        pass
+
+
+    # --------------------------------------------------------
+    # EDIT MESSAGE
+    # --------------------------------------------------------
+
+    original_text = (
+        compressor_format_size(
+            original_size
+        )
+    )
+
+
+    target_text_lines = []
+
+    for item in targets:
+
+        target_text_lines.append(
+
+            f"• <b>"
+            f"{item['percentage']}%</b>"
+            f" → "
+            f"<b>"
+            f"{compressor_format_size(item['bytes'])}"
+            f"</b>"
+
+        )
+
+
+    target_text = "\n".join(
+        target_text_lines
+    )
+
+
+    try:
+
+        bot.edit_message_text(
+
+            chat_id=(
+                call.message.chat.id
+            ),
+
+            message_id=(
+                call.message.message_id
+            ),
+
+            text=(
+
+                "🗜️ <b>COMPRESSION TARGET</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>{original_text}</b>\n"
+
+                f"📤 Return as: "
+                f"<b>"
+                f"{output_type.upper()}"
+                f"</b>\n\n"
+
+                "🎯 <b>Zaɓi girman da kake so:</b>\n\n"
+
+                f"{target_text}\n\n"
+
+                "Zaɓin percentage zai sa "
+                "bot ya ƙididdige target size "
+                "daga girman original file."
+            ),
+
+            reply_markup=(
+                compressor_target_keyboard(
+                    targets
+                )
+            ),
+
+            parse_mode="HTML"
+
+        )
+
+    except Exception:
+
+        pass
+
+
+# ============================================================
+# CANCEL CALLBACK
+# ============================================================
+
+@bot.callback_query_handler(
+
+    func=lambda call:
+
+        call.data
+        ==
+        "compressor:cancel"
+
+)
+def compressor_cancel_callback(
+    call
+):
+
+    user_id = (
+        call.from_user.id
+    )
+
+
+    if user_id != ADMIN_ID:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Admin kawai."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    with _compressor_lock:
+
+        _compressor_waiting.discard(
+            user_id
+        )
+
+        job = (
+            _compressor_jobs.get(
+                user_id
+            )
+        )
+
+
+        cancel_event = (
+            _compressor_cancel_events.get(
+                user_id
+            )
+        )
+
+
+        if cancel_event:
+
+            cancel_event.set()
+
+
+        _compressor_jobs.pop(
+            user_id,
+            None
+        )
+
+
+    try:
+
+        bot.answer_callback_query(
+
+            call.id,
+
+            "❌ An soke aikin."
+
+        )
+
+    except Exception:
+
+        pass
+
+
+    try:
+
+        bot.edit_message_text(
+
+            chat_id=(
+                call.message.chat.id
+            ),
+
+            message_id=(
+                call.message.message_id
+            ),
+
+            text=(
+
+                "❌ <b>AN SOKE COMPRESSION</b>\n\n"
+
+                "Babu file da aka compress."
+
+            ),
+
+            parse_mode="HTML"
+
+        )
+
+    except Exception:
+
+        pass
+
+
+# ============================================================
+# TARGET CALLBACK
+# ============================================================
+
+@bot.callback_query_handler(
+
+    func=lambda call:
+
+        call.data.startswith(
+            "compressor:target:"
+        )
+
+)
+def compressor_target_callback(
+    call
+):
+
+    user_id = (
+        call.from_user.id
+    )
+
+
+    if user_id != ADMIN_ID:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Admin kawai."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    try:
+
+        percentage = int(
+
+            call.data.split(
+                ":"
+            )[-1]
+
+        )
+
+    except Exception:
+
+        return
+
+
+    # --------------------------------------------------------
+    # GET JOB
+    # --------------------------------------------------------
+
+    with _compressor_lock:
+
+        job = (
+            _compressor_jobs.get(
+                user_id
+            )
+        )
+
+
+    if not job:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Session ta ƙare."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    output_type = (
+        job.get(
+            "output_type"
+        )
+    )
+
+
+    if output_type not in (
+        "file",
+        "video"
+    ):
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Ka fara zaɓar File ko Video."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    original_size = int(
+
+        job.get(
+            "file_size",
+            0
+        )
+
+        or 0
+
+    )
+
+
+    targets = (
+        job.get(
+            "targets",
+            []
+        )
+    )
+
+
+    selected_target = None
+
+
+    for item in targets:
+
+        if item["percentage"] == percentage:
+
+            selected_target = item
+
+            break
+
+
+    if not selected_target:
+
+        try:
+
+            bot.answer_callback_query(
+
+                call.id,
+
+                "❌ Wannan target bai samu ba."
+
+            )
+
+        except Exception:
+
+            pass
+
+        return
+
+
+    target_bytes = (
+        selected_target["bytes"]
+    )
+
+
+    # --------------------------------------------------------
+    # PREVENT DOUBLE CLICK
+    # --------------------------------------------------------
+
+    with _compressor_lock:
+
+        if user_id in _compressor_running:
+
+            try:
+
+                bot.answer_callback_query(
+
+                    call.id,
+
+                    "⏳ Aikin yana gudana."
+
+                )
+
+            except Exception:
+
+                pass
+
+            return
+
+
+        _compressor_running.add(
+            user_id
+        )
+
+
+        cancel_event = (
+            threading.Event()
+        )
+
+
+        _compressor_cancel_events[
+            user_id
+        ] = cancel_event
+
+
+    try:
+
+        bot.answer_callback_query(
+
+            call.id,
+
+            "🚀 An fara compression..."
+
+        )
+
+    except Exception:
+
+        pass
+
+
+    # --------------------------------------------------------
+    # EDIT TARGET MESSAGE
+    # --------------------------------------------------------
+
+    try:
+
+        bot.edit_message_text(
+
+            chat_id=(
+                call.message.chat.id
+            ),
+
+            message_id=(
+                call.message.message_id
+            ),
+
+            text=(
+
+                "🚀 <b>AN FARA COMPRESSION</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>"
+                f"{compressor_format_size(original_size)}"
+                f"</b>\n\n"
+
+                f"🎯 Target: "
+                f"<b>{percentage}%</b>\n"
+
+                f"📉 Target size: "
+                f"<b>"
+                f"{compressor_format_size(target_bytes)}"
+                f"</b>\n\n"
+
+                f"📤 Return as: "
+                f"<b>"
+                f"{output_type.upper()}"
+                f"</b>\n\n"
+
+                "⬇️ Ana shirya download..."
+            ),
+
+            parse_mode="HTML"
+
+        )
+
+    except Exception:
+
+        pass
+
+
+    # --------------------------------------------------------
+    # START WORKER
+    # --------------------------------------------------------
+
+    try:
+
+        worker = threading.Thread(
+
+            target=(
+                _compressor_process
+            ),
+
+            args=(
+
+                user_id,
+
+                job.copy(),
+
+                percentage,
+
+                target_bytes,
+
+                output_type,
+
+                call.message.chat.id,
+
+                call.message.message_id,
+
+                cancel_event
+
+            ),
+
+            daemon=True,
+
+            name="compressor-worker"
+
+        )
+
+
+        worker.start()
+
+    except Exception as e:
+
+        with _compressor_lock:
+
+            _compressor_running.discard(
+                user_id
+            )
+
+            _compressor_cancel_events.pop(
+                user_id,
+                None
+            )
+
+
+        try:
+
+            bot.send_message(
+
+                user_id,
+
+                (
+                    "❌ An kasa fara compression.\n\n"
+
+                    f"<code>"
+                    f"{html.escape(str(e))}"
+                    f"</code>"
+                ),
+
+                parse_mode="HTML"
+
+            )
+
+        except Exception:
+
+            pass
+
+
+# ============================================================
+# SAFE EDIT
+# ============================================================
+
+def compressor_edit(
+    chat_id,
+    message_id,
+    text
+):
+
+    try:
+
+        bot.edit_message_text(
+
+            chat_id=chat_id,
+
+            message_id=message_id,
+
+            text=text,
+
+            parse_mode="HTML"
+
+        )
+
+        return True
+
+    except ApiTelegramException as e:
+
+        if (
+            "message is not modified"
+            in str(e).lower()
+        ):
+
+            return False
+
+        return False
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
+# DOWNLOAD PROGRESS
+# ============================================================
+
+async def compressor_download(
+    pyro_message,
+    output_path,
+    progress_callback=None
+):
+
+    async def progress(
+        current,
+        total
+    ):
+
+        if progress_callback:
+
+            await progress_callback(
+                current,
+                total
+            )
+
+
+    result = (
+        await _videocon_pyro.download_media(
+
+            pyro_message,
+
+            file_name=output_path,
+
+            progress=progress
+
+        )
+    )
+
+
+    return result
+
+
+# ============================================================
+# DOWNLOAD PROGRESS CALLBACK
+# ============================================================
+
+def compressor_download_progress_factory(
+
+    user_id,
+
+    chat_id,
+
+    message_id,
+
+    expected_size,
+
+    cancel_event
+
+):
+
+    state = {
+
+        "last_edit":
+            0,
+
+        "start":
+            time.monotonic()
+
+    }
+
+
+    async def progress(
+        current,
+        total
+    ):
+
+        if cancel_event.is_set():
+
+            raise RuntimeError(
+                "Compression an soke."
+            )
+
+
+        now = time.monotonic()
+
+
+        if (
+
+            now - state["last_edit"]
+
+            <
+
+            COMPRESSOR_PROGRESS_INTERVAL
+
+            and
+
+            current < total
+
+        ):
+
+            return
+
+
+        state["last_edit"] = now
+
+
+        if total <= 0:
+
+            percent_text = (
+                "Preparing..."
+            )
+
+        else:
+
+            percent = (
+                current
+                *
+                100
+                /
+                total
+            )
+
+            percent_text = (
+                f"{percent:.1f}%"
+            )
+
+
+        elapsed = (
+            now - state["start"]
+        )
+
+
+        if elapsed > 0:
+
+            speed = (
+                current
+                /
+                elapsed
+            )
+
+        else:
+
+            speed = 0
+
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "⬇️ <b>DOWNLOADING</b>\n\n"
+
+                f"📊 Progress: "
+                f"<b>{percent_text}</b>\n\n"
+
+                f"📦 "
+                f"<b>"
+                f"{compressor_format_size(current)}"
+                f"</b>"
+                " / "
+                f"<b>"
+                f"{compressor_format_size(total)}"
+                f"</b>\n\n"
+
+                f"⚡ Speed: "
+                f"<b>"
+                f"{compressor_format_size(speed)}/s"
+                f"</b>\n\n"
+
+                "🔄 Telegram → Render\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+    return progress
+
+
+# ============================================================
+# GET PYROGRAM MESSAGE
+# ============================================================
+
+async def compressor_get_message(
+    chat_id,
+    message_id
+):
+
+    if not _videocon_pyro:
+
+        raise RuntimeError(
+            "Pyrogram client baya aiki."
+        )
+
+
+    return await _videocon_pyro.get_messages(
+
+        chat_id,
+
+        message_id
+
+    )
+
+
+# ============================================================
+# GET DURATION
+# ============================================================
+
+def compressor_get_duration(
+    ffprobe,
+    input_file
+):
+
+    try:
+
+        result = subprocess.run(
+
+            [
+
+                ffprobe,
+
+                "-v",
+                "error",
+
+                "-show_entries",
+                "format=duration",
+
+                "-of",
+                "default="
+                "noprint_wrappers=1:"
+                "nokey=1",
+
+                input_file
+
+            ],
+
+            stdout=subprocess.PIPE,
+
+            stderr=subprocess.PIPE,
+
+            text=True,
+
+            timeout=120
+
+        )
+
+
+        if result.returncode != 0:
+
+            return 0.0
+
+
+        value = (
+            result.stdout.strip()
+        )
+
+
+        if not value:
+
+            return 0.0
+
+
+        return float(
+            value
+        )
+
+
+    except Exception:
+
+        return 0.0
+
+
+# ============================================================
+# CALCULATE VIDEO BITRATE
+# ============================================================
+
+def compressor_calculate_bitrate(
+
+    target_bytes,
+
+    duration
+
+):
+
+    if duration <= 0:
+
+        raise RuntimeError(
+
+            "An kasa gano duration na video."
+
+        )
+
+
+    # --------------------------------------------------------
+    # Convert target bytes → bits
+    # --------------------------------------------------------
+
+    target_bits = (
+        target_bytes
+        * 8
+    )
+
+
+    # --------------------------------------------------------
+    # Reserve 8% for MP4/container overhead
+    # --------------------------------------------------------
+
+    usable_bits = (
+        target_bits
+        * 0.92
+    )
+
+
+    total_bitrate = (
+        usable_bits
+        /
+        duration
+    )
+
+
+    # --------------------------------------------------------
+    # Audio
+    # --------------------------------------------------------
+
+    audio_bitrate = (
+        COMPRESSOR_AUDIO_BITRATE
+    )
+
+
+    # --------------------------------------------------------
+    # Video bitrate
+    # --------------------------------------------------------
+
+    video_bitrate = (
+        total_bitrate
+        -
+        audio_bitrate
+    )
+
+
+    # --------------------------------------------------------
+    # Very small target protection
+    # --------------------------------------------------------
+
+    if video_bitrate < 20_000:
+
+        audio_bitrate = 32_000
+
+        video_bitrate = (
+            total_bitrate
+            -
+            audio_bitrate
+        )
+
+
+    if video_bitrate < 12_000:
+
+        raise RuntimeError(
+
+            "Target size ya yi ƙanƙanta "
+            "ga tsawon wannan video."
+
+        )
+
+
+    return (
+
+        int(video_bitrate),
+
+        int(audio_bitrate)
+
+    )
+
+
+# ============================================================
+# FFMPEG COMPRESS
+# ============================================================
+
+def compressor_ffmpeg(
+
+    ffmpeg,
+
+    input_file,
+
+    output_file,
+
+    target_bytes,
+
+    duration,
+
+    chat_id,
+
+    message_id,
+
+    cancel_event
+
+):
+
+    (
+        video_bitrate,
+        audio_bitrate
+    ) = compressor_calculate_bitrate(
+
+        target_bytes,
+
+        duration
+
+    )
+
+
+    video_kbps = max(
+
+        12,
+
+        int(
+            video_bitrate
+            /
+            1000
+        )
+
+    )
+
+
+    audio_kbps = max(
+
+        32,
+
+        int(
+            audio_bitrate
+            /
+            1000
+        )
+
+    )
+
+
+    command = [
+
+        ffmpeg,
+
+        "-y",
+
+        "-i",
+        input_file,
+
+        "-map",
+        "0:v:0",
+
+        "-map",
+        "0:a?",
+
+        "-c:v",
+        "libx264",
+
+        "-preset",
+        COMPRESSOR_PRESET,
+
+        "-b:v",
+        f"{video_kbps}k",
+
+        "-maxrate",
+        f"{video_kbps}k",
+
+        "-bufsize",
+        f"{video_kbps * 2}k",
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        f"{audio_kbps}k",
+
+        "-pix_fmt",
+        "yuv420p",
+
+        "-movflags",
+        "+faststart",
+
+        "-threads",
+        COMPRESSOR_THREADS,
+
+        "-progress",
+        "pipe:1",
+
+        "-nostats",
+
+        output_file
+
+    ]
+
+
+    process = subprocess.Popen(
+
+        command,
+
+        stdout=subprocess.PIPE,
+
+        stderr=subprocess.PIPE,
+
+        text=True,
+
+        bufsize=1
+
+    )
+
+
+    last_edit = (
+        time.monotonic()
+    )
+
+
+    current_time = 0.0
+
+
+    try:
+
+        while True:
+
+            if cancel_event.is_set():
+
+                try:
+
+                    process.kill()
+
+                except Exception:
+
+                    pass
+
+                raise RuntimeError(
+                    "Compression an soke."
+                )
+
+
+            line = (
+                process.stdout.readline()
+            )
+
+
+            if not line:
+
+                if (
+                    process.poll()
+                    is not None
+                ):
+
+                    break
+
+
+                time.sleep(
+                    0.2
+                )
+
+                continue
+
+
+            line = line.strip()
+
+
+            if line.startswith(
+                "out_time_ms="
+            ):
+
+                try:
+
+                    current_time = (
+
+                        int(
+
+                            line.split(
+                                "=",
+                                1
+                            )[1]
+
+                        )
+
+                        /
+                        1_000_000
+
+                    )
+
+                except Exception:
+
+                    pass
+
+
+            now = time.monotonic()
+
+
+            if (
+
+                now - last_edit
+
+                >=
+
+                COMPRESSOR_PROGRESS_INTERVAL
+
+            ):
+
+                last_edit = now
+
+
+                if duration > 0:
+
+                    percent = min(
+
+                        99,
+
+                        max(
+
+                            0,
+
+                            int(
+
+                                (
+                                    current_time
+                                    /
+                                    duration
+                                )
+                                *
+                                100
+
+                            )
+
+                        )
+
+                    )
+
+                else:
+
+                    percent = 0
+
+
+                compressor_edit(
+
+                    chat_id,
+
+                    message_id,
+
+                    (
+                        "🗜️ <b>COMPRESSING...</b>\n\n"
+
+                        f"📊 Progress: "
+                        f"<b>{percent}%</b>\n\n"
+
+                        f"⏱️ "
+                        f"<b>"
+                        f"{compressor_format_time(current_time)}"
+                        f"</b>"
+                        " / "
+                        f"<b>"
+                        f"{compressor_format_time(duration)}"
+                        f"</b>\n\n"
+
+                        f"🎯 Target: "
+                        f"<b>"
+                        f"{compressor_format_size(target_bytes)}"
+                        f"</b>\n\n"
+
+                        "⚙️ FFmpeg: "
+                        f"<b>{COMPRESSOR_PRESET}</b>\n\n"
+
+                        "⏳ Please wait..."
+                    )
+
+                )
+
+
+        return_code = (
+            process.wait()
+        )
+
+
+        if return_code != 0:
+
+            try:
+
+                error_output = (
+                    process.stderr.read()
+                )
+
+            except Exception:
+
+                error_output = ""
+
+
+            print(
+                "FFMPEG ERROR:",
+                error_output[-10000:]
+            )
+
+
+            raise RuntimeError(
+                "FFmpeg compression failed."
+            )
+
+
+    except Exception:
+
+        try:
+
+            process.kill()
+
+        except Exception:
+
+            pass
+
+        raise
+
+
+# ============================================================
+# UPLOAD PROGRESS
+# ============================================================
+
+def compressor_upload_progress_factory(
+
+    chat_id,
+
+    message_id,
+
+    cancel_event
+
+):
+
+    state = {
+
+        "last_edit":
+            0,
+
+        "start":
+            time.monotonic()
+
+    }
+
+
+    async def progress(
+        current,
+        total
+    ):
+
+        if cancel_event.is_set():
+
+            raise RuntimeError(
+                "Compression an soke."
+            )
+
+
+        now = time.monotonic()
+
+
+        if (
+
+            now - state["last_edit"]
+
+            <
+
+            COMPRESSOR_PROGRESS_INTERVAL
+
+            and
+
+            current < total
+
+        ):
+
+            return
+
+
+        state["last_edit"] = now
+
+
+        if total > 0:
+
+            percent = (
+                current
+                *
+                100
+                /
+                total
+            )
+
+        else:
+
+            percent = 0
+
+
+        elapsed = (
+            now - state["start"]
+        )
+
+
+        speed = (
+
+            current
+            /
+            elapsed
+
+            if elapsed > 0
+
+            else
+            0
+
+        )
+
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "📤 <b>UPLOADING...</b>\n\n"
+
+                f"📊 Progress: "
+                f"<b>{percent:.1f}%</b>\n\n"
+
+                f"📦 "
+                f"<b>"
+                f"{compressor_format_size(current)}"
+                f"</b>"
+                " / "
+                f"<b>"
+                f"{compressor_format_size(total)}"
+                f"</b>\n\n"
+
+                f"⚡ Speed: "
+                f"<b>"
+                f"{compressor_format_size(speed)}/s"
+                f"</b>\n\n"
+
+                "🔄 Render → Telegram\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+    return progress
+
+
+# ============================================================
+# UPLOAD AS DOCUMENT
+# ============================================================
+
+async def compressor_upload_file(
+
+    user_id,
+
+    output_file,
+
+    original_name,
+
+    output_size,
+
+    chat_id,
+
+    message_id,
+
+    cancel_event
+
+):
+
+    progress = (
+        compressor_upload_progress_factory(
+
+            chat_id,
+
+            message_id,
+
+            cancel_event
+
+        )
+    )
+
+
+    return await _videocon_pyro.send_document(
+
+        chat_id=user_id,
+
+        document=output_file,
+
+        file_name=original_name,
+
+        caption=(
+
+            "✅ <b>Compression Complete</b>\n\n"
+
+            f"📄 Name: "
+            f"<b>"
+            f"{html.escape(original_name)}"
+            f"</b>\n\n"
+
+            f"📦 Size: "
+            f"<b>"
+            f"{compressor_format_size(output_size)}"
+            f"</b>\n\n"
+
+            "🗜️ Video Compresser"
+
+        ),
+
+        progress=progress
+
+    )
+
+
+# ============================================================
+# UPLOAD AS VIDEO
+# ============================================================
+
+async def compressor_upload_video(
+
+    user_id,
+
+    output_file,
+
+    original_name,
+
+    output_size,
+
+    chat_id,
+
+    message_id,
+
+    cancel_event
+
+):
+
+    progress = (
+        compressor_upload_progress_factory(
+
+            chat_id,
+
+            message_id,
+
+            cancel_event
+
+        )
+    )
+
+
+    return await _videocon_pyro.send_video(
+
+        chat_id=user_id,
+
+        video=output_file,
+
+        file_name=original_name,
+
+        caption=(
+
+            "✅ <b>Compression Complete</b>\n\n"
+
+            f"📄 Name: "
+            f"<b>"
+            f"{html.escape(original_name)}"
+            f"</b>\n\n"
+
+            f"📦 Size: "
+            f"<b>"
+            f"{compressor_format_size(output_size)}"
+            f"</b>\n\n"
+
+            "🗜️ Video Compresser"
+
+        ),
+
+        supports_streaming=True,
+
+        progress=progress
+
+    )
+
+
+# ============================================================
+# MAIN COMPRESSION PROCESS
+# ============================================================
+
+def _compressor_process(
+
+    user_id,
+
+    job,
+
+    percentage,
+
+    target_bytes,
+
+    output_type,
+
+    chat_id,
+
+    message_id,
+
+    cancel_event
+
+):
+
+    temp_dir = None
+
+    input_file = None
+
+    output_file = None
+
+
+    try:
+
+        # ====================================================
+        # FFMPEG CHECK
+        # ====================================================
+
+        ffmpeg, ffprobe = (
+            compressor_check_ffmpeg()
+        )
+
+
+        # ====================================================
+        # TEMP DIRECTORY
+        # ====================================================
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="compressor_"
+        )
+
+
+        # ====================================================
+        # INPUT NAME
+        # ====================================================
+
+        original_name = (
+
+            job.get(
+                "file_name"
+            )
+
+            or
+            "input_file"
+
+        )
+
+
+        original_name = os.path.basename(
+            original_name
+        )
+
+
+        if not original_name:
+
+            original_name = (
+                "input_file"
+            )
+
+
+        # ====================================================
+        # INPUT PATH
+        # ====================================================
+
+        input_file = os.path.join(
+
+            temp_dir,
+
+            original_name
+
+        )
+
+
+        # ====================================================
+        # GET ORIGINAL MESSAGE
+        # ====================================================
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "🔎 <b>PREPARING DOWNLOAD...</b>\n\n"
+
+                "Ana neman original file "
+                "a Telegram...\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+        pyro_message = (
+            videocon_run_async(
+
+                compressor_get_message(
+
+                    job["chat_id"],
+
+                    job["message_id"]
+
+                )
+
+            )
+        )
+
+
+        if not pyro_message:
+
+            raise RuntimeError(
+
+                "Pyrogram bai iya samun "
+                "original message ba."
+
+            )
+
+
+        # ====================================================
+        # DOWNLOAD
+        # ====================================================
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "⬇️ <b>DOWNLOADING...</b>\n\n"
+
+                f"📦 Expected: "
+                f"<b>"
+                f"{compressor_format_size(job.get('file_size', 0))}"
+                f"</b>\n\n"
+
+                "🔄 Telegram → Render\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+        download_progress = (
+            compressor_download_progress_factory(
+
+                user_id,
+
+                chat_id,
+
+                message_id,
+
+                job.get(
+                    "file_size",
+                    0
+                ),
+
+                cancel_event
+
+            )
+        )
+
+
+        downloaded_path = (
+            videocon_run_async(
+
+                compressor_download(
+
+                    pyro_message,
+
+                    input_file,
+
+                    download_progress
+
+                )
+
+            )
+        )
+
+
+        if not downloaded_path:
+
+            raise RuntimeError(
+                "Download ya kasa."
+            )
+
+
+        input_file = (
+            downloaded_path
+        )
+
+
+        if not os.path.exists(
+            input_file
+        ):
+
+            raise RuntimeError(
+                "Downloaded file bai bayyana ba."
+            )
+
+
+        input_size = (
+            os.path.getsize(
+                input_file
+            )
+        )
+
+
+        if input_size <= 0:
+
+            raise RuntimeError(
+                "Downloaded file empty ne."
+            )
+
+
+        # ====================================================
+        # VERIFY ORIGINAL SIZE
+        # ====================================================
+
+        expected_size = int(
+
+            job.get(
+                "file_size",
+                0
+            )
+
+            or 0
+
+        )
+
+
+        if (
+
+            expected_size > 0
+
+            and
+
+            input_size != expected_size
+
+        ):
+
+            raise RuntimeError(
+
+                "Download bai kammala daidai ba.\n\n"
+
+                f"Expected: "
+                f"{compressor_format_size(expected_size)}\n"
+
+                f"Downloaded: "
+                f"{compressor_format_size(input_size)}"
+
+            )
+
+
+        # ====================================================
+        # DURATION
+        # ====================================================
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "🔎 <b>AN KARANTA FILE</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>"
+                f"{compressor_format_size(input_size)}"
+                f"</b>\n\n"
+
+                "⏱ Ana gano duration...\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+        duration = (
+            compressor_get_duration(
+
+                ffprobe,
+
+                input_file
+
+            )
+        )
+
+
+        if duration <= 0:
+
+            raise RuntimeError(
+
+                "Ba a iya gano duration na "
+                "video ba."
+
+            )
+
+
+        # ====================================================
+        # OUTPUT PATH
+        # ====================================================
+
+        base_name = os.path.splitext(
+            original_name
+        )[0]
+
+
+        output_file = os.path.join(
+
+            temp_dir,
+
+            f"{base_name}_compressed.mp4"
+
+        )
+
+
+        # ====================================================
+        # COMPRESSION
+        # ====================================================
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "🗜️ <b>COMPRESSING...</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>"
+                f"{compressor_format_size(input_size)}"
+                f"</b>\n\n"
+
+                f"🎯 Target: "
+                f"<b>{percentage}%</b>\n"
+
+                f"📉 Target size: "
+                f"<b>"
+                f"{compressor_format_size(target_bytes)}"
+                f"</b>\n\n"
+
+                f"⚙️ Preset: "
+                f"<b>{COMPRESSOR_PRESET}</b>\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+        compressor_ffmpeg(
+
+            ffmpeg,
+
+            input_file,
+
+            output_file,
+
+            target_bytes,
+
+            duration,
+
+            chat_id,
+
+            message_id,
+
+            cancel_event
+
+        )
+
+
+        # ====================================================
+        # VERIFY OUTPUT
+        # ====================================================
+
+        if not os.path.exists(
+            output_file
+        ):
+
+            raise RuntimeError(
+                "FFmpeg bai samar da output ba."
+            )
+
+
+        output_size = (
+            os.path.getsize(
+                output_file
+            )
+        )
+
+
+        if output_size <= 0:
+
+            raise RuntimeError(
+                "Output file empty ne."
+            )
+
+
+        # ====================================================
+        # UPLOAD
+        # ====================================================
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "📤 <b>UPLOADING...</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>"
+                f"{compressor_format_size(input_size)}"
+                f"</b>\n\n"
+
+                f"📉 Compressed: "
+                f"<b>"
+                f"{compressor_format_size(output_size)}"
+                f"</b>\n\n"
+
+                f"📤 Return as: "
+                f"<b>"
+                f"{output_type.upper()}"
+                f"</b>\n\n"
+
+                "🔄 Render → Telegram\n\n"
+
+                "⏳ Please wait..."
+            )
+
+        )
+
+
+        if output_type == "video":
+
+            result = (
+                videocon_run_async(
+
+                    compressor_upload_video(
+
+                        user_id,
+
+                        output_file,
+
+                        f"{base_name}.mp4",
+
+                        output_size,
+
+                        chat_id,
+
+                        message_id,
+
+                        cancel_event
+
+                    )
+
+                )
+            )
+
+        else:
+
+            result = (
+                videocon_run_async(
+
+                    compressor_upload_file(
+
+                        user_id,
+
+                        output_file,
+
+                        f"{base_name}.mp4",
+
+                        output_size,
+
+                        chat_id,
+
+                        message_id,
+
+                        cancel_event
+
+                    )
+
+                )
+            )
+
+
+        if not result:
+
+            raise RuntimeError(
+                "Upload bai dawo successful ba."
+            )
+
+
+        # ====================================================
+        # SUCCESS
+        # ====================================================
+
+        saved_percent = (
+
+            (
+                output_size
+                /
+                input_size
+            )
+            *
+            100
+
+            if input_size > 0
+
+            else 0
+
+        )
+
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "✅ <b>COMPRESSION COMPLETE</b>\n\n"
+
+                f"📦 Original: "
+                f"<b>"
+                f"{compressor_format_size(input_size)}"
+                f"</b>\n\n"
+
+                f"📉 Compressed: "
+                f"<b>"
+                f"{compressor_format_size(output_size)}"
+                f"</b>\n\n"
+
+                f"🎯 Target selected: "
+                f"<b>{percentage}%</b>\n\n"
+
+                f"📊 Final size: "
+                f"<b>{saved_percent:.1f}%</b>"
+                " na original\n\n"
+
+                f"📤 Returned as: "
+                f"<b>"
+                f"{output_type.upper()}"
+                f"</b>\n\n"
+
+                "🎉 An gama successfully."
+
+            )
+
+        )
+
+
+    except Exception as e:
+
+        error_text = str(e)
+
+
+        if len(error_text) > 1800:
+
+            error_text = (
+                error_text[:1800]
+                +
+                "..."
+            )
+
+
+        error_text = html.escape(
+            error_text
+        )
+
+
+        compressor_edit(
+
+            chat_id,
+
+            message_id,
+
+            (
+                "❌ <b>COMPRESSION ERROR</b>\n\n"
+
+                f"<code>"
+                f"{error_text}"
+                f"</code>\n\n"
+
+                "🧹 Temporary files za a goge."
+            )
+
+        )
+
+
+    finally:
+
+        # ====================================================
+        # CLEANUP
+        # ====================================================
+
+        try:
+
+            if (
+
+                temp_dir
+
+                and
+
+                os.path.exists(
+                    temp_dir
+                )
+
+            ):
+
+                shutil.rmtree(
+
+                    temp_dir,
+
+                    ignore_errors=True
+
+                )
+
+        except Exception:
+
+            pass
+
+
+        # ====================================================
+        # STATE CLEANUP
+        # ====================================================
+
+        with _compressor_lock:
+
+            _compressor_running.discard(
+                user_id
+            )
+
+            _compressor_cancel_events.pop(
+                user_id,
+                None
+            )
+
+            _compressor_jobs.pop(
+                user_id,
+                None
+            )
+
+            _compressor_waiting.discard(
+                user_id
+            )
+
+#END==Compresser 
 # =============================================================
 # RENDER WEB SERVICE + TELEBOT + PYROGRAM
 # =============================================================
