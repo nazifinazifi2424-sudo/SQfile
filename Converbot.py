@@ -1063,91 +1063,21 @@ class _VideoconHealthHandler(
 # ============================================================
 
 def start_videocon_health_server():
+    """
+    Deprecated internal health listener.
 
-    global _videocon_health_server
-    global _videocon_health_thread
+    IMPORTANT: Render PORT is owned by the Flask web server below.
+    The old implementation also tried to bind the same PORT, which
+    produced:
+        Address already in use
+        Port 10000 is in use by another program.
 
-
-    if not VIDEOCON_HEALTH_ENABLED:
-
-        return
-
-
-    with _videocon_health_lock:
-
-        if (
-
-            _videocon_health_thread
-
-            and
-
-            _videocon_health_thread.is_alive()
-
-        ):
-
-            return
-
-
-        port_text = os.getenv(
-            "PORT",
-            "10000"
-        )
-
-
-        try:
-
-            port = int(
-                port_text
-            )
-
-        except Exception:
-
-            port = 10000
-
-
-        try:
-
-            _videocon_health_server = (
-                ThreadingHTTPServer(
-
-                    (
-                        "0.0.0.0",
-                        port
-                    ),
-
-                    _VideoconHealthHandler
-
-                )
-            )
-
-
-            _videocon_health_thread = (
-                threading.Thread(
-
-                    target=(
-                        _videocon_health_server.serve_forever
-                    ),
-
-                    daemon=True,
-
-                    name="videocon-health-server"
-
-                )
-            )
-
-
-            _videocon_health_thread.start()
-
-
-        except OSError:
-
-            # Idan babban app dinka ya riga ya mallaki PORT,
-            # ba matsala bane.
-            pass
-
-        except Exception:
-
-            pass
+    Render health checks now use the single Flask listener. This
+    function is intentionally a no-op so existing calls elsewhere
+    in the bot remain safe.
+    """
+    logger.info("Internal Pyrogram health listener disabled; Flask owns PORT.")
+    return
 
 
 # ============================================================
@@ -1969,6 +1899,90 @@ def videocon_is_video_file(
 
 
 # ============================================================
+# LONG-JOB CHECKPOINTS / SAFE RESTART SUPPORT
+# ============================================================
+# Checkpoints are stage-level, not byte-level. If the Python process is
+# restarted, Telegram file_id lets the bot fetch the source again and retry
+# from the last safe stage when local temporary files are unavailable.
+# Render's filesystem is ephemeral, so this is intentionally best-effort.
+
+JOB_CHECKPOINT_FILE = os.path.join(
+    os.getcwd(),
+    "vd_bot_job_checkpoints.json"
+)
+_JOB_CHECKPOINT_LOCK = threading.RLock()
+_JOB_SHUTDOWN = threading.Event()
+
+def _load_job_checkpoints():
+    try:
+        if not os.path.exists(JOB_CHECKPOINT_FILE):
+            return {}
+        with open(JOB_CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("Could not load job checkpoints: %s", e)
+        return {}
+
+def _save_job_checkpoints(data):
+    tmp = JOB_CHECKPOINT_FILE + ".tmp"
+    try:
+        with _JOB_CHECKPOINT_LOCK:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, JOB_CHECKPOINT_FILE)
+    except Exception as e:
+        logger.warning("Could not save job checkpoints: %s", e)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+def _checkpoint_job(kind, user_id, job, stage, **extra):
+    try:
+        with _JOB_CHECKPOINT_LOCK:
+            data = _load_job_checkpoints()
+            record = dict(job or {})
+            record.update(extra)
+            record["kind"] = kind
+            record["user_id"] = int(user_id)
+            record["stage"] = stage
+            record["updated_at"] = time.time()
+            data[str(user_id)] = record
+            _save_job_checkpoints(data)
+    except Exception as e:
+        logger.warning("Checkpoint failed: %s", e)
+
+def _clear_job_checkpoint(user_id):
+    try:
+        with _JOB_CHECKPOINT_LOCK:
+            data = _load_job_checkpoints()
+            data.pop(str(user_id), None)
+            _save_job_checkpoints(data)
+    except Exception as e:
+        logger.warning("Checkpoint cleanup failed: %s", e)
+
+def _install_shutdown_handlers():
+    import signal
+    def _handler(signum, frame):
+        _JOB_SHUTDOWN.set()
+        logger.warning("Shutdown signal received: %s", signum)
+        try:
+            send_debug(
+                f"⚠️ SERVICE SHUTDOWN SIGNAL\n\nSignal: {signum}\n"
+                "Long jobs will be retried from their last saved stage when possible."
+            )
+        except Exception:
+            pass
+    try:
+        signal.signal(signal.SIGTERM, _handler)
+        signal.signal(signal.SIGINT, _handler)
+    except Exception:
+        pass
+
+
+# ============================================================
 # /VIDEOCON COMMAND
 # ============================================================
 
@@ -2763,6 +2777,8 @@ def _videocon_process(
         # START
         # ====================================================
 
+        _checkpoint_job("videocon", user_id, job, "starting", choice=choice)
+
         videocon_edit_status(
 
             status_message,
@@ -2824,6 +2840,8 @@ def _videocon_process(
         # ====================================================
         # TEMP DIRECTORY
         # ====================================================
+
+        _checkpoint_job("videocon", user_id, job, "preparing_download", choice=choice)
 
         temp_dir = (
             tempfile.mkdtemp(
@@ -3014,6 +3032,8 @@ def _videocon_process(
 
         }
 
+
+        _checkpoint_job("videocon", user_id, job, "downloading", choice=choice)
 
         downloaded_path = (
             videocon_run_async(
@@ -3308,6 +3328,8 @@ def _videocon_process(
             "FILE"
         )
 
+
+        _clear_job_checkpoint(user_id)
 
         videocon_edit_status(
 
@@ -4202,7 +4224,7 @@ COMPRESSOR_TARGET_PERCENTAGES = (
 
 COMPRESSOR_PRESET = "veryfast"
 
-COMPRESSOR_THREADS = "0"
+COMPRESSOR_THREADS = os.getenv("COMPRESSOR_THREADS", "2").strip() or "2"
 
 
 # ============================================================
@@ -6836,6 +6858,8 @@ def _compressor_process(
 
     try:
 
+        _checkpoint_job("compressor", user_id, job, "starting", percentage=percentage, target_bytes=target_bytes, output_type=output_type)
+
         # ====================================================
         # FFMPEG CHECK
         # ====================================================
@@ -6987,6 +7011,8 @@ def _compressor_process(
             )
         )
 
+
+        _checkpoint_job("compressor", user_id, job, "downloading", percentage=percentage, target_bytes=target_bytes, output_type=output_type)
 
         downloaded_path = (
             videocon_run_async(
@@ -7148,6 +7174,8 @@ def _compressor_process(
         # COMPRESSION
         # ====================================================
 
+        _checkpoint_job("compressor", user_id, job, "compressing", percentage=percentage, target_bytes=target_bytes, output_type=output_type)
+
         compressor_edit(
 
             chat_id,
@@ -7230,6 +7258,8 @@ def _compressor_process(
         # ====================================================
         # UPLOAD
         # ====================================================
+
+        _checkpoint_job("compressor", user_id, job, "uploading", percentage=percentage, target_bytes=target_bytes, output_type=output_type)
 
         compressor_edit(
 
@@ -7343,6 +7373,8 @@ def _compressor_process(
 
         )
 
+
+        _clear_job_checkpoint(user_id)
 
         compressor_edit(
 
@@ -7605,10 +7637,68 @@ def polling_loop():
 
 
 # =============================================================
+# RESOURCE / LONG-JOB WATCHDOG
+# =============================================================
+
+def _runtime_resource_report():
+    try:
+        total, used, free = shutil.disk_usage(os.getcwd())
+        report = (
+            f"Disk free: {free / (1024**3):.2f} GB / "
+            f"{total / (1024**3):.2f} GB"
+        )
+        try:
+            import resource
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            # Linux reports KB.
+            if rss > 1024 * 1024:
+                rss_gb = rss / (1024 * 1024)
+                report += f" | Max RSS: {rss_gb:.2f} GB"
+            else:
+                report += f" | Max RSS: {rss / 1024:.0f} MB"
+        except Exception:
+            pass
+        return report
+    except Exception:
+        return "Resource info unavailable"
+
+def _long_job_watchdog():
+    while not _JOB_SHUTDOWN.wait(30):
+        try:
+            active_v = len(_videocon_jobs)
+            active_c = len(_compressor_running)
+            if active_v or active_c:
+                logger.info("LONG JOB WATCHDOG | converter=%s compressor=%s | %s", active_v, active_c, _runtime_resource_report())
+        except Exception:
+            pass
+
+
+def _report_pending_checkpoints():
+    try:
+        data = _load_job_checkpoints()
+        if not data:
+            return
+        lines = ["♻️ PENDING LONG-JOB CHECKPOINTS"]
+        for uid, job in list(data.items())[:10]:
+            lines.append(
+                f"\nUser: {uid} | Kind: {job.get('kind')} | Stage: {job.get('stage')}"
+            )
+        send_debug("\n".join(lines)[:3900])
+        logger.warning("Found %d checkpoint(s) from a previous process. Automatic byte-level resume is not possible; jobs can be retried from their last safe stage.", len(data))
+    except Exception as e:
+        logger.warning("Checkpoint recovery report failed: %s", e)
+
+
+# =============================================================
 # MAIN
 # =============================================================
 
 def main():
+
+    _install_shutdown_handlers()
+
+    watchdog = threading.Thread(target=_long_job_watchdog, name="long-job-watchdog", daemon=True)
+    watchdog.start()
 
     logger.info(
         "=============================================="
@@ -7772,6 +7862,8 @@ def main():
     logger.info(
         "🟢 ALL SYSTEMS ARE READY"
     )
+
+    _report_pending_checkpoints()
 
     logger.info(
         "=============================================="
