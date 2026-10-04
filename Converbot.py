@@ -312,6 +312,22 @@ VIDEOCON_SESSION_NAME = (
     "videocon_mtproto"
 )
 
+# ============================================================
+# HIGH-SPEED TELEGRAM TRANSFER SETTINGS
+# ============================================================
+# Pyrogram can use more than one transmission task for large
+# uploads/downloads. 4 is a safe default for Render; it can be
+# overridden with PYRO_MAX_CONCURRENT_TRANSMISSIONS if needed.
+# ============================================================
+try:
+    PYRO_MAX_CONCURRENT_TRANSMISSIONS = max(1, int(os.getenv(
+        "PYRO_MAX_CONCURRENT_TRANSMISSIONS", "4"
+    )))
+except Exception:
+    PYRO_MAX_CONCURRENT_TRANSMISSIONS = 4
+
+PYRO_SLEEP_THRESHOLD = 60
+
 
 # ============================================================
 # SESSION STATE
@@ -1174,9 +1190,9 @@ def _videocon_pyrogram_thread():
 
             no_updates=True,
 
-            max_concurrent_transmissions=1,
+            max_concurrent_transmissions=PYRO_MAX_CONCURRENT_TRANSMISSIONS,
 
-            sleep_threshold=30
+            sleep_threshold=PYRO_SLEEP_THRESHOLD
 
         )
 
@@ -4222,9 +4238,28 @@ COMPRESSOR_TARGET_PERCENTAGES = (
 # FFMPEG SETTINGS
 # ============================================================
 
-COMPRESSOR_PRESET = "veryfast"
+# ============================================================
+# MAX-SPEED FFMPEG SETTINGS
+# ============================================================
+# `ultrafast` is intentionally used because the user's priority
+# is completion speed. The target bitrate is still calculated
+# from the selected target size, so this does NOT remove the
+# compressor's target-size system.
+#
+# THREADS=0 tells FFmpeg/x264 to choose the available CPU threads
+# instead of artificially limiting the encoder to 2 threads.
+# Both values can still be overridden from Render environment
+# variables without changing the bot code.
+# ============================================================
+COMPRESSOR_PRESET = (
+    os.getenv("COMPRESSOR_PRESET", "ultrafast").strip()
+    or "ultrafast"
+)
 
-COMPRESSOR_THREADS = os.getenv("COMPRESSOR_THREADS", "2").strip() or "2"
+COMPRESSOR_THREADS = (
+    os.getenv("COMPRESSOR_THREADS", "0").strip()
+    or "0"
+)
 
 
 # ============================================================
@@ -6326,8 +6361,10 @@ def compressor_ffmpeg(
         "-pix_fmt",
         "yuv420p",
 
-        "-movflags",
-        "+faststart",
+        # `+faststart` is useful for progressive playback, but it
+        # adds an extra MP4 rewrite after encoding. The bot uploads
+        # only after compression is complete, so removing it saves
+        # disk I/O on large files and makes compression finish sooner.
 
         "-threads",
         COMPRESSOR_THREADS,
