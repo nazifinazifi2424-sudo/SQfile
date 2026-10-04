@@ -68,6 +68,36 @@ logger = logging.getLogger("VD-BOT")
 
 
 # ============================================================
+# SAFE DEBUG NOTIFICATION
+# ============================================================
+#
+# The bot used send_debug() in several startup/error paths, but
+# the function was missing. Keep debug reporting safe: logging
+# always works, while Telegram notification is best-effort.
+# ============================================================
+def send_debug(text):
+    try:
+        logger.info("DEBUG: %s", str(text).replace("\n", " | "))
+    except Exception:
+        pass
+
+    try:
+        admin_id = globals().get("ADMIN_ID")
+        telegram_bot = globals().get("bot")
+        if admin_id and telegram_bot:
+            telegram_bot.send_message(
+                int(admin_id),
+                str(text)[:3900],
+                parse_mode=None
+            )
+    except Exception as e:
+        try:
+            logger.warning("send_debug notification failed: %s", e)
+        except Exception:
+            pass
+
+
+# ============================================================
 # TELEBOT
 # ============================================================
 
@@ -2420,9 +2450,9 @@ def videocon_receive_document(
 
     func=lambda call:
         bool(call.data)
-        and
-        call.data.startswith(
-            "videocon:"
+        and call.data in (
+            "videocon:video",
+            "videocon:file"
         )
 
 )
@@ -3969,10 +3999,7 @@ def start_command(message):
     func=lambda call:
         bool(call.data)
         and call.data.startswith("videocon:")
-        and call.data in (
-            "videocon:converter",
-            "videocon:compresser"
-        )
+        and call.data == "videocon:converter"
 )
 def start_menu_callback(call):
 
@@ -3994,20 +4021,54 @@ def start_menu_callback(call):
         except Exception:
             pass
 
+        # Start the SAME converter waiting flow used by /videocon,
+        # but directly from the button. No command is required.
+        if user_id != ADMIN_ID:
+            try:
+                bot.send_message(
+                    user_id,
+                    "❌ Wannan system ɗin na Admin ne kawai."
+                )
+            except Exception:
+                pass
+            return
+
+        with _videocon_jobs_lock:
+            existing_job = _videocon_jobs.get(user_id)
+
+            if (
+                existing_job
+                and existing_job.get("state") == "processing"
+            ):
+                try:
+                    bot.send_message(
+                        user_id,
+                        "⏳ Akwai wani aikin Video Converter da yake gudana.\n\n"
+                        "Ka jira ya gama kafin ka fara wani."
+                    )
+                except Exception:
+                    pass
+                return
+
+            _videocon_waiting.add(user_id)
+            _videocon_jobs.pop(user_id, None)
+
+        try:
+            start_videocon_engine()
+        except Exception:
+            pass
+
         try:
             bot.send_message(
                 user_id,
-
                 (
                     "🎬 <b>VIDEO CONVERTER</b>\n\n"
-
-                    "Ka yi amfani da:\n\n"
-
-                    "/videocon\n\n"
-
-                    "domin fara aikin Converter."
+                    "Turo min <b>Video</b> ko <b>File/Document</b> ɗin "
+                    "da kake son mu dawo maka da shi.\n\n"
+                    "📦 <b>Ba mu saka artificial GB limit ba.</b>\n\n"
+                    "Telegram/Pyrogram ne zai yanke ainihin abin da zai iya karɓa.\n\n"
+                    "⏳ Bayan ka turo shi zan tambaye ka irin yadda kake son na dawo maka da shi."
                 ),
-
                 parse_mode="HTML"
             )
         except Exception:
@@ -4016,42 +4077,6 @@ def start_menu_callback(call):
         return
 
 
-    # --------------------------------------------------------
-    # COMPRESSER
-    # --------------------------------------------------------
-
-    if choice == "compresser":
-
-        try:
-            bot.answer_callback_query(
-                call.id,
-                "🗜️ Compresser"
-            )
-        except Exception:
-            pass
-
-        try:
-            bot.send_message(
-                user_id,
-
-                (
-                    "🗜️ <b>VIDEO COMPRESSER</b>\n\n"
-
-                    "🚧 Wannan system ɗin muna "
-                    "gina shi yanzu.\n\n"
-
-                    "Da zarar mun gama, zaka iya turo "
-                    "fim/video sannan bot zai karanta "
-                    "girman file ɗin ya baka zabin "
-                    "compression."
-                ),
-
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-
-        return
 
 
 #END== Converter 
@@ -7664,19 +7689,44 @@ def main():
 
 
     # ---------------------------------------------------------
-    # START PYROGRAM
+    # START / VERIFY PYROGRAM ENGINE
+    # ---------------------------------------------------------
+    #
+    # IMPORTANT: this bot does NOT use a global `app.start()`.
+    # The converter already owns a dedicated Pyrogram Client in
+    # start_videocon_engine(). Calling an undefined `app` here was
+    # the direct cause of the Render crash.
     # ---------------------------------------------------------
 
     logger.info(
-        "Starting Pyrogram..."
+        "Starting Pyrogram engine..."
     )
 
     try:
 
-        app.start()
+        start_videocon_engine()
+
+        if not _videocon_ready.wait(
+            timeout=VIDEOCON_ENGINE_START_TIMEOUT
+        ):
+            raise RuntimeError(
+                "Pyrogram engine bai fara cikin "
+                f"{VIDEOCON_ENGINE_START_TIMEOUT} seconds ba."
+            )
+
+        if _videocon_start_error:
+            raise RuntimeError(
+                "Pyrogram startup failed: "
+                f"{_videocon_start_error}"
+            )
+
+        if not _videocon_pyro:
+            raise RuntimeError(
+                "Pyrogram client baya nan bayan startup."
+            )
 
         logger.info(
-            "✅ Pyrogram started successfully."
+            "✅ Pyrogram engine started successfully."
         )
 
         send_debug(
@@ -7687,7 +7737,7 @@ def main():
     except Exception as e:
 
         logger.exception(
-            "Pyrogram failed to start."
+            "Pyrogram engine failed to start."
         )
 
         send_debug(
@@ -7696,6 +7746,9 @@ def main():
             f"Error: {str(e)[:2000]}"
         )
 
+        # Do not continue into a misleading 'ready' state.
+        # Render will restart the service so the engine gets a
+        # clean second attempt.
         raise
 
 
@@ -7768,4 +7821,3 @@ if __name__ == "__main__":
         # Kada mu mutu gaba daya nan take.
         # Render zai sake tayar da service din.
         raise
-
