@@ -319,6 +319,337 @@ logging.basicConfig(
 logger = logging.getLogger("VD-BOT")
 
 
+
+
+# ============================================================
+# PART A/6
+# WORKER CONFIGURATION & DATABASE MIGRATION
+# ============================================================
+
+import os
+import re
+import time
+import json
+import logging
+import threading
+import requests
+
+from datetime import datetime, timezone
+
+
+# ============================================================
+# 1. WORKER IDENTITY
+# ============================================================
+
+WORKER_ID = os.getenv("WORKER_ID", "").strip().upper()
+
+if not WORKER_ID:
+    raise RuntimeError(
+        "WORKER_ID is missing. Set BOT_1, BOT_2, BOT_3, etc."
+    )
+
+_worker_match = re.fullmatch(r"BOT_(\d+)", WORKER_ID)
+
+if not _worker_match:
+    raise RuntimeError(
+        "Invalid WORKER_ID. Example: BOT_1, BOT_2, BOT_3"
+    )
+
+WORKER_RANK = int(_worker_match.group(1))
+
+print(f"✅ WORKER ID: {WORKER_ID}")
+print(f"✅ WORKER RANK: {WORKER_RANK}")
+
+
+# ============================================================
+# 2. RENDER API CONFIGURATION
+# EACH WORKER USES ITS OWN RENDER ACCOUNT
+# ============================================================
+
+RENDER_API_KEY = os.getenv(
+    "RENDER_API_KEY", ""
+).strip()
+
+RENDER_SERVICE_ID = os.getenv(
+    "RENDER_SERVICE_ID", ""
+).strip()
+
+RENDER_MONTHLY_BANDWIDTH_GB = float(
+    os.getenv("RENDER_MONTHLY_BANDWIDTH_GB", "4.7")
+)
+
+RENDER_BANDWIDTH_STOP_GB = float(
+    os.getenv("RENDER_BANDWIDTH_STOP_GB", "4.4")
+)
+
+RENDER_BANDWIDTH_API_URL = (
+    "https://api.render.com/v1/metrics/bandwidth"
+)
+
+RENDER_API_TIMEOUT = 30
+
+if not RENDER_API_KEY:
+    raise RuntimeError("RENDER_API_KEY is missing")
+
+if not RENDER_SERVICE_ID:
+    raise RuntimeError("RENDER_SERVICE_ID is missing")
+
+if RENDER_MONTHLY_BANDWIDTH_GB <= 0:
+    raise RuntimeError(
+        "RENDER_MONTHLY_BANDWIDTH_GB must be greater than zero"
+    )
+
+if not (
+    0 < RENDER_BANDWIDTH_STOP_GB
+    < RENDER_MONTHLY_BANDWIDTH_GB
+):
+    raise RuntimeError(
+        "Bandwidth stop threshold must be below monthly limit"
+    )
+
+
+# ============================================================
+# 3. WORKER HEARTBEAT & FAILOVER SETTINGS
+# ============================================================
+
+WORKER_HEARTBEAT_SECONDS = 300
+
+WORKER_FAILURE_TIMEOUT_SECONDS = 3000
+
+WORKER_GRACE_PERIOD_SECONDS = 1200
+
+WORKER_FAILOVER_SECONDS = (
+    WORKER_FAILURE_TIMEOUT_SECONDS
+    + WORKER_GRACE_PERIOD_SECONDS
+)
+
+WORKER_LEASE_SECONDS = 600
+
+WORKER_MONITOR_INTERVAL_SECONDS = 60
+
+WORKER_BANDWIDTH_CHECK_INTERVAL_SECONDS = 600
+
+WORKER_HANDOVER_WAIT_SECONDS = 30
+
+
+# ============================================================
+# 4. MONTHLY RESET SETTINGS
+# ============================================================
+
+WORKER_MONTHLY_RESET_ENABLED = True
+
+WORKER_TIMEZONE = timezone.utc
+
+
+def worker_month_key():
+    return datetime.now(
+        WORKER_TIMEZONE
+    ).strftime("%Y-%m")
+
+
+def worker_month_start():
+    now = datetime.now(WORKER_TIMEZONE)
+
+    return datetime(
+        now.year,
+        now.month,
+        1,
+        0,
+        0,
+        0,
+        tzinfo=WORKER_TIMEZONE
+    )
+
+
+# ============================================================
+# 5. WORKER RUNTIME STATE
+# ============================================================
+
+WORKER_IS_LEADER = False
+
+WORKER_IS_ACTIVE = False
+
+WORKER_SHUTTING_DOWN = False
+
+WORKER_HANDOVER_REQUESTED = False
+
+WORKER_CURRENT_GENERATION = 0
+
+WORKER_LAST_BANDWIDTH_GB = 0.0
+
+WORKER_BANDWIDTH_LOCK = threading.RLock()
+
+WORKER_LEADER_LOCK = threading.RLock()
+
+WORKER_MONITOR_THREAD = None
+
+WORKER_BANDWIDTH_THREAD = None
+
+
+# ============================================================
+# 6. LOGGING
+# ============================================================
+
+WORKER_LOGGER = logging.getLogger(
+    "ALL_CHAT_WORKER"
+)
+
+WORKER_LOGGER.setLevel(logging.INFO)
+
+if not WORKER_LOGGER.handlers:
+    _worker_handler = logging.StreamHandler()
+
+    _worker_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(message)s"
+        )
+    )
+
+    WORKER_LOGGER.addHandler(_worker_handler)
+
+
+def worker_log(message, level="info"):
+    try:
+        if level == "error":
+            WORKER_LOGGER.error(message)
+        elif level == "warning":
+            WORKER_LOGGER.warning(message)
+        else:
+            WORKER_LOGGER.info(message)
+
+    except Exception:
+        print(message)
+
+
+# ============================================================
+# 7. DATABASE MIGRATION
+# USE EXISTING workers TABLE
+# DO NOT CREATE ANOTHER WORKERS TABLE
+# ============================================================
+
+def prepare_worker_database():
+
+    migration_conn = None
+    migration_cur = None
+
+    try:
+        migration_conn = get_all_chat_db_conn()
+
+        migration_cur = migration_conn.cursor()
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS worker_rank INTEGER DEFAULT 0
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS bandwidth_limit_gb DOUBLE PRECISION DEFAULT 4.7
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS bandwidth_used_gb DOUBLE PRECISION DEFAULT 0
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS render_bandwidth_gb DOUBLE PRECISION DEFAULT 0
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS bandwidth_checked_at TIMESTAMPTZ
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS bandwidth_month VARCHAR(7)
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS is_leader BOOLEAN DEFAULT FALSE
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS leader_generation BIGINT DEFAULT 0
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS leader_lease_until TIMESTAMPTZ
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS handover_requested BOOLEAN DEFAULT FALSE
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS worker_enabled BOOLEAN DEFAULT TRUE
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS last_bandwidth_error TEXT
+        """)
+
+        migration_cur.execute("""
+            ALTER TABLE workers
+            ADD COLUMN IF NOT EXISTS monthly_reset_at TIMESTAMPTZ
+        """)
+
+        migration_cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workers_rank
+            ON workers(worker_rank)
+        """)
+
+        migration_cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workers_leader
+            ON workers(is_leader, worker_enabled)
+        """)
+
+        migration_conn.commit()
+
+        worker_log(
+            "✅ Existing workers table successfully upgraded."
+        )
+
+    except Exception as e:
+
+        if migration_conn:
+            migration_conn.rollback()
+
+        worker_log(
+            f"❌ WORKER DATABASE MIGRATION ERROR: {e}",
+            "error"
+        )
+
+        raise
+
+    finally:
+
+        if migration_cur:
+            migration_cur.close()
+
+        if migration_conn:
+            migration_conn.close()
+
+
+# ============================================================
+# 8. RUN DATABASE PREPARATION
+# ============================================================
+
+prepare_worker_database()
+
+worker_log(
+    f"✅ PART A READY: {WORKER_ID} | RANK {WORKER_RANK}"
+)
+
+
 # ============================================================
 # SAFE DEBUG NOTIFICATION
 # ============================================================
@@ -358,6 +689,846 @@ bot = telebot.TeleBot(
     parse_mode="HTML",
     threaded=True
 )
+
+
+
+# ============================================================
+# PART B/6
+# WORKER REGISTRATION & HEARTBEAT SYSTEM
+# ============================================================
+
+import atexit
+
+
+# ============================================================
+# 1. WORKER INFORMATION
+# ============================================================
+
+WORKER_BOT_USERNAME = os.getenv(
+    "WORKER_BOT_USERNAME", ""
+).strip()
+
+WORKER_BOT_NAME = os.getenv(
+    "WORKER_BOT_NAME", WORKER_ID
+).strip()
+
+
+# ============================================================
+# 2. REGISTER WORKER IN SHARED DATABASE
+# ============================================================
+
+def register_worker():
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_all_chat_db_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO workers (
+                worker_id,
+                bot_username,
+                bot_name,
+                worker_rank,
+                status,
+                capabilities,
+                worker_enabled,
+                bandwidth_limit_gb,
+                bandwidth_month,
+                last_started_at,
+                last_heartbeat,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                %s, %s, %s, %s,
+                'standby',
+                %s::jsonb,
+                TRUE,
+                %s,
+                %s,
+                NOW(),
+                NOW(),
+                NOW(),
+                NOW()
+            )
+            ON CONFLICT (worker_id)
+            DO UPDATE SET
+                bot_username = EXCLUDED.bot_username,
+                bot_name = EXCLUDED.bot_name,
+                worker_rank = EXCLUDED.worker_rank,
+                status = CASE
+                    WHEN workers.is_leader = TRUE
+                         AND workers.leader_lease_until > NOW()
+                    THEN 'active'
+                    ELSE 'standby'
+                END,
+                worker_enabled = TRUE,
+                bandwidth_limit_gb = EXCLUDED.bandwidth_limit_gb,
+                last_started_at = NOW(),
+                last_heartbeat = NOW(),
+                updated_at = NOW()
+        """, (
+            WORKER_ID,
+            WORKER_BOT_USERNAME,
+            WORKER_BOT_NAME,
+            WORKER_RANK,
+            json.dumps({
+                "telegram": True,
+                "render_bandwidth_api": True,
+                "heartbeat": True,
+                "failover": True
+            }),
+            RENDER_MONTHLY_BANDWIDTH_GB,
+            worker_month_key()
+        ))
+
+        conn.commit()
+
+        worker_log(
+            f"✅ {WORKER_ID} REGISTERED SUCCESSFULLY"
+        )
+
+        return True
+
+    except Exception as e:
+
+        if conn:
+            conn.rollback()
+
+        worker_log(
+            f"❌ WORKER REGISTRATION ERROR: {e}",
+            "error"
+        )
+
+        return False
+
+    finally:
+
+        if cur:
+            cur.close()
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# 3. UPDATE WORKER HEARTBEAT
+# ============================================================
+
+def update_worker_heartbeat():
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_all_chat_db_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE workers
+            SET
+                last_heartbeat = NOW(),
+                status = CASE
+                    WHEN is_leader = TRUE
+                         AND leader_lease_until > NOW()
+                    THEN 'active'
+                    ELSE 'standby'
+                END,
+                updated_at = NOW()
+            WHERE worker_id = %s
+              AND worker_enabled = TRUE
+        """, (WORKER_ID,))
+
+        updated = cur.rowcount
+
+        conn.commit()
+
+        if updated == 0:
+            worker_log(
+                f"⚠️ {WORKER_ID} is not registered or is disabled.",
+                "warning"
+            )
+            return False
+
+        return True
+
+    except Exception as e:
+
+        if conn:
+            conn.rollback()
+
+        worker_log(
+            f"❌ HEARTBEAT ERROR: {e}",
+            "error"
+        )
+
+        return False
+
+    finally:
+
+        if cur:
+            cur.close()
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# 4. HEARTBEAT BACKGROUND LOOP
+# ============================================================
+
+WORKER_HEARTBEAT_STOP = threading.Event()
+
+
+def worker_heartbeat_loop():
+
+    worker_log(
+        f"💓 HEARTBEAT LOOP STARTED: {WORKER_ID}"
+    )
+
+    while not WORKER_HEARTBEAT_STOP.is_set():
+
+        try:
+            success = update_worker_heartbeat()
+
+            if success:
+                worker_log(
+                    f"💓 {WORKER_ID} HEARTBEAT OK"
+                )
+
+        except Exception as e:
+
+            worker_log(
+                f"❌ HEARTBEAT LOOP ERROR: {e}",
+                "error"
+            )
+
+        WORKER_HEARTBEAT_STOP.wait(
+            WORKER_HEARTBEAT_SECONDS
+        )
+
+    worker_log(
+        f"💤 HEARTBEAT LOOP STOPPED: {WORKER_ID}"
+    )
+
+
+# ============================================================
+# 5. START HEARTBEAT THREAD
+# ============================================================
+
+def start_worker_heartbeat():
+
+    global WORKER_MONITOR_THREAD
+
+    if (
+        WORKER_MONITOR_THREAD is not None
+        and WORKER_MONITOR_THREAD.is_alive()
+    ):
+        worker_log(
+            "⚠️ HEARTBEAT THREAD ALREADY RUNNING"
+        )
+        return
+
+    WORKER_HEARTBEAT_STOP.clear()
+
+    WORKER_MONITOR_THREAD = threading.Thread(
+        target=worker_heartbeat_loop,
+        name=f"{WORKER_ID}_heartbeat",
+        daemon=True
+    )
+
+    WORKER_MONITOR_THREAD.start()
+
+    worker_log(
+        f"✅ HEARTBEAT THREAD STARTED: {WORKER_ID}"
+    )
+
+
+# ============================================================
+# 6. GRACEFUL WORKER SHUTDOWN
+# ============================================================
+
+def stop_worker_heartbeat():
+
+    WORKER_HEARTBEAT_STOP.set()
+
+    if (
+        WORKER_MONITOR_THREAD is not None
+        and WORKER_MONITOR_THREAD.is_alive()
+    ):
+        WORKER_MONITOR_THREAD.join(timeout=10)
+
+
+def mark_worker_stopping():
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_all_chat_db_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE workers
+            SET
+                status = 'stopping',
+                last_stopped_at = NOW(),
+                last_heartbeat = NOW(),
+                updated_at = NOW()
+            WHERE worker_id = %s
+        """, (WORKER_ID,))
+
+        conn.commit()
+
+        worker_log(
+            f"🛑 {WORKER_ID} MARKED AS STOPPING"
+        )
+
+    except Exception as e:
+
+        if conn:
+            conn.rollback()
+
+        worker_log(
+            f"❌ SHUTDOWN UPDATE ERROR: {e}",
+            "error"
+        )
+
+    finally:
+
+        if cur:
+            cur.close()
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# 7. SAFE SHUTDOWN CALLBACK
+# ============================================================
+
+def worker_shutdown():
+
+    global WORKER_SHUTTING_DOWN
+
+    if WORKER_SHUTTING_DOWN:
+        return
+
+    WORKER_SHUTTING_DOWN = True
+
+    worker_log(
+        f"🛑 WORKER SHUTDOWN STARTED: {WORKER_ID}"
+    )
+
+    stop_worker_heartbeat()
+
+    mark_worker_stopping()
+
+
+# ============================================================
+# 8. REGISTER WORKER AND START HEARTBEAT
+# ============================================================
+
+if register_worker():
+
+    start_worker_heartbeat()
+
+    atexit.register(worker_shutdown)
+
+    worker_log(
+        f"✅ PART B READY: {WORKER_ID}"
+    )
+
+else:
+
+    raise RuntimeError(
+        f"Could not register {WORKER_ID}. "
+        "Worker startup stopped to prevent unsafe operation."
+    )
+
+
+
+# ============================================================
+# PART C/6
+# WORKER LEADER ELECTION & PRIORITY SYSTEM
+# ============================================================
+
+
+# ============================================================
+# 1. LEADER SETTINGS
+# ============================================================
+
+# Leader must renew its lease regularly.
+# Failover waits for the full 50 + 20 minutes.
+
+WORKER_LEADER_LEASE_SECONDS = (
+    WORKER_FAILOVER_SECONDS + 300
+)
+
+WORKER_LEADER_CHECK_INTERVAL = 30
+
+WORKER_ADVISORY_LOCK_ID = 887766
+
+
+# ============================================================
+# 2. CHECK WHETHER A WORKER IS ELIGIBLE
+# ============================================================
+
+def worker_is_eligible(row):
+
+    if not row:
+        return False
+
+    (
+        worker_id,
+        worker_rank,
+        worker_enabled,
+        last_heartbeat,
+        handover_requested,
+        bandwidth_used_gb,
+        render_bandwidth_gb,
+        bandwidth_limit_gb,
+        bandwidth_month
+    ) = row
+
+    if not worker_enabled:
+        return False
+
+    if handover_requested:
+        return False
+
+    if not last_heartbeat:
+        return False
+
+    if bandwidth_month != worker_month_key():
+        return False
+
+    current_usage = max(
+        float(bandwidth_used_gb or 0),
+        float(render_bandwidth_gb or 0)
+    )
+
+    if current_usage >= RENDER_BANDWIDTH_STOP_GB:
+        return False
+
+    return True
+
+
+# ============================================================
+# 3. ELECT THE HIGHEST-RANKED AVAILABLE WORKER
+# ============================================================
+
+def elect_worker_leader():
+
+    global WORKER_IS_LEADER
+    global WORKER_IS_ACTIVE
+    global WORKER_CURRENT_GENERATION
+
+    conn = None
+    cur = None
+
+    try:
+
+        conn = get_all_chat_db_conn()
+        cur = conn.cursor()
+
+        # Serialize all leader elections across all workers.
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(%s)",
+            (WORKER_ADVISORY_LOCK_ID,)
+        )
+
+        # Get the highest-ranked worker that has not exceeded
+        # its allowed heartbeat failure period.
+        cur.execute("""
+            SELECT
+                worker_id,
+                worker_rank,
+                worker_enabled,
+                last_heartbeat,
+                handover_requested,
+                bandwidth_used_gb,
+                render_bandwidth_gb,
+                bandwidth_limit_gb,
+                bandwidth_month
+            FROM workers
+            WHERE worker_enabled = TRUE
+              AND last_heartbeat >= (
+                    NOW() - (%s * INTERVAL '1 second')
+              )
+            ORDER BY worker_rank ASC
+        """, (WORKER_FAILOVER_SECONDS,))
+
+        candidates = cur.fetchall()
+
+        eligible_workers = [
+            worker
+            for worker in candidates
+            if worker_is_eligible(worker)
+        ]
+
+        if not eligible_workers:
+
+            cur.execute("""
+                UPDATE workers
+                SET
+                    is_leader = FALSE,
+                    status = CASE
+                        WHEN status = 'stopping'
+                        THEN 'stopping'
+                        ELSE 'standby'
+                    END,
+                    updated_at = NOW()
+                WHERE is_leader = TRUE
+                  AND (
+                      last_heartbeat IS NULL
+                      OR last_heartbeat < (
+                          NOW() - (%s * INTERVAL '1 second')
+                      )
+                  )
+            """, (WORKER_FAILOVER_SECONDS,))
+
+            conn.commit()
+
+            WORKER_IS_LEADER = False
+            WORKER_IS_ACTIVE = False
+
+            return False
+
+        # The first eligible worker has the highest priority.
+        selected_worker = eligible_workers[0]
+
+        selected_id = selected_worker[0]
+
+        # If another worker has a higher priority, it may take over.
+        cur.execute("""
+            SELECT
+                worker_id,
+                leader_generation
+            FROM workers
+            WHERE is_leader = TRUE
+            FOR UPDATE
+        """)
+
+        current_leaders = cur.fetchall()
+
+        if (
+            len(current_leaders) == 1
+            and current_leaders[0][0] == selected_id
+        ):
+
+            generation = int(
+                current_leaders[0][1] or 0
+            )
+
+            cur.execute("""
+                UPDATE workers
+                SET
+                    leader_lease_until = (
+                        NOW() + (%s * INTERVAL '1 second')
+                    ),
+                    last_heartbeat = NOW(),
+                    status = 'active',
+                    updated_at = NOW()
+                WHERE worker_id = %s
+                  AND worker_enabled = TRUE
+            """, (
+                WORKER_LEADER_LEASE_SECONDS,
+                selected_id
+            ))
+
+        else:
+
+            # New leader: increment the global generation.
+            cur.execute("""
+                SELECT COALESCE(
+                    MAX(leader_generation), 0
+                ) + 1
+                FROM workers
+            """)
+
+            generation = int(cur.fetchone()[0])
+
+            # Remove old leadership.
+            cur.execute("""
+                UPDATE workers
+                SET
+                    is_leader = FALSE,
+                    leader_lease_until = NULL,
+                    status = CASE
+                        WHEN status = 'stopping'
+                        THEN 'stopping'
+                        ELSE 'standby'
+                    END,
+                    updated_at = NOW()
+                WHERE is_leader = TRUE
+            """)
+
+            # Assign leadership to the selected worker.
+            cur.execute("""
+                UPDATE workers
+                SET
+                    is_leader = TRUE,
+                    leader_generation = %s,
+                    leader_lease_until = (
+                        NOW() + (%s * INTERVAL '1 second')
+                    ),
+                    status = 'active',
+                    updated_at = NOW()
+                WHERE worker_id = %s
+                  AND worker_enabled = TRUE
+            """, (
+                generation,
+                WORKER_LEADER_LEASE_SECONDS,
+                selected_id
+            ))
+
+        conn.commit()
+
+        if selected_id == WORKER_ID:
+
+            WORKER_IS_LEADER = True
+            WORKER_IS_ACTIVE = True
+            WORKER_CURRENT_GENERATION = generation
+
+            worker_log(
+                f"👑 LEADER ACTIVE: {WORKER_ID} "
+                f"| GENERATION: {generation}"
+            )
+
+            return True
+
+        WORKER_IS_LEADER = False
+        WORKER_IS_ACTIVE = False
+
+        worker_log(
+            f"⏳ {WORKER_ID} IS STANDBY. "
+            f"CURRENT LEADER: {selected_id}"
+        )
+
+        return False
+
+    except Exception as e:
+
+        if conn:
+            conn.rollback()
+
+        WORKER_IS_LEADER = False
+        WORKER_IS_ACTIVE = False
+
+        worker_log(
+            f"❌ LEADER ELECTION ERROR: {e}",
+            "error"
+        )
+
+        return False
+
+    finally:
+
+        if cur:
+            cur.close()
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# 4. VERIFY CURRENT LEADER AND GENERATION
+# ============================================================
+
+def verify_worker_leadership():
+
+    global WORKER_IS_LEADER
+    global WORKER_IS_ACTIVE
+    global WORKER_CURRENT_GENERATION
+
+    conn = None
+    cur = None
+
+    try:
+
+        conn = get_all_chat_db_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT
+                is_leader,
+                leader_generation,
+                leader_lease_until,
+                worker_enabled,
+                handover_requested
+            FROM workers
+            WHERE worker_id = %s
+        """, (WORKER_ID,))
+
+        row = cur.fetchone()
+
+        if not row:
+            WORKER_IS_LEADER = False
+            WORKER_IS_ACTIVE = False
+            return False
+
+        (
+            is_leader,
+            generation,
+            lease_until,
+            worker_enabled,
+            handover_requested
+        ) = row
+
+        cur.execute("""
+            SELECT NOW()
+        """)
+
+        database_now = cur.fetchone()[0]
+
+        valid = (
+            bool(is_leader)
+            and bool(worker_enabled)
+            and not bool(handover_requested)
+            and lease_until is not None
+            and lease_until > database_now
+        )
+
+        if valid:
+
+            WORKER_CURRENT_GENERATION = int(
+                generation or 0
+            )
+
+            WORKER_IS_LEADER = True
+            WORKER_IS_ACTIVE = True
+
+            return True
+
+        WORKER_IS_LEADER = False
+        WORKER_IS_ACTIVE = False
+
+        return False
+
+    except Exception as e:
+
+        WORKER_IS_LEADER = False
+        WORKER_IS_ACTIVE = False
+
+        worker_log(
+            f"❌ LEADER VERIFICATION ERROR: {e}",
+            "error"
+        )
+
+        return False
+
+    finally:
+
+        if cur:
+            cur.close()
+
+        if conn:
+            conn.close()
+
+
+# ============================================================
+# 5. LEADER MONITOR LOOP
+# ============================================================
+
+WORKER_LEADER_STOP = threading.Event()
+
+
+def worker_leader_monitor_loop():
+
+    worker_log(
+        f"👁️ LEADER MONITOR STARTED: {WORKER_ID}"
+    )
+
+    while not WORKER_LEADER_STOP.is_set():
+
+        try:
+
+            # Check whether this worker is still the valid leader.
+            if verify_worker_leadership():
+
+                # Renew the lease through the election function.
+                elect_worker_leader()
+
+            else:
+
+                # Standby workers compete under a database lock.
+                elect_worker_leader()
+
+        except Exception as e:
+
+            WORKER_IS_LEADER = False
+            WORKER_IS_ACTIVE = False
+
+            worker_log(
+                f"❌ LEADER MONITOR ERROR: {e}",
+                "error"
+            )
+
+        WORKER_LEADER_STOP.wait(
+            WORKER_LEADER_CHECK_INTERVAL
+        )
+
+    worker_log(
+        f"👁️ LEADER MONITOR STOPPED: {WORKER_ID}"
+    )
+
+
+# ============================================================
+# 6. START LEADER MONITOR
+# ============================================================
+
+def start_worker_leader_monitor():
+
+    global WORKER_MONITOR_THREAD
+
+    # Part B already uses WORKER_MONITOR_THREAD for heartbeat.
+    # Use a separate thread variable for leader monitoring.
+
+    global WORKER_LEADER_THREAD
+
+    if (
+        WORKER_LEADER_THREAD is not None
+        and WORKER_LEADER_THREAD.is_alive()
+    ):
+        return
+
+    WORKER_LEADER_STOP.clear()
+
+    WORKER_LEADER_THREAD = threading.Thread(
+        target=worker_leader_monitor_loop,
+        name=f"{WORKER_ID}_leader_monitor",
+        daemon=True
+    )
+
+    WORKER_LEADER_THREAD.start()
+
+    worker_log(
+        f"✅ LEADER MONITOR THREAD STARTED: {WORKER_ID}"
+    )
+
+
+# ============================================================
+# 7. LEADER THREAD STATE
+# ============================================================
+
+WORKER_LEADER_THREAD = None
+
+
+# ============================================================
+# 8. START PART C
+# ============================================================
+
+start_worker_leader_monitor()
+
+worker_log(
+    f"✅ PART C READY: {WORKER_ID}"
+)
+
+
 
 
 
