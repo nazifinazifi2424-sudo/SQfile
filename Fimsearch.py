@@ -108,6 +108,8 @@ bot = telebot.TeleBot(
     threaded=True
 )
 
+
+
 # ============================================================
 # MOVIE IDENTIFICATION SYSTEM — GEMINI + AUTOMATIC BANDWIDTH REPORT
 #
@@ -273,6 +275,10 @@ def _movie_render_month_metrics():
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
+    # Render API expects ISO-8601 date-time values, not Unix timestamps.
+    start_time = month_start.isoformat(timespec="seconds").replace("+00:00", "Z")
+    end_time = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+
     try:
         response = requests.get(
             "https://api.render.com/v1/metrics/bandwidth",
@@ -282,8 +288,8 @@ def _movie_render_month_metrics():
             },
             params={
                 "resource": RENDER_SERVICE_ID,
-                "startTime": int(month_start.timestamp()),
-                "endTime": int(now.timestamp()),
+                "startTime": start_time,
+                "endTime": end_time,
             },
             timeout=20,
         )
@@ -298,7 +304,7 @@ def _movie_render_month_metrics():
         total_gb = 0.0
         found_values = False
 
-        # Render returns a list of time-series objects, each with unit and values.
+        # Render returns time-series objects with unit and values.
         if isinstance(payload, list):
             series_list = payload
         elif isinstance(payload, dict):
@@ -309,15 +315,27 @@ def _movie_render_month_metrics():
         for series in series_list:
             if not isinstance(series, dict):
                 continue
+
             unit = str(series.get("unit", "GB")).upper()
             values = series.get("values", [])
+
+            if not isinstance(values, list):
+                continue
+
             for point in values:
-                if not isinstance(point, dict):
+                # Render datapoints normally use {"timestamp": ..., "value": ...}.
+                if isinstance(point, dict):
+                    raw_value = point.get("value", 0)
+                elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                    raw_value = point[1]
+                else:
                     continue
+
                 try:
-                    value = float(point.get("value", 0) or 0)
+                    value = float(raw_value or 0)
                 except (TypeError, ValueError):
                     continue
+
                 found_values = True
                 if unit == "GB":
                     total_gb += value
@@ -328,15 +346,14 @@ def _movie_render_month_metrics():
                 elif unit == "B":
                     total_gb += value / (1024 ** 3)
                 else:
-                    # Unknown unit: don't pretend we know its conversion.
                     return None, f"Render ya dawo da unit da ba a gane ba: {unit}"
 
         if not found_values:
             return None, "Render API bai dawo da bandwidth datapoints ba."
 
         return total_gb, (
-            "Render official aggregate metric ne, amma yana iya jinkirin "
-            "kus an awa daya kuma ba ya ware wannan bincike shi kadai."
+            "Ma'aunin Render ne na dukkan outbound na service; yana iya "
+            "jinkiri kusan awa daya kuma ba ya ware wannan bincike shi kadai."
         )
 
     except Exception as exc:
@@ -349,10 +366,10 @@ def _movie_bandwidth_text(job=None, status="success"):
     lines = [
         "📊 RAHOTON BANDWIDTH — WANNAN WATAN",
         f"🗓 Wata: {_movie_month_key()} (UTC)",
-        f"🔢 Yawan binciken da aka yi: {count}",
-        f"⬇️ Jimillar video da aka sauke (Inbound): {_movie_fmt(inbound)}",
-        f"⬆️ Jimillar Gemini outbound: {_movie_fmt(gemini)}",
-        f"⬆️ Jimillar Telegram outbound: {_movie_fmt(telegram)}",
+        f"🔢 Yawan bincike: {count}",
+        f"⬇️ Video da aka sauke zuwa Render: {_movie_fmt(inbound)}",
+        f"🤖 Amfanin Gemini (ƙiyasin aika hotuna): {_movie_fmt(gemini)}",
+        f"📨 Hotunan da aka aika Telegram: {_movie_fmt(telegram)}",
         f"📤 Jimillar outbound da bot ya auna: {_movie_fmt(local_outbound)}",
     ]
 
@@ -362,12 +379,12 @@ def _movie_bandwidth_text(job=None, status="success"):
         job_telegram = int(job.get("telegram_out_bytes", 0))
         lines += [
             "",
-            "📌 BAYANAN WANNAN AIKI",
+            "📌 WANNAN BINCIKEN",
             f"🆔 Job ID: {job.get('job_id', '-')}",
-            f"📍 Sakamako: {status.upper()}",
-            f"⬇️ Video zuwa Render: {_movie_fmt(job_in)}",
-            f"⬆️ Gemini request: {_movie_fmt(job_gemini)}",
-            f"⬆️ Hotuna zuwa Telegram: {_movie_fmt(job_telegram)}",
+            f"📍 Matsayi: {'An kammala' if status == 'success' else 'Bai kammala ba'}",
+            f"⬇️ Girman video: {_movie_fmt(job_in)}",
+            f"🤖 Gemini: {_movie_fmt(job_gemini)}",
+            f"📨 Telegram: {_movie_fmt(job_telegram)}",
             f"📤 Outbound na wannan aiki: {_movie_fmt(job_gemini + job_telegram)}",
         ]
 
@@ -379,34 +396,33 @@ def _movie_bandwidth_text(job=None, status="success"):
         )
         lines += [
             "",
-            "📦 QUOTA DA RAGOWA",
-            f"📦 Monthly quota da ka saita: {RENDER_MONTHLY_BANDWIDTH_GB:.2f} GB",
-            f"📤 Bot ya auna amfani: {_movie_fmt(local_outbound)}",
-            f"🟢 Ƙiyasin abin da ya rage: {_movie_fmt(remaining)}",
-            f"📈 Ƙiyasin amfani: {used_percent:.2f}%",
-            "⚠️ Ragowar nan ƙiyasin local tracker ne, ba official Render balance ba.",
+            "📦 QUOTA NA WATA",
+            f"Adadin da aka saita: {RENDER_MONTHLY_BANDWIDTH_GB:.2f} GB",
+            f"Amfani bisa ƙiyasin bot: {_movie_fmt(local_outbound)}",
+            f"Ragowar bisa ƙiyasin bot: {_movie_fmt(remaining)}",
+            f"Kason da aka yi amfani da shi: {used_percent:.2f}%",
+            "⚠️ Wannan ƙiyasin bot ne, ba ainihin balance na Render ba.",
         ]
     else:
         lines += [
             "",
             "📦 Ba a saita RENDER_MONTHLY_BANDWIDTH_GB ba.",
-            "Ba za a iya nuna ragowar quota ba sai ka saita ainihin allowance ɗinka.",
+            "Saita ainihin allowance ɗinka a Render Environment domin nuna ƙiyasin ragowa.",
         ]
 
     render_gb, render_note = _movie_render_month_metrics()
-    lines += ["", "☁️ BAYANAN RENDER"]
+    lines += ["", "☁️ MA'AUNIN RENDER"]
     if render_gb is not None:
-        lines.append(f"📤 Render outbound na wannan watan: {render_gb:.4f} GB")
+        lines.append(f"Outbound na Render a wannan watan: {render_gb:.4f} GB")
+        lines.append(f"ℹ️ {render_note}")
     else:
         lines.append(f"⚠️ {render_note}")
-    lines.append("ℹ️ " + render_note)
-    lines.append(
-        "ℹ️ Sauke video zuwa Render inbound ne; ba ya cikin outbound quota."
-    )
-    lines.append(
-        "ℹ️ Local tracker yana auna request/upload payload; zai iya bambanta "
-        "da lissafin Render saboda sauran traffic da protocol overhead."
-    )
+
+    lines += [
+        "",
+        "ℹ️ Sauke video zuwa Render inbound ne; ba ya cikin outbound quota.",
+        "ℹ️ Ma'aunin bot ƙiyasin payload ne; zai iya bambanta da lissafin Render.",
+    ]
     return "\n".join(lines)
 
 
@@ -419,13 +435,19 @@ def movie_ai_analyze(frames, job):
         f"{MOVIE_AI_MODEL}:generateContent"
     )
 
-    prompt = """You are a careful movie-identification analyst. Analyze all 10 frames together.
-Identify the original film only when supported by evidence. Examine actors, costumes,
-locations, signs, language and distinctive scenes. Never invent titles, actors, year,
-country or language. Separate evidence from inference. If uncertain, say NOT CONFIRMED.
-Return: MOVIE TITLE, RELEASE YEAR, COUNTRY, LANGUAGE, CONFIDENCE (HIGH/MEDIUM/LOW/
-UNCONFIRMED), VISUAL EVIDENCE, ACTOR EVIDENCE, LOCATION EVIDENCE,
-ALTERNATIVE CANDIDATES, FINAL VERDICT."""
+    # Hausa response, short report, and no invented movie details.
+    prompt = """Kai kwararre ne wajen gano fina-finai daga hotuna. Ka duba duk hotuna 10 tare.
+Ka gano fim ne kawai idan hujjoji sun goyi bayan hakan. Kada ka ƙirƙiri suna, shekara,
+jarumi, ƙasa ko harshe. Ka amsa da HAUSA kawai kuma a taƙaice; kada ka yi dogon bayani.
+Idan ba ka da isasshen tabbaci, ka rubuta "BA A TABBATAR BA".
+Ka bi wannan tsari kawai:
+SUNAN FIM:
+SHEKARA:
+ƘASA:
+HARSHEN FIM:
+MATSAYIN TABBACI: (MAI ƘARFI / MATSakaici / ƘASA / BA A TABBATAR BA)
+HUJJA: (jimla 1 ko 2 kawai)
+SAKAMAKO:"""
 
     parts = [{"text": prompt}]
     for frame_path in frames:
@@ -442,7 +464,7 @@ ALTERNATIVE CANDIDATES, FINAL VERDICT."""
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 1800,
+            "maxOutputTokens": 700,
         },
     }
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -634,7 +656,7 @@ def movie_bincike_process(user_id, job):
         # Plain text deliberately: Gemini output may contain HTML symbols.
         bot.send_message(
             user_id,
-            "🎬 MOVIE IDENTIFICATION REPORT\n\n" + report[:3500],
+            "🎬 RAHOTON GANO FIM\n\n" + report[:2500],
         )
 
         bot.send_message(user_id, "🖼️ Hotuna 10 da aka bincika:")
@@ -648,7 +670,7 @@ def movie_bincike_process(user_id, job):
                 media.append(
                     types.InputMediaPhoto(
                         image_file,
-                        caption=f"Frame {index + 1}/10",
+                        caption=f"Hoto {index + 1}/10",
                     )
                 )
                 # Approximate payload bytes; excludes Telegram protocol overhead.
