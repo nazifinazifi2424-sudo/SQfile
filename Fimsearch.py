@@ -108,79 +108,594 @@ bot = telebot.TeleBot(
     threaded=True
 )
 
-
-
-
 # ============================================================
-# 🎬 MOVIE IDENTIFICATION SYSTEM — GEMINI AI
-# COMMAND: /bincike
-# ADMIN ONLY
+# MOVIE IDENTIFICATION SYSTEM — GEMINI + AUTOMATIC BANDWIDTH REPORT
+#
+# Paste AFTER existing Pyrogram helper functions and BEFORE polling.
+#
+# Requires existing:
+#   bot, ADMIN_ID, videocon_run_async,
+#   _videocon_get_message, _videocon_download, _videocon_pyro
+#
+# Required Render environment:
+#   GEMINI_API_KEY
+#   RENDER_MONTHLY_BANDWIDTH_GB  (your actual monthly outbound allowance)
+#
+# Optional:
+#   MOVIE_AI_MODEL=gemini-flash-latest
+#   MOVIE_MAX_VIDEO_MB=500
+#   MOVIE_USAGE_DB=/var/data/movie_bandwidth.sqlite3
+#   RENDER_API_KEY
+#   RENDER_SERVICE_ID
+#
+# IMPORTANT:
+# - No /bandwidth command. A report is sent automatically after EVERY job.
+# - The report includes this job, previous jobs this month, quota estimate,
+#   and Render's aggregate monthly metric when API credentials are configured.
+# - Render metrics are hourly/aggregate and delayed; they are not per-job.
+# - Local tracking is an estimate, not Render's official billing balance.
+# - For totals to survive Render redeploys, attach a persistent disk and set
+#   MOVIE_USAGE_DB to a path on that disk.
 # ============================================================
 
 import os
+import re
+import json
+import time
 import base64
-import requests
-import subprocess
+import sqlite3
+import shutil
 import tempfile
 import threading
-import shutil
-import time
+import subprocess
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
 
+import requests
 from telebot import types
 
-
-# ============================================================
-# GEMINI CONFIGURATION
-# ============================================================
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-
-MOVIE_AI_MODEL = os.getenv(
-    "MOVIE_AI_MODEL",
-    "gemini-3.8-flash"
-).strip()
-
+MOVIE_AI_MODEL = os.getenv("MOVIE_AI_MODEL", "gemini-flash-latest").strip()
 MOVIE_FRAME_COUNT = 10
+MOVIE_FRAME_WIDTH = 640
+MOVIE_JPEG_QUALITY = 8
+MOVIE_AI_TIMEOUT = 180
+MOVIE_DOWNLOAD_TIMEOUT = 3600
+MOVIE_MAX_VIDEO_MB = int(os.getenv("MOVIE_MAX_VIDEO_MB", "500"))
+MOVIE_USAGE_DB = os.getenv("MOVIE_USAGE_DB", "movie_bandwidth.sqlite3")
+RENDER_API_KEY = os.getenv("RENDER_API_KEY", "").strip()
+RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID", "").strip()
+RENDER_MONTHLY_BANDWIDTH_GB = float(
+    os.getenv("RENDER_MONTHLY_BANDWIDTH_GB", "0") or 0
+)
 
-MOVIE_AI_TIMEOUT = 300
-
-MOVIE_DOWNLOAD_TIMEOUT = 12 * 60 * 60
-
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-
+_MOVIE_LOCK = threading.RLock()
 _movie_bincike_waiting = set()
-
 _movie_bincike_jobs = {}
+_movie_active = False
 
-_movie_bincike_lock = threading.RLock()
+try:
+    logger
+except NameError:
+    logger = logging.getLogger("movie_bincike")
+    if not logger.handlers:
+        logging.basicConfig(level=logging.INFO)
 
 
-# ============================================================
-# ADMIN CHECK
-# ============================================================
+def _movie_admin(uid):
+    try:
+        return ADMIN_ID is not None and int(uid) == int(ADMIN_ID)
+    except Exception:
+        return False
 
-def movie_bincike_is_admin(user_id):
 
-    return (
-        ADMIN_ID is not None
-        and int(user_id) == int(ADMIN_ID)
+def _movie_fmt(n):
+    n = max(0, float(n or 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.2f} {unit}"
+        n /= 1024
+    return f"{n:.2f} TB"
+
+
+def _movie_month_key():
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _movie_db():
+    db_path = Path(MOVIE_USAGE_DB).expanduser()
+    if str(db_path.parent) not in ("", "."):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT,
+            created_at TEXT,
+            inbound INTEGER DEFAULT 0,
+            gemini_out INTEGER DEFAULT 0,
+            telegram_out INTEGER DEFAULT 0,
+            total_out INTEGER DEFAULT 0,
+            status TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def _movie_save(job, status):
+    inbound = int(job.get("downloaded_bytes", 0))
+    gemini_out = int(job.get("gemini_out_bytes", 0))
+    telegram_out = int(job.get("telegram_out_bytes", 0))
+    with _movie_db() as db:
+        db.execute(
+            """INSERT INTO usage
+            (job_id, created_at, inbound, gemini_out, telegram_out, total_out, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                job.get("job_id", "unknown"),
+                datetime.now(timezone.utc).isoformat(),
+                inbound,
+                gemini_out,
+                telegram_out,
+                gemini_out + telegram_out,
+                status,
+            ),
+        )
+
+
+def _movie_month_totals():
+    month = _movie_month_key()
+    with _movie_db() as db:
+        row = db.execute(
+            """
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(inbound), 0),
+                COALESCE(SUM(gemini_out), 0),
+                COALESCE(SUM(telegram_out), 0),
+                COALESCE(SUM(total_out), 0)
+            FROM usage
+            WHERE substr(created_at, 1, 7) = ?
+            """,
+            (month,),
+        ).fetchone()
+    return tuple(int(x or 0) for x in row)
+
+
+def _movie_render_month_metrics():
+    """Return Render's aggregate outbound bandwidth for this UTC month."""
+    if not (RENDER_API_KEY and RENDER_SERVICE_ID):
+        return None, "Ba a saita Render API Key da Service ID ba."
+
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    try:
+        response = requests.get(
+            "https://api.render.com/v1/metrics/bandwidth",
+            headers={
+                "Authorization": "Bearer " + RENDER_API_KEY,
+                "Accept": "application/json",
+            },
+            params={
+                "resource": RENDER_SERVICE_ID,
+                "startTime": int(month_start.timestamp()),
+                "endTime": int(now.timestamp()),
+            },
+            timeout=20,
+        )
+
+        if response.status_code != 200:
+            return None, (
+                f"Render API HTTP {response.status_code}: "
+                f"{response.text[:250]}"
+            )
+
+        payload = response.json()
+        total_gb = 0.0
+        found_values = False
+
+        # Render returns a list of time-series objects, each with unit and values.
+        if isinstance(payload, list):
+            series_list = payload
+        elif isinstance(payload, dict):
+            series_list = payload.get("data", [])
+        else:
+            series_list = []
+
+        for series in series_list:
+            if not isinstance(series, dict):
+                continue
+            unit = str(series.get("unit", "GB")).upper()
+            values = series.get("values", [])
+            for point in values:
+                if not isinstance(point, dict):
+                    continue
+                try:
+                    value = float(point.get("value", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                found_values = True
+                if unit == "GB":
+                    total_gb += value
+                elif unit == "MB":
+                    total_gb += value / 1024
+                elif unit == "KB":
+                    total_gb += value / (1024 ** 2)
+                elif unit == "B":
+                    total_gb += value / (1024 ** 3)
+                else:
+                    # Unknown unit: don't pretend we know its conversion.
+                    return None, f"Render ya dawo da unit da ba a gane ba: {unit}"
+
+        if not found_values:
+            return None, "Render API bai dawo da bandwidth datapoints ba."
+
+        return total_gb, (
+            "Render official aggregate metric ne, amma yana iya jinkirin "
+            "kus an awa daya kuma ba ya ware wannan bincike shi kadai."
+        )
+
+    except Exception as exc:
+        return None, "Ba a samu Render metrics ba: " + str(exc)[:200]
+
+
+def _movie_bandwidth_text(job=None, status="success"):
+    count, inbound, gemini, telegram, local_outbound = _movie_month_totals()
+
+    lines = [
+        "📊 RAHOTON BANDWIDTH — WANNAN WATAN",
+        f"🗓 Wata: {_movie_month_key()} (UTC)",
+        f"🔢 Yawan binciken da aka yi: {count}",
+        f"⬇️ Jimillar video da aka sauke (Inbound): {_movie_fmt(inbound)}",
+        f"⬆️ Jimillar Gemini outbound: {_movie_fmt(gemini)}",
+        f"⬆️ Jimillar Telegram outbound: {_movie_fmt(telegram)}",
+        f"📤 Jimillar outbound da bot ya auna: {_movie_fmt(local_outbound)}",
+    ]
+
+    if job is not None:
+        job_in = int(job.get("downloaded_bytes", 0))
+        job_gemini = int(job.get("gemini_out_bytes", 0))
+        job_telegram = int(job.get("telegram_out_bytes", 0))
+        lines += [
+            "",
+            "📌 BAYANAN WANNAN AIKI",
+            f"🆔 Job ID: {job.get('job_id', '-')}",
+            f"📍 Sakamako: {status.upper()}",
+            f"⬇️ Video zuwa Render: {_movie_fmt(job_in)}",
+            f"⬆️ Gemini request: {_movie_fmt(job_gemini)}",
+            f"⬆️ Hotuna zuwa Telegram: {_movie_fmt(job_telegram)}",
+            f"📤 Outbound na wannan aiki: {_movie_fmt(job_gemini + job_telegram)}",
+        ]
+
+    if RENDER_MONTHLY_BANDWIDTH_GB > 0:
+        quota_bytes = int(RENDER_MONTHLY_BANDWIDTH_GB * (1024 ** 3))
+        remaining = max(0, quota_bytes - local_outbound)
+        used_percent = (
+            (local_outbound / quota_bytes) * 100 if quota_bytes else 0
+        )
+        lines += [
+            "",
+            "📦 QUOTA DA RAGOWA",
+            f"📦 Monthly quota da ka saita: {RENDER_MONTHLY_BANDWIDTH_GB:.2f} GB",
+            f"📤 Bot ya auna amfani: {_movie_fmt(local_outbound)}",
+            f"🟢 Ƙiyasin abin da ya rage: {_movie_fmt(remaining)}",
+            f"📈 Ƙiyasin amfani: {used_percent:.2f}%",
+            "⚠️ Ragowar nan ƙiyasin local tracker ne, ba official Render balance ba.",
+        ]
+    else:
+        lines += [
+            "",
+            "📦 Ba a saita RENDER_MONTHLY_BANDWIDTH_GB ba.",
+            "Ba za a iya nuna ragowar quota ba sai ka saita ainihin allowance ɗinka.",
+        ]
+
+    render_gb, render_note = _movie_render_month_metrics()
+    lines += ["", "☁️ BAYANAN RENDER"]
+    if render_gb is not None:
+        lines.append(f"📤 Render outbound na wannan watan: {render_gb:.4f} GB")
+    else:
+        lines.append(f"⚠️ {render_note}")
+    lines.append("ℹ️ " + render_note)
+    lines.append(
+        "ℹ️ Sauke video zuwa Render inbound ne; ba ya cikin outbound quota."
+    )
+    lines.append(
+        "ℹ️ Local tracker yana auna request/upload payload; zai iya bambanta "
+        "da lissafin Render saboda sauran traffic da protocol overhead."
+    )
+    return "\n".join(lines)
+
+
+def movie_ai_analyze(frames, job):
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY bai samu a Render ba.")
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MOVIE_AI_MODEL}:generateContent"
     )
 
+    prompt = """You are a careful movie-identification analyst. Analyze all 10 frames together.
+Identify the original film only when supported by evidence. Examine actors, costumes,
+locations, signs, language and distinctive scenes. Never invent titles, actors, year,
+country or language. Separate evidence from inference. If uncertain, say NOT CONFIRMED.
+Return: MOVIE TITLE, RELEASE YEAR, COUNTRY, LANGUAGE, CONFIDENCE (HIGH/MEDIUM/LOW/
+UNCONFIRMED), VISUAL EVIDENCE, ACTOR EVIDENCE, LOCATION EVIDENCE,
+ALTERNATIVE CANDIDATES, FINAL VERDICT."""
 
-# ============================================================
-# /BINCIKE COMMAND
-# ============================================================
+    parts = [{"text": prompt}]
+    for frame_path in frames:
+        with open(frame_path, "rb") as image_file:
+            raw = image_file.read()
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(raw).decode("ascii"),
+            }
+        })
+
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 1800,
+        },
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    job["gemini_out_bytes"] += len(body)
+
+    response = requests.post(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        },
+        data=body,
+        timeout=(15, MOVIE_AI_TIMEOUT),
+    )
+
+    if response.status_code != 200:
+        try:
+            detail = response.json().get("error", {}).get(
+                "message", response.text[:700]
+            )
+        except Exception:
+            detail = response.text[:700]
+        raise RuntimeError(
+            f"Gemini API Error {response.status_code}: {detail}"
+        )
+
+    candidates = response.json().get("candidates") or []
+    if not candidates:
+        raise RuntimeError("Gemini bai dawo da sakamako ba.")
+
+    result = "\n".join(
+        part.get("text", "")
+        for part in candidates[0].get("content", {}).get("parts", [])
+        if part.get("text")
+    ).strip()
+
+    if not result:
+        raise RuntimeError("Gemini ya dawo da amsa babu rubutu.")
+    return result
+
+
+def movie_bincike_extract_frames(video_path, output_dir):
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        raise RuntimeError("FFmpeg ko FFprobe ba a samu a server ba.")
+
+    probe = subprocess.run(
+        [
+            ffprobe, "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if probe.returncode:
+        raise RuntimeError("Ba a iya karanta duration na video ba.")
+
+    try:
+        duration = float(probe.stdout.strip())
+    except Exception:
+        raise RuntimeError("Duration na video bai inganta ba.")
+
+    if duration <= 0:
+        raise RuntimeError("Duration na video ba daidai ba ne.")
+
+    frames = []
+    for index in range(MOVIE_FRAME_COUNT):
+        timestamp = duration * (index + 0.5) / MOVIE_FRAME_COUNT
+        output_path = os.path.join(
+            output_dir, f"frame_{index + 1:02d}.jpg"
+        )
+
+        result = subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-ss", f"{timestamp:.3f}", "-i", video_path,
+                "-frames:v", "1",
+                "-vf", f"scale='min({MOVIE_FRAME_WIDTH},iw)':-2",
+                "-q:v", str(MOVIE_JPEG_QUALITY),
+                "-threads", "1", "-y", output_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+
+        if (
+            result.returncode
+            or not os.path.isfile(output_path)
+            or os.path.getsize(output_path) == 0
+        ):
+            raise RuntimeError(
+                f"An kasa fitar da frame na {index + 1}."
+            )
+        frames.append(output_path)
+
+    if len(frames) != MOVIE_FRAME_COUNT:
+        raise RuntimeError("Ba a iya samar da hotuna 10 ba.")
+    return frames
+
+
+def movie_bincike_process(user_id, job):
+    global _movie_active
+    temp_dir = None
+    status = "failed"
+
+    job.update({
+        "downloaded_bytes": 0,
+        "gemini_out_bytes": 0,
+        "telegram_out_bytes": 0,
+    })
+
+    try:
+        bot.send_message(user_id, "🔍 Ana fara binciken fim...")
+
+        pyro_message = videocon_run_async(
+            _videocon_get_message(job["chat_id"], job["message_id"]),
+            timeout=180,
+        )
+        if not pyro_message:
+            raise RuntimeError(
+                "Ba a iya samun original video a Telegram ba."
+            )
+
+        max_bytes = MOVIE_MAX_VIDEO_MB * 1024 * 1024
+        expected_size = int(job.get("file_size", 0) or 0)
+        if expected_size and expected_size > max_bytes:
+            raise RuntimeError(
+                f"Video ya wuce iyakar {MOVIE_MAX_VIDEO_MB} MB."
+            )
+
+        temp_dir = tempfile.mkdtemp(prefix="movie_bincike_")
+        input_path = os.path.join(temp_dir, "movie_input.mp4")
+
+        bot.send_message(
+            user_id,
+            "⬇️ Ana sauke video zuwa Render (Inbound)..."
+        )
+
+        download_state = {
+            "time": 0,
+            "start_time": 0,
+            "start_bytes": 0,
+        }
+
+        # Use the existing working helper; do not call Pyrogram download_media
+        # directly through videocon_run_async.
+        downloaded_path = videocon_run_async(
+            _videocon_download(
+                pyro_message,
+                input_path,
+                None,
+                download_state,
+            ),
+            timeout=MOVIE_DOWNLOAD_TIMEOUT,
+        )
+
+        if not downloaded_path or not os.path.isfile(downloaded_path):
+            raise RuntimeError("Download na video ya gaza.")
+
+        job["downloaded_bytes"] = os.path.getsize(downloaded_path)
+        if (
+            job["downloaded_bytes"] <= 0
+            or job["downloaded_bytes"] > max_bytes
+        ):
+            raise RuntimeError(
+                "Girman downloaded video bai dace da iyakar da aka saita ba."
+            )
+
+        bot.send_message(
+            user_id,
+            "🖼️ Ana fitar da frames 10 masu ƙaramin girma..."
+        )
+        frames = movie_bincike_extract_frames(downloaded_path, temp_dir)
+        total_frame_bytes = sum(os.path.getsize(path) for path in frames)
+
+        bot.send_message(
+            user_id,
+            "🤖 Ana aika hotuna zuwa Gemini "
+            f"({_movie_fmt(total_frame_bytes)})..."
+        )
+
+        report = movie_ai_analyze(frames, job)
+
+        # Plain text deliberately: Gemini output may contain HTML symbols.
+        bot.send_message(
+            user_id,
+            "🎬 MOVIE IDENTIFICATION REPORT\n\n" + report[:3500],
+        )
+
+        bot.send_message(user_id, "🖼️ Hotuna 10 da aka bincika:")
+
+        media = []
+        opened_files = []
+        try:
+            for index, frame_path in enumerate(frames):
+                image_file = open(frame_path, "rb")
+                opened_files.append(image_file)
+                media.append(
+                    types.InputMediaPhoto(
+                        image_file,
+                        caption=f"Frame {index + 1}/10",
+                    )
+                )
+                # Approximate payload bytes; excludes Telegram protocol overhead.
+                job["telegram_out_bytes"] += os.path.getsize(frame_path)
+
+            bot.send_media_group(user_id, media, timeout=90)
+        finally:
+            for image_file in opened_files:
+                image_file.close()
+
+        status = "success"
+        bot.send_message(user_id, "✅ An kammala binciken.")
+
+    except Exception as exc:
+        logger.exception("Movie identification failed")
+        try:
+            bot.send_message(
+                user_id,
+                "❌ BINCIKE YA KASA\n\n" + str(exc)[:2200],
+            )
+        except Exception:
+            logger.exception("Cannot send movie identification error")
+
+    finally:
+        try:
+            _movie_save(job, status)
+            # Automatic report after every completed or failed job.
+            bot.send_message(
+                user_id,
+                _movie_bandwidth_text(job, status=status),
+            )
+        except Exception:
+            logger.exception("Automatic bandwidth report/save failed")
+
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        with _MOVIE_LOCK:
+            _movie_bincike_jobs.pop(user_id, None)
+            _movie_active = False
+
 
 @bot.message_handler(commands=["bincike"])
 def movie_bincike_command(message):
+    uid = message.from_user.id
 
-    user_id = message.from_user.id
-
-    if not movie_bincike_is_admin(user_id):
-
+    if not _movie_admin(uid):
         bot.reply_to(
             message,
             "❌ Wannan command ɗin na Admin ne kawai."
@@ -188,604 +703,176 @@ def movie_bincike_command(message):
         return
 
     if not GEMINI_API_KEY:
-
         bot.reply_to(
             message,
-            "❌ GEMINI_API_KEY bai samu a Render ba."
+            "❌ Saita GEMINI_API_KEY a Render Environment."
         )
         return
 
-    with _movie_bincike_lock:
-
-        _movie_bincike_waiting.add(user_id)
-
-        _movie_bincike_jobs.pop(user_id, None)
+    with _MOVIE_LOCK:
+        if uid in _movie_bincike_jobs:
+            bot.reply_to(
+                message,
+                "⚠️ Akwai bincike da bai gama ba."
+            )
+            return
+        _movie_bincike_waiting.add(uid)
 
     bot.reply_to(
         message,
-        "🎬 <b>MOVIE IDENTIFICATION SYSTEM</b>\n\n"
-        "Aiko min da video ɗin da kake son gano sunan fim ɗinsa.\n\n"
-        "⏳ Ina jiran video...",
-        parse_mode="HTML"
+        f"🎬 Aiko da video. Iyakar girma: {MOVIE_MAX_VIDEO_MB} MB."
     )
 
-
-# ============================================================
-# RECEIVE VIDEO
-# ============================================================
 
 @bot.message_handler(
     content_types=["video"],
     func=lambda message: (
         message.from_user is not None
+        and _movie_admin(message.from_user.id)
         and message.from_user.id in _movie_bincike_waiting
-        and movie_bincike_is_admin(message.from_user.id)
-    )
+    ),
 )
 def movie_bincike_receive_video(message):
-
-    user_id = message.from_user.id
-
-    if not message.video:
-
+    uid = message.from_user.id
+    video = message.video
+    if not video:
         return
 
-    with _movie_bincike_lock:
+    size = int(getattr(video, "file_size", 0) or 0)
+    if size and size > MOVIE_MAX_VIDEO_MB * 1024 * 1024:
+        _movie_bincike_waiting.discard(uid)
+        bot.reply_to(
+            message,
+            f"❌ Video ya wuce iyakar {MOVIE_MAX_VIDEO_MB} MB."
+        )
+        return
 
-        _movie_bincike_waiting.discard(user_id)
-
-        _movie_bincike_jobs[user_id] = {
+    with _MOVIE_LOCK:
+        _movie_bincike_waiting.discard(uid)
+        _movie_bincike_jobs[uid] = {
+            "job_id": f"{uid}-{int(time.time())}",
             "chat_id": message.chat.id,
             "message_id": message.message_id,
-            "file_name": getattr(
-                message.video,
-                "file_name",
-                None
-            ) or "movie_video.mp4"
+            "file_name": (
+                getattr(video, "file_name", None) or "movie.mp4"
+            ),
+            "file_size": size,
+            "running": False,
         }
 
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-
     keyboard.add(
         types.InlineKeyboardButton(
-            "✅ Eh",
-            callback_data="movie_bincike:yes"
+            "✅ Eh", callback_data="movie_bincike:yes"
         ),
         types.InlineKeyboardButton(
-            "❌ A'a",
-            callback_data="movie_bincike:no"
-        )
+            "❌ A'a", callback_data="movie_bincike:no"
+        ),
     )
-
     bot.reply_to(
         message,
-        "✅ An karɓi video ɗin.\n\n"
-        "Kana son mu gano asalin sunan fim ɗin?",
-        reply_markup=keyboard
+        "✅ An karɓi video. Kana son a gano asalin fim ɗin?",
+        reply_markup=keyboard,
     )
 
-
-# ============================================================
-# GEMINI AI ANALYSIS
-# ============================================================
-
-def movie_ai_analyze(frames):
-
-    if not GEMINI_API_KEY:
-
-        raise RuntimeError(
-            "GEMINI_API_KEY bai samu ba."
-        )
-
-    url = (
-        "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{MOVIE_AI_MODEL}:generateContent"
-    )
-
-    prompt = """
-You are an expert movie identification analyst.
-
-Analyze all 10 video frames together.
-
-Your task is to identify the original movie title.
-
-Carefully examine:
-
-1. Actors and recognizable performers.
-2. Clothing and costumes.
-3. Locations and buildings.
-4. Distinctive scenes.
-5. Visible text and signs.
-6. Country and cultural clues.
-7. Language clues.
-8. Film production style.
-9. Any other visual evidence.
-
-IMPORTANT RULES:
-
-- Do not invent actors.
-- Do not invent movie titles.
-- Do not claim certainty without reliable evidence.
-- Distinguish confirmed evidence from guesses.
-- If you cannot identify the exact movie, say NOT CONFIRMED.
-- Give alternative candidates only when there is a reasonable basis.
-
-Return your result in this format:
-
-MOVIE TITLE:
-RELEASE YEAR:
-COUNTRY:
-LANGUAGE:
-
-CONFIDENCE:
-HIGH / MEDIUM / LOW / UNCONFIRMED
-
-VISUAL EVIDENCE:
-ACTOR EVIDENCE:
-LOCATION EVIDENCE:
-
-ALTERNATIVE CANDIDATES:
-
-FINAL VERDICT:
-"""
-
-    parts = [
-        {"text": prompt}
-    ]
-
-    for frame_path in frames:
-
-        with open(frame_path, "rb") as image_file:
-
-            encoded = base64.b64encode(
-                image_file.read()
-            ).decode("utf-8")
-
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": encoded
-            }
-        })
-
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": parts
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 3000
-        }
-    }
-
-    response = requests.post(
-        url,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        },
-        json=payload,
-        timeout=MOVIE_AI_TIMEOUT
-    )
-
-    if response.status_code != 200:
-
-        try:
-
-            error_data = response.json()
-
-            error_message = (
-                error_data.get("error", {}).get(
-                    "message",
-                    response.text[:1000]
-                )
-            )
-
-        except Exception:
-
-            error_message = response.text[:1000]
-
-        raise RuntimeError(
-            f"Gemini API Error ({response.status_code}): "
-            f"{error_message}"
-        )
-
-    data = response.json()
-
-    candidates = data.get("candidates", [])
-
-    if not candidates:
-
-        raise RuntimeError(
-            "Gemini bai dawo da sakamako ba."
-        )
-
-    response_parts = (
-        candidates[0]
-        .get("content", {})
-        .get("parts", [])
-    )
-
-    result = "\n".join(
-        part.get("text", "")
-        for part in response_parts
-        if part.get("text")
-    ).strip()
-
-    if not result:
-
-        raise RuntimeError(
-            "Gemini ya dawo da amsa babu rubutu."
-        )
-
-    return result
-
-
-# ============================================================
-# EXTRACT EXACTLY 10 FRAMES
-# ============================================================
-
-def movie_bincike_extract_frames(video_path, output_dir):
-
-    ffmpeg = shutil.which("ffmpeg")
-
-    ffprobe = shutil.which("ffprobe")
-
-    if not ffmpeg or not ffprobe:
-
-        raise RuntimeError(
-            "FFmpeg ko FFprobe ba a samu a server ba."
-        )
-
-    duration_result = subprocess.run(
-        [
-            ffprobe,
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            video_path
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120
-    )
-
-    if duration_result.returncode != 0:
-
-        raise RuntimeError(
-            "Ba a iya karanta duration na video ba."
-        )
-
-    duration = float(
-        duration_result.stdout.strip()
-    )
-
-    if duration <= 0:
-
-        raise RuntimeError(
-            "Duration na video ba daidai ba ne."
-        )
-
-    frames = []
-
-    for index in range(MOVIE_FRAME_COUNT):
-
-        # A ɗauki hotuna daga wurare daban-daban na video.
-        timestamp = (
-            duration
-            * (index + 0.5)
-            / MOVIE_FRAME_COUNT
-        )
-
-        frame_path = os.path.join(
-            output_dir,
-            f"frame_{index + 1:02d}.jpg"
-        )
-
-        result = subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-ss", str(timestamp),
-                "-i", video_path,
-                "-frames:v", "1",
-                "-vf", "scale='min(1280,iw)':-2",
-                "-q:v", "3",
-                frame_path
-            ],
-            capture_output=True,
-            text=True,
-            timeout=180
-        )
-
-        if (
-            result.returncode != 0
-            or not os.path.exists(frame_path)
-            or os.path.getsize(frame_path) == 0
-        ):
-
-            raise RuntimeError(
-                f"An kasa fitar da frame na {index + 1}."
-            )
-
-        frames.append(frame_path)
-
-    if len(frames) != 10:
-
-        raise RuntimeError(
-            "Ba a iya samar da hotuna 10 ba."
-        )
-
-    return frames
-
-
-# ============================================================
-# MAIN MOVIE IDENTIFICATION PROCESS
-# ============================================================
-
-def movie_bincike_process(user_id, job):
-
-    temp_dir = None
-
-    try:
-
-        bot.send_message(
-            user_id,
-            "🔍 <b>MOVIE IDENTIFICATION STARTED</b>\n\n"
-            "⏳ Ana neman video a Telegram...",
-            parse_mode="HTML"
-        )
-
-        # ----------------------------------------------------
-        # GET ORIGINAL TELEGRAM MESSAGE
-        # ----------------------------------------------------
-
-        pyro_message = videocon_run_async(
-            _videocon_get_message(
-                job["chat_id"],
-                job["message_id"]
-            ),
-            timeout=180
-        )
-
-        if not pyro_message:
-
-            raise RuntimeError(
-                "Ba a iya samun original video a Telegram ba."
-            )
-
-        # ----------------------------------------------------
-        # TEMP DIRECTORY
-        # ----------------------------------------------------
-
-        temp_dir = tempfile.mkdtemp(
-            prefix="movie_bincike_"
-        )
-
-        video_path = os.path.join(
-            temp_dir,
-            "movie_input.mp4"
-        )
-
-        # ----------------------------------------------------
-        # DOWNLOAD VIDEO USING EXISTING PYROGRAM
-        # ----------------------------------------------------
-
-        bot.send_message(
-            user_id,
-            "⬇️ Ana sauke video...\n\n"
-            "⏳ Ka jira."
-        )
-
-        downloaded_path = videocon_run_async(
-            _videocon_pyro.download_media(
-                pyro_message,
-                file_name=video_path
-            ),
-            timeout=MOVIE_DOWNLOAD_TIMEOUT
-        )
-
-        if (
-            not downloaded_path
-            or not os.path.exists(video_path)
-        ):
-
-            if downloaded_path:
-                video_path = downloaded_path
-
-            else:
-                raise RuntimeError(
-                    "Download na video ya gaza."
-                )
-
-        # ----------------------------------------------------
-        # EXTRACT FRAMES
-        # ----------------------------------------------------
-
-        bot.send_message(
-            user_id,
-            "🖼️ Ana fitar da hotuna 10 daga video..."
-        )
-
-        frames = movie_bincike_extract_frames(
-            video_path,
-            temp_dir
-        )
-
-        # ----------------------------------------------------
-        # GEMINI ANALYSIS
-        # ----------------------------------------------------
-
-        bot.send_message(
-            user_id,
-            "🤖 <b>GEMINI AI ANALYSIS</b>\n\n"
-            "Ana nazarin hotuna 10 domin gano asalin fim ɗin.\n\n"
-            "⏳ Wannan na iya ɗaukar lokaci.",
-            parse_mode="HTML"
-        )
-
-        report = movie_ai_analyze(frames)
-
-        # ----------------------------------------------------
-        # SEND REPORT
-        # ----------------------------------------------------
-
-        bot.send_message(
-            user_id,
-            "🎬 <b>MOVIE IDENTIFICATION REPORT</b>\n\n"
-            + report[:3500],
-            parse_mode="HTML"
-        )
-
-        # ----------------------------------------------------
-        # SEND ALL 10 FRAMES
-        # ----------------------------------------------------
-
-        bot.send_message(
-            user_id,
-            "🖼️ <b>HOTUNA 10 DA AKA YI NAZARI</b>",
-            parse_mode="HTML"
-        )
-
-        media = []
-
-        for index, frame_path in enumerate(frames):
-
-            with open(frame_path, "rb") as photo:
-
-                bot.send_photo(
-                    user_id,
-                    photo,
-                    caption=f"Frame {index + 1}/10"
-                )
-
-        bot.send_message(
-            user_id,
-            "✅ An kammala binciken fim ɗin."
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Movie identification failed."
-        )
-
-        error_text = str(e)
-
-        bot.send_message(
-            user_id,
-            "❌ <b>MOVIE IDENTIFICATION ERROR</b>\n\n"
-            + error_text[:3000],
-            parse_mode="HTML"
-        )
-
-    finally:
-
-        if temp_dir and os.path.exists(temp_dir):
-
-            shutil.rmtree(
-                temp_dir,
-                ignore_errors=True
-            )
-
-        with _movie_bincike_lock:
-
-            _movie_bincike_jobs.pop(
-                user_id,
-                None
-            )
-
-
-# ============================================================
-# CONFIRMATION CALLBACK
-# ============================================================
 
 @bot.callback_query_handler(
     func=lambda call: (
-        call.data.startswith("movie_bincike:")
+        bool(call.data)
+        and call.data.startswith("movie_bincike:")
     )
 )
 def movie_bincike_callback(call):
+    global _movie_active
 
-    user_id = call.from_user.id
-
-    if not movie_bincike_is_admin(user_id):
-
+    uid = call.from_user.id
+    if not _movie_admin(uid):
         bot.answer_callback_query(
-            call.id,
-            "Admin only!",
-            show_alert=True
+            call.id, "Admin only!", show_alert=True
         )
         return
 
     action = call.data.split(":", 1)[1]
 
-    if action == "no":
+    with _MOVIE_LOCK:
+        job = _movie_bincike_jobs.get(uid)
 
-        with _movie_bincike_lock:
-
-            _movie_bincike_jobs.pop(
-                user_id,
-                None
+        if not job:
+            bot.answer_callback_query(
+                call.id,
+                "Babu aikin bincike. Ka sake /bincike.",
+                show_alert=True,
             )
+            return
 
-        bot.answer_callback_query(
-            call.id,
-            "An soke binciken."
-        )
-
-        bot.edit_message_text(
-            "❌ An soke binciken fim ɗin.",
-            call.message.chat.id,
-            call.message.message_id
-        )
-
-        return
-
-    if action == "yes":
-
-        with _movie_bincike_lock:
-
-            job = _movie_bincike_jobs.get(user_id)
-
-            if not job:
-
+        if action == "no":
+            if job.get("running"):
                 bot.answer_callback_query(
-                    call.id,
-                    "Ba a sami video ba. Ka sake amfani da /bincike.",
-                    show_alert=True
+                    call.id, "An riga an fara.", show_alert=True
                 )
                 return
 
-            _movie_bincike_jobs[user_id]["running"] = True
+            _movie_bincike_jobs.pop(uid, None)
+            bot.answer_callback_query(call.id, "An soke.")
+            try:
+                bot.edit_message_text(
+                    "❌ An soke binciken.",
+                    call.message.chat.id,
+                    call.message.message_id,
+                )
+            except Exception:
+                pass
+            return
 
-        bot.answer_callback_query(
-            call.id,
-            "An fara bincike..."
-        )
+        if action != "yes":
+            bot.answer_callback_query(
+                call.id, "Aiki bai gane ba.", show_alert=True
+            )
+            return
 
+        if job.get("running"):
+            bot.answer_callback_query(
+                call.id, "An riga an fara."
+            )
+            return
+
+        if _movie_active:
+            bot.answer_callback_query(
+                call.id,
+                "Akwai wani bincike yana gudana; jira.",
+                show_alert=True,
+            )
+            return
+
+        job["running"] = True
+        _movie_active = True
+
+    bot.answer_callback_query(call.id, "An fara bincike...")
+    try:
         bot.edit_message_text(
-            "🔍 An fara binciken fim ɗin.\n\n"
-            "⏳ Ka jira sakamako.",
+            "🔍 An fara bincike. Ka jira...",
             call.message.chat.id,
-            call.message.message_id
+            call.message.message_id,
         )
+    except Exception:
+        pass
 
-        threading.Thread(
-            target=movie_bincike_process,
-            args=(user_id, job),
-            daemon=True
-        ).start()
+    threading.Thread(
+        target=movie_bincike_process,
+        args=(uid, job),
+        daemon=True,
+        name=f"movie-bincike-{uid}",
+    ).start()
 
-        return
 
+# Babu /bandwidth command a wannan sigar.
+# Rahoton bandwidth yana zuwa kai tsaye bayan kowane bincike.
 
-# ============================================================
 # END MOVIE IDENTIFICATION SYSTEM
-# ============================================================
+
+
+
+
 
 
 # ============================================================
