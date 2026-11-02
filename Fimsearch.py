@@ -15,6 +15,60 @@ from pyrogram.errors import FloodWait, RPCError
 
 
 # ============================================================
+# ALL CHAT DATABASE CONNECTION
+# SHARED DATABASE FOR ALGAITABOT AND ALL WORKERS
+# ============================================================
+
+import os
+import psycopg2
+
+
+ALL_CHAT_DATABASE_URL = os.environ.get(
+    "ALL_CHAT_DATABASE_URL"
+)
+
+if not ALL_CHAT_DATABASE_URL:
+    raise RuntimeError(
+        "❌ ALL_CHAT_DATABASE_URL is not set"
+    )
+
+
+def get_all_chat_db_conn():
+
+    try:
+        all_chat_connection = psycopg2.connect(
+            ALL_CHAT_DATABASE_URL,
+            connect_timeout=10,
+            sslmode="require"
+        )
+
+        all_chat_connection.autocommit = False
+
+        print(
+            "✅ ALL CHAT DATABASE CONNECTION SUCCESSFUL"
+        )
+
+        return all_chat_connection
+
+    except Exception as e:
+
+        print(
+            "❌ ALL CHAT DATABASE CONNECTION ERROR:",
+            repr(e)
+        )
+
+        raise
+
+
+# ============================================================
+# ALL CHAT DATABASE CONNECTION READY
+# ============================================================
+
+print("✅ ALL CHAT DATABASE CONNECTOR READY")
+
+# ============================================================
+
+# ============================================================
 # CONFIG
 # ============================================================
 
