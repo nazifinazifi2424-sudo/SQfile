@@ -15,12 +15,13 @@ from pyrogram.errors import FloodWait, RPCError
 
 
 # ============================================================
-# ALL CHAT DATABASE CONNECTION
+# ALL CHAT DATABASE TABLES
 # SHARED DATABASE FOR ALGAITABOT AND ALL WORKERS
+# PostgreSQL / Neon DB
 # ============================================================
 
-import os
 import psycopg2
+import os
 
 
 ALL_CHAT_DATABASE_URL = os.environ.get(
@@ -36,37 +37,327 @@ if not ALL_CHAT_DATABASE_URL:
 def get_all_chat_db_conn():
 
     try:
-        all_chat_connection = psycopg2.connect(
+        conn = psycopg2.connect(
             ALL_CHAT_DATABASE_URL,
             connect_timeout=10,
             sslmode="require"
         )
 
-        all_chat_connection.autocommit = False
+        conn.autocommit = False
+        return conn
 
+    except Exception as e:
         print(
-            "✅ ALL CHAT DATABASE CONNECTION SUCCESSFUL"
+            "❌ ALL CHAT DATABASE CONNECTION ERROR:",
+            repr(e)
         )
+        raise
 
-        return all_chat_connection
+
+# ============================================================
+# CREATE ALL TABLES
+# ============================================================
+
+def create_all_chat_tables():
+
+    conn = get_all_chat_db_conn()
+    cur = conn.cursor()
+
+    try:
+
+        # ====================================================
+        # 1. WORKERS TABLE
+        # Stores all background worker bots
+        # ====================================================
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS workers (
+
+            worker_id TEXT PRIMARY KEY,
+
+            bot_username TEXT,
+            bot_name TEXT,
+
+            status VARCHAR(30) DEFAULT 'offline',
+
+            capabilities JSONB DEFAULT '{}'::jsonb,
+
+            current_task_id UUID,
+
+            last_heartbeat TIMESTAMPTZ,
+
+            last_started_at TIMESTAMPTZ,
+
+            last_stopped_at TIMESTAMPTZ,
+
+            total_tasks INTEGER DEFAULT 0,
+
+            successful_tasks INTEGER DEFAULT 0,
+
+            failed_tasks INTEGER DEFAULT 0,
+
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """)
+
+
+        # ====================================================
+        # 2. CUSTOMERS TABLE
+        # Permanent customer information
+        # This table is NOT deleted when chats expire
+        # ====================================================
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+
+            user_id BIGINT PRIMARY KEY,
+
+            username TEXT,
+
+            first_name TEXT,
+
+            last_name TEXT,
+
+            real_name TEXT,
+
+            preferred_name TEXT,
+
+            preferred_name_consent BOOLEAN DEFAULT FALSE,
+
+            preferred_language VARCHAR(20) DEFAULT 'ha',
+
+            detected_language VARCHAR(20) DEFAULT 'ha',
+
+            language_mode VARCHAR(20) DEFAULT 'AUTO',
+
+            language_updated_at TIMESTAMPTZ,
+
+            first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+
+            last_interaction_at TIMESTAMPTZ,
+
+            last_session_started_at TIMESTAMPTZ,
+
+            last_session_ended_at TIMESTAMPTZ,
+
+            total_messages BIGINT DEFAULT 0,
+
+            is_blocked BOOLEAN DEFAULT FALSE,
+
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """)
+
+
+        # ====================================================
+        # 3. TASKS TABLE
+        # Every customer request gets a unique task ID
+        # Workers receive tasks from this table
+        # ====================================================
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+
+            task_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+            user_id BIGINT NOT NULL
+                REFERENCES customers(user_id)
+                ON DELETE CASCADE,
+
+            task_type VARCHAR(100) NOT NULL,
+
+            status VARCHAR(30) DEFAULT 'pending',
+
+            priority INTEGER DEFAULT 5,
+
+            assigned_worker TEXT
+                REFERENCES workers(worker_id)
+                ON DELETE SET NULL,
+
+            payload JSONB DEFAULT '{}'::jsonb,
+
+            result_json JSONB DEFAULT '{}'::jsonb,
+
+            error_message TEXT,
+
+            attempts INTEGER DEFAULT 0,
+
+            max_attempts INTEGER DEFAULT 5,
+
+            lease_until TIMESTAMPTZ,
+
+            heartbeat_at TIMESTAMPTZ,
+
+            started_at TIMESTAMPTZ,
+
+            completed_at TIMESTAMPTZ,
+
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """)
+
+
+        # ====================================================
+        # 4. CHAT_MESSAGES TABLE
+        # Stores BOTH customer messages and bot replies
+        # Messages expire after 12 hours
+        # ====================================================
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+
+            id BIGSERIAL PRIMARY KEY,
+
+            user_id BIGINT NOT NULL
+                REFERENCES customers(user_id)
+                ON DELETE CASCADE,
+
+            task_id UUID
+                REFERENCES tasks(task_id)
+                ON DELETE SET NULL,
+
+            telegram_chat_id BIGINT,
+
+            telegram_message_id BIGINT,
+
+            reply_to_message_id BIGINT,
+
+            direction VARCHAR(20) NOT NULL,
+
+            sender_type VARCHAR(20) NOT NULL,
+
+            message_type VARCHAR(50) DEFAULT 'text',
+
+            content TEXT,
+
+            file_id TEXT,
+
+            file_unique_id TEXT,
+
+            file_name TEXT,
+
+            mime_type TEXT,
+
+            file_size BIGINT,
+
+            storage_channel_id BIGINT,
+
+            storage_message_id BIGINT,
+
+            language_code VARCHAR(20),
+
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+
+            expires_at TIMESTAMPTZ
+                DEFAULT (NOW() + INTERVAL '12 hours'),
+
+            telegram_deleted BOOLEAN DEFAULT FALSE,
+
+            deleted_at TIMESTAMPTZ
+        )
+        """)
+
+
+        # ====================================================
+        # 5. INDEXES
+        # Helps the database search faster
+        # ====================================================
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_user
+        ON chat_messages(user_id, created_at DESC)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_expiry
+        ON chat_messages(expires_at)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_task
+        ON chat_messages(task_id)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_telegram
+        ON chat_messages(telegram_chat_id, telegram_message_id)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tasks_status_priority
+        ON tasks(status, priority DESC, created_at)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tasks_worker
+        ON tasks(assigned_worker, status)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tasks_user
+        ON tasks(user_id, created_at DESC)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_workers_status
+        ON workers(status)
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_customers_last_interaction
+        ON customers(last_interaction_at)
+        """)
+
+
+        # ====================================================
+        # DATABASE COMPLETE
+        # ====================================================
+
+        conn.commit()
+
+        print("======================================")
+        print("✅ ALL CHAT DATABASE TABLES CREATED")
+        print("✅ CUSTOMERS TABLE READY")
+        print("✅ CHAT MESSAGES TABLE READY")
+        print("✅ TASKS TABLE READY")
+        print("✅ WORKERS TABLE READY")
+        print("✅ ALL INDEXES CREATED")
+        print("======================================")
 
     except Exception as e:
 
+        conn.rollback()
+
         print(
-            "❌ ALL CHAT DATABASE CONNECTION ERROR:",
+            "❌ TABLE CREATION ERROR:",
             repr(e)
         )
 
         raise
 
+    finally:
+
+        cur.close()
+        conn.close()
+
 
 # ============================================================
-# ALL CHAT DATABASE CONNECTION READY
+# RUN TABLE CREATION
 # ============================================================
 
-print("✅ ALL CHAT DATABASE CONNECTOR READY")
+create_all_chat_tables()
 
 # ============================================================
+# ALL CHAT DATABASE READY
+# ============================================================
+
+
 
 # ============================================================
 # CONFIG
