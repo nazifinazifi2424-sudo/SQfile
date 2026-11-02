@@ -109,6 +109,685 @@ bot = telebot.TeleBot(
 )
 
 
+
+
+# ============================================================
+# 🎬 MOVIE IDENTIFICATION SYSTEM — GEMINI AI
+# COMMAND: /bincike
+# ADMIN ONLY
+# ============================================================
+
+import os
+import base64
+import requests
+import subprocess
+import tempfile
+import threading
+import shutil
+import time
+
+from telebot import types
+
+
+# ============================================================
+# GEMINI CONFIGURATION
+# ============================================================
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
+MOVIE_AI_MODEL = os.getenv(
+    "MOVIE_AI_MODEL",
+    "gemini-3.8-flash"
+).strip()
+
+MOVIE_FRAME_COUNT = 10
+
+MOVIE_AI_TIMEOUT = 300
+
+MOVIE_DOWNLOAD_TIMEOUT = 12 * 60 * 60
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+_movie_bincike_waiting = set()
+
+_movie_bincike_jobs = {}
+
+_movie_bincike_lock = threading.RLock()
+
+
+# ============================================================
+# ADMIN CHECK
+# ============================================================
+
+def movie_bincike_is_admin(user_id):
+
+    return (
+        ADMIN_ID is not None
+        and int(user_id) == int(ADMIN_ID)
+    )
+
+
+# ============================================================
+# /BINCIKE COMMAND
+# ============================================================
+
+@bot.message_handler(commands=["bincike"])
+def movie_bincike_command(message):
+
+    user_id = message.from_user.id
+
+    if not movie_bincike_is_admin(user_id):
+
+        bot.reply_to(
+            message,
+            "❌ Wannan command ɗin na Admin ne kawai."
+        )
+        return
+
+    if not GEMINI_API_KEY:
+
+        bot.reply_to(
+            message,
+            "❌ GEMINI_API_KEY bai samu a Render ba."
+        )
+        return
+
+    with _movie_bincike_lock:
+
+        _movie_bincike_waiting.add(user_id)
+
+        _movie_bincike_jobs.pop(user_id, None)
+
+    bot.reply_to(
+        message,
+        "🎬 <b>MOVIE IDENTIFICATION SYSTEM</b>\n\n"
+        "Aiko min da video ɗin da kake son gano sunan fim ɗinsa.\n\n"
+        "⏳ Ina jiran video...",
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# RECEIVE VIDEO
+# ============================================================
+
+@bot.message_handler(
+    content_types=["video"],
+    func=lambda message: (
+        message.from_user is not None
+        and message.from_user.id in _movie_bincike_waiting
+        and movie_bincike_is_admin(message.from_user.id)
+    )
+)
+def movie_bincike_receive_video(message):
+
+    user_id = message.from_user.id
+
+    if not message.video:
+
+        return
+
+    with _movie_bincike_lock:
+
+        _movie_bincike_waiting.discard(user_id)
+
+        _movie_bincike_jobs[user_id] = {
+            "chat_id": message.chat.id,
+            "message_id": message.message_id,
+            "file_name": getattr(
+                message.video,
+                "file_name",
+                None
+            ) or "movie_video.mp4"
+        }
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "✅ Eh",
+            callback_data="movie_bincike:yes"
+        ),
+        types.InlineKeyboardButton(
+            "❌ A'a",
+            callback_data="movie_bincike:no"
+        )
+    )
+
+    bot.reply_to(
+        message,
+        "✅ An karɓi video ɗin.\n\n"
+        "Kana son mu gano asalin sunan fim ɗin?",
+        reply_markup=keyboard
+    )
+
+
+# ============================================================
+# GEMINI AI ANALYSIS
+# ============================================================
+
+def movie_ai_analyze(frames):
+
+    if not GEMINI_API_KEY:
+
+        raise RuntimeError(
+            "GEMINI_API_KEY bai samu ba."
+        )
+
+    url = (
+        "https://generativelanguage.googleapis.com/"
+        f"v1beta/models/{MOVIE_AI_MODEL}:generateContent"
+    )
+
+    prompt = """
+You are an expert movie identification analyst.
+
+Analyze all 10 video frames together.
+
+Your task is to identify the original movie title.
+
+Carefully examine:
+
+1. Actors and recognizable performers.
+2. Clothing and costumes.
+3. Locations and buildings.
+4. Distinctive scenes.
+5. Visible text and signs.
+6. Country and cultural clues.
+7. Language clues.
+8. Film production style.
+9. Any other visual evidence.
+
+IMPORTANT RULES:
+
+- Do not invent actors.
+- Do not invent movie titles.
+- Do not claim certainty without reliable evidence.
+- Distinguish confirmed evidence from guesses.
+- If you cannot identify the exact movie, say NOT CONFIRMED.
+- Give alternative candidates only when there is a reasonable basis.
+
+Return your result in this format:
+
+MOVIE TITLE:
+RELEASE YEAR:
+COUNTRY:
+LANGUAGE:
+
+CONFIDENCE:
+HIGH / MEDIUM / LOW / UNCONFIRMED
+
+VISUAL EVIDENCE:
+ACTOR EVIDENCE:
+LOCATION EVIDENCE:
+
+ALTERNATIVE CANDIDATES:
+
+FINAL VERDICT:
+"""
+
+    parts = [
+        {"text": prompt}
+    ]
+
+    for frame_path in frames:
+
+        with open(frame_path, "rb") as image_file:
+
+            encoded = base64.b64encode(
+                image_file.read()
+            ).decode("utf-8")
+
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": encoded
+            }
+        })
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": parts
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 3000
+        }
+    }
+
+    response = requests.post(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        },
+        json=payload,
+        timeout=MOVIE_AI_TIMEOUT
+    )
+
+    if response.status_code != 200:
+
+        try:
+
+            error_data = response.json()
+
+            error_message = (
+                error_data.get("error", {}).get(
+                    "message",
+                    response.text[:1000]
+                )
+            )
+
+        except Exception:
+
+            error_message = response.text[:1000]
+
+        raise RuntimeError(
+            f"Gemini API Error ({response.status_code}): "
+            f"{error_message}"
+        )
+
+    data = response.json()
+
+    candidates = data.get("candidates", [])
+
+    if not candidates:
+
+        raise RuntimeError(
+            "Gemini bai dawo da sakamako ba."
+        )
+
+    response_parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+
+    result = "\n".join(
+        part.get("text", "")
+        for part in response_parts
+        if part.get("text")
+    ).strip()
+
+    if not result:
+
+        raise RuntimeError(
+            "Gemini ya dawo da amsa babu rubutu."
+        )
+
+    return result
+
+
+# ============================================================
+# EXTRACT EXACTLY 10 FRAMES
+# ============================================================
+
+def movie_bincike_extract_frames(video_path, output_dir):
+
+    ffmpeg = shutil.which("ffmpeg")
+
+    ffprobe = shutil.which("ffprobe")
+
+    if not ffmpeg or not ffprobe:
+
+        raise RuntimeError(
+            "FFmpeg ko FFprobe ba a samu a server ba."
+        )
+
+    duration_result = subprocess.run(
+        [
+            ffprobe,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120
+    )
+
+    if duration_result.returncode != 0:
+
+        raise RuntimeError(
+            "Ba a iya karanta duration na video ba."
+        )
+
+    duration = float(
+        duration_result.stdout.strip()
+    )
+
+    if duration <= 0:
+
+        raise RuntimeError(
+            "Duration na video ba daidai ba ne."
+        )
+
+    frames = []
+
+    for index in range(MOVIE_FRAME_COUNT):
+
+        # A ɗauki hotuna daga wurare daban-daban na video.
+        timestamp = (
+            duration
+            * (index + 0.5)
+            / MOVIE_FRAME_COUNT
+        )
+
+        frame_path = os.path.join(
+            output_dir,
+            f"frame_{index + 1:02d}.jpg"
+        )
+
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-ss", str(timestamp),
+                "-i", video_path,
+                "-frames:v", "1",
+                "-vf", "scale='min(1280,iw)':-2",
+                "-q:v", "3",
+                frame_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+
+        if (
+            result.returncode != 0
+            or not os.path.exists(frame_path)
+            or os.path.getsize(frame_path) == 0
+        ):
+
+            raise RuntimeError(
+                f"An kasa fitar da frame na {index + 1}."
+            )
+
+        frames.append(frame_path)
+
+    if len(frames) != 10:
+
+        raise RuntimeError(
+            "Ba a iya samar da hotuna 10 ba."
+        )
+
+    return frames
+
+
+# ============================================================
+# MAIN MOVIE IDENTIFICATION PROCESS
+# ============================================================
+
+def movie_bincike_process(user_id, job):
+
+    temp_dir = None
+
+    try:
+
+        bot.send_message(
+            user_id,
+            "🔍 <b>MOVIE IDENTIFICATION STARTED</b>\n\n"
+            "⏳ Ana neman video a Telegram...",
+            parse_mode="HTML"
+        )
+
+        # ----------------------------------------------------
+        # GET ORIGINAL TELEGRAM MESSAGE
+        # ----------------------------------------------------
+
+        pyro_message = videocon_run_async(
+            _videocon_get_message(
+                job["chat_id"],
+                job["message_id"]
+            ),
+            timeout=180
+        )
+
+        if not pyro_message:
+
+            raise RuntimeError(
+                "Ba a iya samun original video a Telegram ba."
+            )
+
+        # ----------------------------------------------------
+        # TEMP DIRECTORY
+        # ----------------------------------------------------
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="movie_bincike_"
+        )
+
+        video_path = os.path.join(
+            temp_dir,
+            "movie_input.mp4"
+        )
+
+        # ----------------------------------------------------
+        # DOWNLOAD VIDEO USING EXISTING PYROGRAM
+        # ----------------------------------------------------
+
+        bot.send_message(
+            user_id,
+            "⬇️ Ana sauke video...\n\n"
+            "⏳ Ka jira."
+        )
+
+        downloaded_path = videocon_run_async(
+            _videocon_pyro.download_media(
+                pyro_message,
+                file_name=video_path
+            ),
+            timeout=MOVIE_DOWNLOAD_TIMEOUT
+        )
+
+        if (
+            not downloaded_path
+            or not os.path.exists(video_path)
+        ):
+
+            if downloaded_path:
+                video_path = downloaded_path
+
+            else:
+                raise RuntimeError(
+                    "Download na video ya gaza."
+                )
+
+        # ----------------------------------------------------
+        # EXTRACT FRAMES
+        # ----------------------------------------------------
+
+        bot.send_message(
+            user_id,
+            "🖼️ Ana fitar da hotuna 10 daga video..."
+        )
+
+        frames = movie_bincike_extract_frames(
+            video_path,
+            temp_dir
+        )
+
+        # ----------------------------------------------------
+        # GEMINI ANALYSIS
+        # ----------------------------------------------------
+
+        bot.send_message(
+            user_id,
+            "🤖 <b>GEMINI AI ANALYSIS</b>\n\n"
+            "Ana nazarin hotuna 10 domin gano asalin fim ɗin.\n\n"
+            "⏳ Wannan na iya ɗaukar lokaci.",
+            parse_mode="HTML"
+        )
+
+        report = movie_ai_analyze(frames)
+
+        # ----------------------------------------------------
+        # SEND REPORT
+        # ----------------------------------------------------
+
+        bot.send_message(
+            user_id,
+            "🎬 <b>MOVIE IDENTIFICATION REPORT</b>\n\n"
+            + report[:3500],
+            parse_mode="HTML"
+        )
+
+        # ----------------------------------------------------
+        # SEND ALL 10 FRAMES
+        # ----------------------------------------------------
+
+        bot.send_message(
+            user_id,
+            "🖼️ <b>HOTUNA 10 DA AKA YI NAZARI</b>",
+            parse_mode="HTML"
+        )
+
+        media = []
+
+        for index, frame_path in enumerate(frames):
+
+            with open(frame_path, "rb") as photo:
+
+                bot.send_photo(
+                    user_id,
+                    photo,
+                    caption=f"Frame {index + 1}/10"
+                )
+
+        bot.send_message(
+            user_id,
+            "✅ An kammala binciken fim ɗin."
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Movie identification failed."
+        )
+
+        error_text = str(e)
+
+        bot.send_message(
+            user_id,
+            "❌ <b>MOVIE IDENTIFICATION ERROR</b>\n\n"
+            + error_text[:3000],
+            parse_mode="HTML"
+        )
+
+    finally:
+
+        if temp_dir and os.path.exists(temp_dir):
+
+            shutil.rmtree(
+                temp_dir,
+                ignore_errors=True
+            )
+
+        with _movie_bincike_lock:
+
+            _movie_bincike_jobs.pop(
+                user_id,
+                None
+            )
+
+
+# ============================================================
+# CONFIRMATION CALLBACK
+# ============================================================
+
+@bot.callback_query_handler(
+    func=lambda call: (
+        call.data.startswith("movie_bincike:")
+    )
+)
+def movie_bincike_callback(call):
+
+    user_id = call.from_user.id
+
+    if not movie_bincike_is_admin(user_id):
+
+        bot.answer_callback_query(
+            call.id,
+            "Admin only!",
+            show_alert=True
+        )
+        return
+
+    action = call.data.split(":", 1)[1]
+
+    if action == "no":
+
+        with _movie_bincike_lock:
+
+            _movie_bincike_jobs.pop(
+                user_id,
+                None
+            )
+
+        bot.answer_callback_query(
+            call.id,
+            "An soke binciken."
+        )
+
+        bot.edit_message_text(
+            "❌ An soke binciken fim ɗin.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+
+        return
+
+    if action == "yes":
+
+        with _movie_bincike_lock:
+
+            job = _movie_bincike_jobs.get(user_id)
+
+            if not job:
+
+                bot.answer_callback_query(
+                    call.id,
+                    "Ba a sami video ba. Ka sake amfani da /bincike.",
+                    show_alert=True
+                )
+                return
+
+            _movie_bincike_jobs[user_id]["running"] = True
+
+        bot.answer_callback_query(
+            call.id,
+            "An fara bincike..."
+        )
+
+        bot.edit_message_text(
+            "🔍 An fara binciken fim ɗin.\n\n"
+            "⏳ Ka jira sakamako.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+
+        threading.Thread(
+            target=movie_bincike_process,
+            args=(user_id, job),
+            daemon=True
+        ).start()
+
+        return
+
+
+# ============================================================
+# END MOVIE IDENTIFICATION SYSTEM
+# ============================================================
+
+
 # ============================================================
 # /VIDEOCON — LARGE VIDEO / FILE CONVERTER
 # ============================================================
