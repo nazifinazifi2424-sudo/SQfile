@@ -1643,6 +1643,540 @@ worker_log(
 
 
 
+# =============================================================
+# PART D/6
+# WORKER HANDOVER + TASK PROTECTION + SAFE SHUTDOWN
+# =============================================================
+
+import atexit
+from contextlib import suppress
+
+# -------------------------------------------------------------
+# 1. WORKER TASK STATE
+# -------------------------------------------------------------
+
+WORKER_ACCEPTING_TASKS = True
+WORKER_CURRENT_TASK_ID = None
+
+WORKER_TASK_LOCK = threading.RLock()
+WORKER_HANDOVER_REASON = None
+
+
+# -------------------------------------------------------------
+# 2. CHECK VALID LEADERSHIP LEASE
+# This check allows an existing task to finish during handover.
+# It does NOT allow a new task when handover is requested.
+# -------------------------------------------------------------
+
+def worker_has_valid_lease():
+
+    global WORKER_CURRENT_GENERATION
+
+    chat_conn = None
+    chat_cur = None
+
+    try:
+        chat_conn = get_all_chat_db_conn()
+        chat_cur = chat_conn.cursor()
+
+        chat_cur.execute("""
+            SELECT
+                is_leader,
+                leader_generation,
+                leader_lease_until,
+                worker_enabled,
+                bandwidth_month,
+                bandwidth_used_gb,
+                bandwidth_limit_gb
+            FROM workers
+            WHERE worker_id = %s
+        """, (WORKER_ID,))
+
+        row = chat_cur.fetchone()
+
+        if not row:
+            return False
+
+        (
+            is_leader,
+            generation,
+            lease_until,
+            enabled,
+            bandwidth_month,
+            bandwidth_used,
+            bandwidth_limit
+        ) = row
+
+        if not is_leader or not enabled:
+            return False
+
+        if generation != WORKER_CURRENT_GENERATION:
+            return False
+
+        if not lease_until:
+            return False
+
+        chat_cur.execute("""
+            SELECT (%s > NOW())
+        """, (lease_until,))
+
+        lease_valid = chat_cur.fetchone()[0]
+
+        if not lease_valid:
+            return False
+
+        if bandwidth_month != worker_month_key():
+            return False
+
+        effective_limit = min(
+            float(bandwidth_limit or RENDER_BANDWIDTH_STOP_GB),
+            float(RENDER_BANDWIDTH_STOP_GB)
+        )
+
+        if float(bandwidth_used or 0) >= effective_limit:
+            return False
+
+        return True
+
+    except Exception as e:
+        worker_log(
+            "LEASE CHECK ERROR: " + repr(e),
+            logging.ERROR
+        )
+        return False
+
+    finally:
+        if chat_cur:
+            with suppress(Exception):
+                chat_cur.close()
+
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.close()
+
+
+# -------------------------------------------------------------
+# 3. CHECK BEFORE STARTING A NEW CUSTOMER TASK
+# Use this inside customer message handlers.
+# -------------------------------------------------------------
+
+def worker_message_guard():
+
+    global WORKER_ACCEPTING_TASKS
+    global WORKER_HANDOVER_REQUESTED
+
+    with WORKER_TASK_LOCK:
+
+        if WORKER_SHUTTING_DOWN:
+            return False
+
+        if WORKER_HANDOVER_REQUESTED:
+            return False
+
+        if not WORKER_ACCEPTING_TASKS:
+            return False
+
+        if not worker_has_valid_lease():
+            clear_local_leader_state()
+            return False
+
+        if not verify_worker_leadership():
+            clear_local_leader_state()
+            return False
+
+        return True
+
+
+# -------------------------------------------------------------
+# 4. CHECK DURING AN EXISTING TASK
+# Existing task may finish during a planned handover,
+# but it must still have a valid lease.
+# -------------------------------------------------------------
+
+def worker_assert_current_task():
+
+    if WORKER_SHUTTING_DOWN:
+        return False
+
+    if not WORKER_CURRENT_TASK_ID:
+        return False
+
+    return worker_has_valid_lease()
+
+
+# -------------------------------------------------------------
+# 5. REGISTER CURRENT TASK
+# Call this when a worker starts processing a task.
+# -------------------------------------------------------------
+
+def worker_begin_task(task_id=None):
+
+    global WORKER_CURRENT_TASK_ID
+
+    with WORKER_TASK_LOCK:
+
+        if not worker_message_guard():
+            worker_log(
+                "NEW TASK BLOCKED: this worker is not authorized.",
+                logging.WARNING
+            )
+            return False
+
+        WORKER_CURRENT_TASK_ID = str(task_id) if task_id else "ACTIVE"
+
+        chat_conn = None
+        chat_cur = None
+
+        try:
+            chat_conn = get_all_chat_db_conn()
+            chat_cur = chat_conn.cursor()
+
+            chat_cur.execute("""
+                UPDATE workers
+                SET current_task_id = %s,
+                    updated_at = NOW()
+                WHERE worker_id = %s
+                  AND is_leader = TRUE
+                  AND worker_enabled = TRUE
+            """, (
+                task_id if task_id else None,
+                WORKER_ID
+            ))
+
+            chat_conn.commit()
+
+            worker_log(
+                f"TASK STARTED: {WORKER_CURRENT_TASK_ID}"
+            )
+
+            return True
+
+        except Exception as e:
+            if chat_conn:
+                with suppress(Exception):
+                    chat_conn.rollback()
+
+            WORKER_CURRENT_TASK_ID = None
+
+            worker_log(
+                "TASK START ERROR: " + repr(e),
+                logging.ERROR
+            )
+            return False
+
+        finally:
+            if chat_cur:
+                with suppress(Exception):
+                    chat_cur.close()
+
+            if chat_conn:
+                with suppress(Exception):
+                    chat_conn.close()
+
+
+# -------------------------------------------------------------
+# 6. COMPLETE CURRENT TASK
+# Call this in finally: after the task finishes or fails.
+# -------------------------------------------------------------
+
+def worker_end_task():
+
+    global WORKER_CURRENT_TASK_ID
+
+    with WORKER_TASK_LOCK:
+
+        finished_task = WORKER_CURRENT_TASK_ID
+        WORKER_CURRENT_TASK_ID = None
+
+        chat_conn = None
+        chat_cur = None
+
+        try:
+            chat_conn = get_all_chat_db_conn()
+            chat_cur = chat_conn.cursor()
+
+            chat_cur.execute("""
+                UPDATE workers
+                SET current_task_id = NULL,
+                    updated_at = NOW()
+                WHERE worker_id = %s
+            """, (WORKER_ID,))
+
+            chat_conn.commit()
+
+            worker_log(
+                f"TASK FINISHED: {finished_task}"
+            )
+
+        except Exception as e:
+            if chat_conn:
+                with suppress(Exception):
+                    chat_conn.rollback()
+
+            worker_log(
+                "TASK FINISH ERROR: " + repr(e),
+                logging.ERROR
+            )
+
+        finally:
+            if chat_cur:
+                with suppress(Exception):
+                    chat_cur.close()
+
+            if chat_conn:
+                with suppress(Exception):
+                    chat_conn.close()
+
+        if WORKER_HANDOVER_REQUESTED or WORKER_SHUTTING_DOWN:
+            worker_complete_handover()
+
+
+# -------------------------------------------------------------
+# 7. REQUEST SAFE HANDOVER
+# Stop accepting new tasks, but do not interrupt the current one.
+# -------------------------------------------------------------
+
+def worker_request_handover(reason="Manual handover"):
+
+    global WORKER_ACCEPTING_TASKS
+    global WORKER_HANDOVER_REQUESTED
+    global WORKER_HANDOVER_REASON
+
+    with WORKER_TASK_LOCK:
+
+        WORKER_HANDOVER_REQUESTED = True
+        WORKER_ACCEPTING_TASKS = False
+        WORKER_HANDOVER_REASON = str(reason)
+
+    chat_conn = None
+    chat_cur = None
+
+    try:
+        chat_conn = get_all_chat_db_conn()
+        chat_cur = chat_conn.cursor()
+
+        chat_cur.execute("""
+            UPDATE workers
+            SET handover_requested = TRUE,
+                status = 'handover_pending',
+                updated_at = NOW()
+            WHERE worker_id = %s
+        """, (WORKER_ID,))
+
+        chat_conn.commit()
+
+        worker_log(
+            f"HANDOVER REQUESTED: {reason}",
+            logging.WARNING
+        )
+
+    except Exception as e:
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.rollback()
+
+        worker_log(
+            "HANDOVER REQUEST ERROR: " + repr(e),
+            logging.ERROR
+        )
+
+    finally:
+        if chat_cur:
+            with suppress(Exception):
+                chat_cur.close()
+
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.close()
+
+    # If there is no active task, release leadership immediately.
+    if not WORKER_CURRENT_TASK_ID:
+        worker_complete_handover()
+
+
+# -------------------------------------------------------------
+# 8. RELEASE LEADERSHIP AFTER TASK COMPLETION
+# -------------------------------------------------------------
+
+def worker_complete_handover():
+
+    global WORKER_IS_LEADER
+    global WORKER_IS_ACTIVE
+    global WORKER_ACCEPTING_TASKS
+
+    if WORKER_CURRENT_TASK_ID:
+        worker_log(
+            "HANDOVER WAITING: current task is still running."
+        )
+        return False
+
+    chat_conn = None
+    chat_cur = None
+
+    try:
+        chat_conn = get_all_chat_db_conn()
+        chat_cur = chat_conn.cursor()
+
+        chat_cur.execute("""
+            SELECT pg_advisory_xact_lock(%s)
+        """, (WORKER_ADVISORY_LOCK_ID,))
+
+        chat_cur.execute("""
+            UPDATE workers
+            SET is_leader = FALSE,
+                leader_lease_until = NULL,
+                current_task_id = NULL,
+                status = 'standby',
+                last_stopped_at = NOW(),
+                updated_at = NOW()
+            WHERE worker_id = %s
+        """, (WORKER_ID,))
+
+        chat_conn.commit()
+
+        clear_local_leader_state()
+
+        WORKER_ACCEPTING_TASKS = False
+
+        worker_log(
+            "HANDOVER COMPLETE: leadership released.",
+            logging.WARNING
+        )
+
+        return True
+
+    except Exception as e:
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.rollback()
+
+        worker_log(
+            "HANDOVER RELEASE ERROR: " + repr(e),
+            logging.ERROR
+        )
+        return False
+
+    finally:
+        if chat_cur:
+            with suppress(Exception):
+                chat_cur.close()
+
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.close()
+
+
+# -------------------------------------------------------------
+# 9. REPLACE PART B HEARTBEAT UPDATE
+# Preserve handover status instead of resetting it.
+# -------------------------------------------------------------
+
+def update_worker_heartbeat():
+
+    chat_conn = None
+    chat_cur = None
+
+    try:
+        chat_conn = get_all_chat_db_conn()
+        chat_cur = chat_conn.cursor()
+
+        chat_cur.execute("""
+            UPDATE workers
+            SET last_heartbeat = NOW(),
+
+                status = CASE
+                    WHEN handover_requested = TRUE
+                        THEN 'handover_pending'
+
+                    WHEN is_leader = TRUE
+                         AND leader_lease_until > NOW()
+                        THEN 'active'
+
+                    ELSE 'standby'
+                END,
+
+                updated_at = NOW()
+
+            WHERE worker_id = %s
+              AND worker_enabled = TRUE
+        """, (WORKER_ID,))
+
+        chat_conn.commit()
+
+    except Exception as e:
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.rollback()
+
+        worker_log(
+            "HEARTBEAT UPDATE ERROR: " + repr(e),
+            logging.ERROR
+        )
+
+    finally:
+        if chat_cur:
+            with suppress(Exception):
+                chat_cur.close()
+
+        if chat_conn:
+            with suppress(Exception):
+                chat_conn.close()
+
+
+# -------------------------------------------------------------
+# 10. SAFE SHUTDOWN
+# -------------------------------------------------------------
+
+def worker_safe_shutdown():
+
+    global WORKER_SHUTTING_DOWN
+    global WORKER_ACCEPTING_TASKS
+
+    if WORKER_SHUTTING_DOWN:
+        return
+
+    WORKER_SHUTTING_DOWN = True
+    WORKER_ACCEPTING_TASKS = False
+
+    worker_log(
+        "WORKER SHUTDOWN STARTED",
+        logging.WARNING
+    )
+
+    # Stop leader election monitor.
+    with suppress(Exception):
+        stop_worker_leader_monitor()
+
+    # Stop heartbeat.
+    with suppress(Exception):
+        stop_worker_heartbeat()
+
+    # Do not release leadership while a task is still running.
+    if WORKER_CURRENT_TASK_ID:
+        worker_log(
+            "SHUTDOWN: active task exists; handover requested.",
+            logging.WARNING
+        )
+
+        with suppress(Exception):
+            worker_request_handover("Worker shutdown")
+
+    else:
+        with suppress(Exception):
+            worker_complete_handover()
+
+    worker_log(
+        "WORKER SHUTDOWN FINISHED",
+        logging.WARNING
+    )
+
+
+# Register the safe shutdown callback.
+atexit.register(worker_safe_shutdown)
+
+
+worker_log("PART D/6 LOADED SUCCESSFULLY")
+
 
 
 
