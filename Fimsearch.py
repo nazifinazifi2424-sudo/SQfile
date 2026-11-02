@@ -1050,10 +1050,10 @@ else:
     )
 
 
-
 # ============================================================
 # PART C/6
 # WORKER LEADER ELECTION & PRIORITY SYSTEM
+# CORRECTED VERSION
 # ============================================================
 
 
@@ -1061,20 +1061,19 @@ else:
 # 1. LEADER SETTINGS
 # ============================================================
 
-# Leader must renew its lease regularly.
-# Failover waits for the full 50 + 20 minutes.
-
-WORKER_LEADER_LEASE_SECONDS = (
-    WORKER_FAILOVER_SECONDS + 300
-)
+WORKER_LEADER_LEASE_SECONDS = 600
 
 WORKER_LEADER_CHECK_INTERVAL = 30
 
 WORKER_ADVISORY_LOCK_ID = 887766
 
+WORKER_LEADER_STOP = threading.Event()
+
+WORKER_LEADER_THREAD = None
+
 
 # ============================================================
-# 2. CHECK WHETHER A WORKER IS ELIGIBLE
+# 2. WORKER ELIGIBILITY
 # ============================================================
 
 def worker_is_eligible(row):
@@ -1091,13 +1090,17 @@ def worker_is_eligible(row):
         bandwidth_used_gb,
         render_bandwidth_gb,
         bandwidth_limit_gb,
-        bandwidth_month
+        bandwidth_month,
+        status
     ) = row
 
     if not worker_enabled:
         return False
 
     if handover_requested:
+        return False
+
+    if status in ("stopping", "offline", "disabled"):
         return False
 
     if not last_heartbeat:
@@ -1111,14 +1114,39 @@ def worker_is_eligible(row):
         float(render_bandwidth_gb or 0)
     )
 
-    if current_usage >= RENDER_BANDWIDTH_STOP_GB:
+    limit = float(
+        bandwidth_limit_gb
+        or RENDER_MONTHLY_BANDWIDTH_GB
+    )
+
+    stop_limit = min(
+        RENDER_BANDWIDTH_STOP_GB,
+        limit
+    )
+
+    if current_usage >= stop_limit:
         return False
 
     return True
 
 
 # ============================================================
-# 3. ELECT THE HIGHEST-RANKED AVAILABLE WORKER
+# 3. CLEAR LOCAL LEADER STATE
+# ============================================================
+
+def clear_local_leader_state():
+
+    global WORKER_IS_LEADER
+    global WORKER_IS_ACTIVE
+    global WORKER_CURRENT_GENERATION
+
+    WORKER_IS_LEADER = False
+    WORKER_IS_ACTIVE = False
+    WORKER_CURRENT_GENERATION = 0
+
+
+# ============================================================
+# 4. ELECT THE HIGHEST PRIORITY AVAILABLE WORKER
 # ============================================================
 
 def elect_worker_leader():
@@ -1135,14 +1163,18 @@ def elect_worker_leader():
         conn = get_all_chat_db_conn()
         cur = conn.cursor()
 
-        # Serialize all leader elections across all workers.
+        # All workers must use the same advisory lock.
+        # This serializes leader elections.
+
         cur.execute(
             "SELECT pg_advisory_xact_lock(%s)",
             (WORKER_ADVISORY_LOCK_ID,)
         )
 
-        # Get the highest-ranked worker that has not exceeded
-        # its allowed heartbeat failure period.
+        # ----------------------------------------------------
+        # GET ALL RECENT WORKERS
+        # ----------------------------------------------------
+
         cur.execute("""
             SELECT
                 worker_id,
@@ -1153,61 +1185,33 @@ def elect_worker_leader():
                 bandwidth_used_gb,
                 render_bandwidth_gb,
                 bandwidth_limit_gb,
-                bandwidth_month
+                bandwidth_month,
+                status
             FROM workers
             WHERE worker_enabled = TRUE
               AND last_heartbeat >= (
-                    NOW() - (%s * INTERVAL '1 second')
+                  NOW() - (%s * INTERVAL '1 second')
               )
             ORDER BY worker_rank ASC
+            FOR UPDATE
         """, (WORKER_FAILOVER_SECONDS,))
 
-        candidates = cur.fetchall()
+        all_workers = cur.fetchall()
 
         eligible_workers = [
-            worker
-            for worker in candidates
-            if worker_is_eligible(worker)
+            row for row in all_workers
+            if worker_is_eligible(row)
         ]
 
-        if not eligible_workers:
+        # ----------------------------------------------------
+        # FIND CURRENT LEADER
+        # ----------------------------------------------------
 
-            cur.execute("""
-                UPDATE workers
-                SET
-                    is_leader = FALSE,
-                    status = CASE
-                        WHEN status = 'stopping'
-                        THEN 'stopping'
-                        ELSE 'standby'
-                    END,
-                    updated_at = NOW()
-                WHERE is_leader = TRUE
-                  AND (
-                      last_heartbeat IS NULL
-                      OR last_heartbeat < (
-                          NOW() - (%s * INTERVAL '1 second')
-                      )
-                  )
-            """, (WORKER_FAILOVER_SECONDS,))
-
-            conn.commit()
-
-            WORKER_IS_LEADER = False
-            WORKER_IS_ACTIVE = False
-
-            return False
-
-        # The first eligible worker has the highest priority.
-        selected_worker = eligible_workers[0]
-
-        selected_id = selected_worker[0]
-
-        # If another worker has a higher priority, it may take over.
         cur.execute("""
             SELECT
                 worker_id,
-                leader_generation
+                leader_generation,
+                leader_lease_until
             FROM workers
             WHERE is_leader = TRUE
             FOR UPDATE
@@ -1215,59 +1219,134 @@ def elect_worker_leader():
 
         current_leaders = cur.fetchall()
 
-        if (
-            len(current_leaders) == 1
-            and current_leaders[0][0] == selected_id
-        ):
+        # ----------------------------------------------------
+        # NO ELIGIBLE WORKER
+        # ----------------------------------------------------
 
-            generation = int(
-                current_leaders[0][1] or 0
-            )
+        if not eligible_workers:
 
-            cur.execute("""
-                UPDATE workers
-                SET
-                    leader_lease_until = (
-                        NOW() + (%s * INTERVAL '1 second')
-                    ),
-                    last_heartbeat = NOW(),
-                    status = 'active',
-                    updated_at = NOW()
-                WHERE worker_id = %s
-                  AND worker_enabled = TRUE
-            """, (
-                WORKER_LEADER_LEASE_SECONDS,
-                selected_id
-            ))
-
-        else:
-
-            # New leader: increment the global generation.
-            cur.execute("""
-                SELECT COALESCE(
-                    MAX(leader_generation), 0
-                ) + 1
-                FROM workers
-            """)
-
-            generation = int(cur.fetchone()[0])
-
-            # Remove old leadership.
             cur.execute("""
                 UPDATE workers
                 SET
                     is_leader = FALSE,
                     leader_lease_until = NULL,
                     status = CASE
-                        WHEN status = 'stopping'
+                        WHEN handover_requested = TRUE
                         THEN 'stopping'
+                        WHEN worker_enabled = FALSE
+                        THEN 'disabled'
                         ELSE 'standby'
                     END,
                     updated_at = NOW()
                 WHERE is_leader = TRUE
             """)
 
-            # Assign leadership to the selected worker.
+            conn.commit()
+
+            clear_local_leader_state()
+
+            worker_log(
+                "⚠️ NO ELIGIBLE WORKER AVAILABLE",
+                "warning"
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # SELECT HIGHEST PRIORITY WORKER
+        # ----------------------------------------------------
+
+        selected_worker = eligible_workers[0]
+
+        selected_id = selected_worker[0]
+
+        # ----------------------------------------------------
+        # GET GLOBAL GENERATION
+        # ----------------------------------------------------
+
+        cur.execute("""
+            SELECT COALESCE(
+                MAX(leader_generation), 0
+            )
+            FROM workers
+        """)
+
+        global_generation = int(cur.fetchone()[0] or 0)
+
+        # ----------------------------------------------------
+        # CHECK WHETHER SELECTED WORKER IS ALREADY LEADER
+        # ----------------------------------------------------
+
+        existing_selected = None
+
+        for leader in current_leaders:
+
+            if leader[0] == selected_id:
+                existing_selected = leader
+                break
+
+        if existing_selected is not None:
+
+            generation = int(
+                existing_selected[1] or 0
+            )
+
+            # Only the actual leader can renew its own lease.
+            if selected_id == WORKER_ID:
+
+                cur.execute("""
+                    UPDATE workers
+                    SET
+                        leader_lease_until = (
+                            NOW() + (%s * INTERVAL '1 second')
+                        ),
+                        status = 'active',
+                        updated_at = NOW()
+                    WHERE worker_id = %s
+                      AND is_leader = TRUE
+                      AND worker_enabled = TRUE
+                      AND handover_requested = FALSE
+                """, (
+                    WORKER_LEADER_LEASE_SECONDS,
+                    WORKER_ID
+                ))
+
+                if cur.rowcount != 1:
+
+                    conn.rollback()
+
+                    clear_local_leader_state()
+
+                    return False
+
+            # Standby workers DO NOT renew another worker's lease.
+
+        else:
+
+            # ------------------------------------------------
+            # TRANSFER LEADERSHIP
+            # ------------------------------------------------
+
+            generation = global_generation + 1
+
+            # Remove every old leader first.
+            cur.execute("""
+                UPDATE workers
+                SET
+                    is_leader = FALSE,
+                    leader_lease_until = NULL,
+                    status = CASE
+                        WHEN handover_requested = TRUE
+                        THEN 'stopping'
+                        WHEN worker_enabled = FALSE
+                        THEN 'disabled'
+                        ELSE 'standby'
+                    END,
+                    updated_at = NOW()
+                WHERE is_leader = TRUE
+            """)
+
+            # Assign new leader.
             cur.execute("""
                 UPDATE workers
                 SET
@@ -1280,18 +1359,40 @@ def elect_worker_leader():
                     updated_at = NOW()
                 WHERE worker_id = %s
                   AND worker_enabled = TRUE
+                  AND handover_requested = FALSE
             """, (
                 generation,
                 WORKER_LEADER_LEASE_SECONDS,
                 selected_id
             ))
 
+            if cur.rowcount != 1:
+
+                conn.rollback()
+
+                clear_local_leader_state()
+
+                return False
+
+            worker_log(
+                f"🔄 LEADER TRANSFERRED TO {selected_id}"
+            )
+
+        # ----------------------------------------------------
+        # COMMIT LEADER ELECTION
+        # ----------------------------------------------------
+
         conn.commit()
+
+        # ----------------------------------------------------
+        # UPDATE LOCAL STATE
+        # ----------------------------------------------------
 
         if selected_id == WORKER_ID:
 
             WORKER_IS_LEADER = True
             WORKER_IS_ACTIVE = True
+
             WORKER_CURRENT_GENERATION = generation
 
             worker_log(
@@ -1301,12 +1402,11 @@ def elect_worker_leader():
 
             return True
 
-        WORKER_IS_LEADER = False
-        WORKER_IS_ACTIVE = False
+        clear_local_leader_state()
 
         worker_log(
-            f"⏳ {WORKER_ID} IS STANDBY. "
-            f"CURRENT LEADER: {selected_id}"
+            f"⏳ {WORKER_ID} STANDBY "
+            f"| CURRENT LEADER: {selected_id}"
         )
 
         return False
@@ -1316,8 +1416,7 @@ def elect_worker_leader():
         if conn:
             conn.rollback()
 
-        WORKER_IS_LEADER = False
-        WORKER_IS_ACTIVE = False
+        clear_local_leader_state()
 
         worker_log(
             f"❌ LEADER ELECTION ERROR: {e}",
@@ -1336,7 +1435,7 @@ def elect_worker_leader():
 
 
 # ============================================================
-# 4. VERIFY CURRENT LEADER AND GENERATION
+# 5. VERIFY CURRENT WORKER LEADERSHIP
 # ============================================================
 
 def verify_worker_leadership():
@@ -1359,7 +1458,11 @@ def verify_worker_leadership():
                 leader_generation,
                 leader_lease_until,
                 worker_enabled,
-                handover_requested
+                handover_requested,
+                bandwidth_used_gb,
+                render_bandwidth_gb,
+                bandwidth_limit_gb,
+                bandwidth_month
             FROM workers
             WHERE worker_id = %s
         """, (WORKER_ID,))
@@ -1367,8 +1470,9 @@ def verify_worker_leadership():
         row = cur.fetchone()
 
         if not row:
-            WORKER_IS_LEADER = False
-            WORKER_IS_ACTIVE = False
+
+            clear_local_leader_state()
+
             return False
 
         (
@@ -1376,14 +1480,30 @@ def verify_worker_leadership():
             generation,
             lease_until,
             worker_enabled,
-            handover_requested
+            handover_requested,
+            bandwidth_used,
+            render_bandwidth,
+            bandwidth_limit,
+            bandwidth_month
         ) = row
 
-        cur.execute("""
-            SELECT NOW()
-        """)
+        cur.execute("SELECT NOW()")
 
         database_now = cur.fetchone()[0]
+
+        usage = max(
+            float(bandwidth_used or 0),
+            float(render_bandwidth or 0)
+        )
+
+        limit = float(
+            bandwidth_limit or RENDER_MONTHLY_BANDWIDTH_GB
+        )
+
+        stop_limit = min(
+            RENDER_BANDWIDTH_STOP_GB,
+            limit
+        )
 
         valid = (
             bool(is_leader)
@@ -1391,31 +1511,29 @@ def verify_worker_leadership():
             and not bool(handover_requested)
             and lease_until is not None
             and lease_until > database_now
+            and bandwidth_month == worker_month_key()
+            and usage < stop_limit
+            and int(generation or 0)
+                == int(WORKER_CURRENT_GENERATION)
         )
 
-        if valid:
+        if not valid:
 
-            WORKER_CURRENT_GENERATION = int(
-                generation or 0
-            )
+            clear_local_leader_state()
 
-            WORKER_IS_LEADER = True
-            WORKER_IS_ACTIVE = True
+            return False
 
-            return True
+        WORKER_IS_LEADER = True
+        WORKER_IS_ACTIVE = True
 
-        WORKER_IS_LEADER = False
-        WORKER_IS_ACTIVE = False
-
-        return False
+        return True
 
     except Exception as e:
 
-        WORKER_IS_LEADER = False
-        WORKER_IS_ACTIVE = False
+        clear_local_leader_state()
 
         worker_log(
-            f"❌ LEADER VERIFICATION ERROR: {e}",
+            f"❌ LEADERSHIP VERIFICATION ERROR: {e}",
             "error"
         )
 
@@ -1431,11 +1549,8 @@ def verify_worker_leadership():
 
 
 # ============================================================
-# 5. LEADER MONITOR LOOP
+# 6. LEADER MONITOR LOOP
 # ============================================================
-
-WORKER_LEADER_STOP = threading.Event()
-
 
 def worker_leader_monitor_loop():
 
@@ -1447,21 +1562,11 @@ def worker_leader_monitor_loop():
 
         try:
 
-            # Check whether this worker is still the valid leader.
-            if verify_worker_leadership():
-
-                # Renew the lease through the election function.
-                elect_worker_leader()
-
-            else:
-
-                # Standby workers compete under a database lock.
-                elect_worker_leader()
+            elect_worker_leader()
 
         except Exception as e:
 
-            WORKER_IS_LEADER = False
-            WORKER_IS_ACTIVE = False
+            clear_local_leader_state()
 
             worker_log(
                 f"❌ LEADER MONITOR ERROR: {e}",
@@ -1478,15 +1583,10 @@ def worker_leader_monitor_loop():
 
 
 # ============================================================
-# 6. START LEADER MONITOR
+# 7. START LEADER MONITOR THREAD
 # ============================================================
 
 def start_worker_leader_monitor():
-
-    global WORKER_MONITOR_THREAD
-
-    # Part B already uses WORKER_MONITOR_THREAD for heartbeat.
-    # Use a separate thread variable for leader monitoring.
 
     global WORKER_LEADER_THREAD
 
@@ -1494,6 +1594,10 @@ def start_worker_leader_monitor():
         WORKER_LEADER_THREAD is not None
         and WORKER_LEADER_THREAD.is_alive()
     ):
+        worker_log(
+            "⚠️ LEADER MONITOR ALREADY RUNNING"
+        )
+
         return
 
     WORKER_LEADER_STOP.clear()
@@ -1507,26 +1611,36 @@ def start_worker_leader_monitor():
     WORKER_LEADER_THREAD.start()
 
     worker_log(
-        f"✅ LEADER MONITOR THREAD STARTED: {WORKER_ID}"
+        f"✅ LEADER MONITOR STARTED: {WORKER_ID}"
     )
 
 
 # ============================================================
-# 7. LEADER THREAD STATE
+# 8. STOP LEADER MONITOR THREAD
 # ============================================================
 
-WORKER_LEADER_THREAD = None
+def stop_worker_leader_monitor():
+
+    WORKER_LEADER_STOP.set()
+
+    if (
+        WORKER_LEADER_THREAD is not None
+        and WORKER_LEADER_THREAD.is_alive()
+    ):
+        WORKER_LEADER_THREAD.join(timeout=10)
 
 
 # ============================================================
-# 8. START PART C
+# 9. START PART C
 # ============================================================
 
 start_worker_leader_monitor()
 
 worker_log(
-    f"✅ PART C READY: {WORKER_ID}"
+    f"✅ CORRECTED PART C READY: {WORKER_ID}"
 )
+
+
 
 
 
