@@ -291,6 +291,21 @@ if ADMIN_ID_RAW:
     except ValueError:
         ADMIN_ID = None
 
+# ============================================================
+# WORKER IDENTITY
+# ============================================================
+
+import os
+
+WORKER_ID = os.environ.get("WORKER_ID")
+
+if not WORKER_ID:
+    raise RuntimeError(
+        "❌ WORKER_ID is not configured"
+    )
+
+print(f"✅ WORKER ID: {WORKER_ID}")
+
 
 # ============================================================
 # LOGGING
