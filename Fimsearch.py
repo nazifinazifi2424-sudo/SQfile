@@ -2222,13 +2222,26 @@ then call start_gemini_worker() once during bot startup.
 # ============================================================
 
 import json
+import os
 import time
 import re
 import logging
 import threading
 import requests
 
-GEMINI_WORKER_TIMEOUT = 180
+# Read credentials/model from Render environment. Existing globals are retained
+# as a fallback for applications that define them before importing this file.
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY", "").strip()
+                  or globals().get("GEMINI_API_KEY", ""))
+MOVIE_AI_MODEL = (os.getenv("MOVIE_AI_MODEL", "gemini-flash-latest").strip()
+                  or globals().get("MOVIE_AI_MODEL", "gemini-flash-latest"))
+GEMINI_WORKER_TIMEOUT = int(os.getenv("GEMINI_WORKER_TIMEOUT", "180"))
+GEMINI_WORKER_RETRIES = int(os.getenv("GEMINI_WORKER_RETRIES", "2"))
+GEMINI_WORKER_ERROR_TEXT_MAX = 700
+GEMINI_TEMPORARY_ERROR = (
+    "Yi haƙuri, na samu matsalar haɗi da tsarin amsa tambayoyi. "
+    "Ka sake turo saƙonka nan gaba kaɗan."
+)
 GEMINI_WORKER_MAX_TEXT = 5000
 GEMINI_WORKER_POLL_SECONDS = 3
 
@@ -2279,59 +2292,131 @@ def gemini_worker_debug(message, level="info", notify_admin=False):
 
 
 def gemini_worker_call(prompt):
-    """
-    Aika prompt zuwa Gemini.
-    Ba a aika database credentials ko API keys a cikin prompt.
-    """
+    """Aika rubutun user zuwa Gemini ta hanyar REST API mai cikakken debug."""
+    api_key = str(GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")).strip()
+    model = str(MOVIE_AI_MODEL or os.getenv("MOVIE_AI_MODEL", "gemini-flash-latest")).strip()
 
-    if not GEMINI_API_KEY:
-        raise RuntimeError("Gemini API key is not configured")
-
-    if not MOVIE_AI_MODEL:
-        raise RuntimeError("Gemini model is not configured")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is missing from environment")
+    if not model:
+        raise RuntimeError("MOVIE_AI_MODEL is empty")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("Gemini prompt is empty")
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{MOVIE_AI_MODEL}:generateContent"
+        f"{model}:generateContent"
     )
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1500,
+        },
+    }
+    last_error = None
 
-    try:
-        response = requests.post(
-            url,
-            params={"key": GEMINI_API_KEY},
-            json={
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [{"text": prompt}]
-                    }
-                ],
-                "generationConfig": {
-                    "temperature": 0.3,
-                    "maxOutputTokens": 1500
-                }
-            },
-            timeout=GEMINI_WORKER_TIMEOUT
-        )
+    for attempt in range(GEMINI_WORKER_RETRIES + 1):
+        try:
+            response = requests.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
+                json=payload,
+                timeout=(15, GEMINI_WORKER_TIMEOUT),
+            )
 
-        response.raise_for_status()
-        data = response.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
+            if response.status_code != 200:
+                try:
+                    error_data = response.json()
+                    detail = (error_data.get("error", {}).get("message")
+                              or response.text[:GEMINI_WORKER_ERROR_TEXT_MAX])
+                    error_status = error_data.get("error", {}).get("status", "")
+                except Exception:
+                    detail = response.text[:GEMINI_WORKER_ERROR_TEXT_MAX]
+                    error_status = ""
 
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Gemini returned an empty response")
+                # Never allow a credential to leak into a log or admin message.
+                detail = str(detail).replace(api_key, "[REDACTED]")[:GEMINI_WORKER_ERROR_TEXT_MAX]
+                retryable = response.status_code in (408, 429, 500, 502, 503, 504)
+                last_error = RuntimeError(
+                    f"Gemini HTTP {response.status_code} {error_status}: {detail}"
+                )
+                gemini_worker_debug(
+                    f"Gemini API rejected request; model={model}; "
+                    f"http={response.status_code}; status={error_status or 'n/a'}; "
+                    f"attempt={attempt + 1}/{GEMINI_WORKER_RETRIES + 1}; "
+                    f"detail={detail}",
+                    level="error",
+                    notify_admin=True,
+                )
+                if retryable and attempt < GEMINI_WORKER_RETRIES:
+                    time.sleep(min(2 ** attempt, 8))
+                    continue
+                raise last_error
 
-        gemini_worker_debug("Part 1: Gemini request completed")
-        return text.strip()[:GEMINI_WORKER_MAX_TEXT]
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise RuntimeError("Gemini returned invalid JSON") from exc
 
-    except Exception as exc:
-        gemini_worker_debug(
-            f"Part 1: Gemini request failed ({type(exc).__name__})",
-            level="error",
-            notify_admin=True
-        )
-        # Kada a buga API key ko cikakken request URL a log.
-        raise RuntimeError("Gemini request failed") from exc
+            candidates = data.get("candidates") or []
+            if not candidates:
+                feedback = data.get("promptFeedback", {})
+                reason = feedback.get("blockReason", "no candidate returned")
+                raise RuntimeError(f"Gemini returned no candidate: {reason}")
+
+            content = candidates[0].get("content") or {}
+            parts = content.get("parts") or []
+            answer = "\n".join(
+                part.get("text", "") for part in parts
+                if isinstance(part, dict) and part.get("text")
+            ).strip()
+            if not answer:
+                finish_reason = candidates[0].get("finishReason", "unknown")
+                raise RuntimeError(
+                    f"Gemini returned empty text; finishReason={finish_reason}"
+                )
+
+            gemini_worker_debug(
+                f"Gemini request successful; model={model}; "
+                f"response_chars={len(answer)}; attempt={attempt + 1}"
+            )
+            return answer[:GEMINI_WORKER_MAX_TEXT]
+
+        except requests.exceptions.Timeout as exc:
+            last_error = RuntimeError("Gemini request timed out")
+            gemini_worker_debug(
+                f"Gemini request timeout; model={model}; "
+                f"attempt={attempt + 1}/{GEMINI_WORKER_RETRIES + 1}",
+                level="error", notify_admin=True,
+            )
+        except requests.exceptions.RequestException as exc:
+            last_error = RuntimeError(
+                f"Gemini network error: {type(exc).__name__}"
+            )
+            gemini_worker_debug(
+                f"Gemini network error ({type(exc).__name__}); "
+                f"attempt={attempt + 1}/{GEMINI_WORKER_RETRIES + 1}",
+                level="error", notify_admin=True,
+            )
+        except Exception as exc:
+            # Preserve the real, sanitized diagnostic reason for Part 5/admin.
+            last_error = exc
+            if not isinstance(exc, RuntimeError) or "Gemini HTTP" not in str(exc):
+                gemini_worker_debug(
+                    f"Gemini response processing failed ({type(exc).__name__}): "
+                    f"{str(exc)[:300]}",
+                    level="error", notify_admin=True,
+                )
+            raise
+
+        if attempt < GEMINI_WORKER_RETRIES:
+            time.sleep(min(2 ** attempt, 8))
+
+    raise RuntimeError(str(last_error or "Gemini request failed"))
 
 
 def gemini_worker_parse_json(raw_text):
@@ -2941,7 +3026,21 @@ def gemini_worker_process_one():
             level="error",
             notify_admin=True
         )
-        gemini_worker_mark_failed(task_id)
+        # The receiver waits for status=answer_ready. Save a safe fallback so
+        # the user gets a reply now instead of the receiver's 5-minute timeout.
+        try:
+            gemini_worker_save_answer(task_id, GEMINI_TEMPORARY_ERROR)
+            gemini_worker_debug(
+                f"Part 5: fallback answer saved; task_id={task_id}",
+                level="warning", notify_admin=True
+            )
+        except Exception as fallback_exc:
+            gemini_worker_debug(
+                f"Part 5: fallback save failed; task_id={task_id}; "
+                f"reason={type(fallback_exc).__name__}: {str(fallback_exc)[:250]}",
+                level="error", notify_admin=True
+            )
+            gemini_worker_mark_failed(task_id)
         return False
 
 
