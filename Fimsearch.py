@@ -272,6 +272,21 @@ API_HASH = os.getenv("API_HASH", "").strip()
 # saka ADMIN_ID a Render.
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "").strip()
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+MOVIE_AI_MODEL = os.getenv("MOVIE_AI_MODEL", "gemini-flash-latest").strip()
+MOVIE_FRAME_COUNT = 10
+MOVIE_FRAME_WIDTH = 640
+MOVIE_JPEG_QUALITY = 8
+MOVIE_AI_TIMEOUT = 180
+MOVIE_DOWNLOAD_TIMEOUT = 3600
+MOVIE_MAX_VIDEO_MB = int(os.getenv("MOVIE_MAX_VIDEO_MB", "500"))
+MOVIE_USAGE_DB = os.getenv("MOVIE_USAGE_DB", "movie_bandwidth.sqlite3")
+RENDER_API_KEY = os.getenv("RENDER_API_KEY", "").strip()
+RENDER_SERVICE_ID = os.getenv("RENDER_SERVICE_ID", "").strip()
+RENDER_MONTHLY_BANDWIDTH_GB = float(
+    os.getenv("RENDER_MONTHLY_BANDWIDTH_GB", "0") or 0
+)
+
 
 # ============================================================
 # VALIDATION
