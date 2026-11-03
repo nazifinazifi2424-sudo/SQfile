@@ -6,6 +6,14 @@ import logging
 import tempfile
 import threading
 from pathlib import Path
+import asyncio
+import math
+import telebot
+from telebot import types
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+import psycopg2
+import time
+import os
 
 import telebot
 from telebot import types
