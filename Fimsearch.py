@@ -11643,39 +11643,59 @@ def main():
     polling_loop()
 
 
+
 # =============================================================
 # START APPLICATION
 # =============================================================
 
 if __name__ == "__main__":
 
-    try:
+    SERVICE_ROLE = os.environ.get(
+        "SERVICE_ROLE",
+        "bot"
+    ).strip().lower()
 
-        main()
+    # =========================================================
+    # GEMINI WORKER SERVICE
+    # =========================================================
 
-    except KeyboardInterrupt:
+    if SERVICE_ROLE == "worker":
 
-        logger.info(
-            "Bot stopped manually."
-        )
+        gemini_worker_loop()
 
-    except Exception as e:
+    # =========================================================
+    # MAIN TELEGRAM BOT SERVICE
+    # =========================================================
 
-        logger.exception(
-            "FATAL APPLICATION ERROR"
-        )
+    else:
 
         try:
 
-            send_debug(
-                "💥 FATAL APPLICATION ERROR\n\n"
-                f"Error Type: {type(e).__name__}\n"
-                f"Error: {str(e)[:3000]}"
+            main()
+
+        except KeyboardInterrupt:
+
+            logger.info(
+                "Bot stopped manually."
             )
 
-        except Exception:
-            pass
+        except Exception as e:
 
-        # Kada mu mutu gaba daya nan take.
-        # Render zai sake tayar da service din.
-        raise
+            logger.exception(
+                "FATAL APPLICATION ERROR"
+            )
+
+            try:
+
+                send_debug(
+                    "💥 FATAL APPLICATION ERROR\n\n"
+                    f"Error Type: {type(e).__name__}\n"
+                    f"Error: {str(e)[:3000]}"
+                )
+
+            except Exception:
+                pass
+
+            # Kada mu mutu gaba daya nan take.
+            # Render zai sake tayar da service din.
+            raise
