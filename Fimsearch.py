@@ -2221,10 +2221,14 @@ then call start_gemini_worker() once during bot startup.
 """
 
 
+
+
+
 # ============================================================
 # BOT 2 — CLIP MOVIE SCANNER
-# DB POLLER + EXISTING VIDEOCON PYROGRAM DOWNLOAD ENGINE
-# 14 GEMINI / GEMMA MODEL AUTOMATIC FALLBACK
+# LIVE ADMIN MONITOR + FULL DOWNLOAD + 10 FRAMES
+# 14 MODEL FALLBACK + SHORT MOVIE IDENTIFICATION
+# EXISTING PYROGRAM ENGINE — NO NEW CLIENT
 # ============================================================
 
 import os
@@ -2254,18 +2258,13 @@ BOT2_MAX_VIDEO_SIZE = 50 * 1024 * 1024
 BOT2_MAX_DOWNLOAD_SECONDS = 3600
 BOT2_FRAME_COUNT = 10
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY", ""
+).strip()
+
 
 # ============================================================
-# 14 GEMINI / GEMMA MODELS
-#
-# Order matters:
-# If one model fails, the next model is tried automatically.
-#
-# Render can override the list using:
-# MOVIE_AI_MODELS
-#
-# Separate model names with commas.
+# 14 MODEL FALLBACK ORDER
 # ============================================================
 
 GEMINI_MODELS = [
@@ -2285,22 +2284,21 @@ GEMINI_MODELS = [
     "gemma-4-26b-a4b-it"
 ]
 
-# Optional Render environment variable override.
-# If MOVIE_AI_MODELS is set, it becomes the model list.
-_custom_models = os.getenv("MOVIE_AI_MODELS", "").strip()
+# Optional Render override:
+# MOVIE_AI_MODELS=model1,model2,model3
+
+_custom_models = os.getenv(
+    "MOVIE_AI_MODELS", ""
+).strip()
 
 if _custom_models:
     GEMINI_MODELS = [
-        model.strip()
-        for model in _custom_models.split(",")
-        if model.strip()
+        x.strip()
+        for x in _custom_models.split(",")
+        if x.strip()
     ]
 
-# Remove duplicate models while preserving order.
 GEMINI_MODELS = list(dict.fromkeys(GEMINI_MODELS))
-
-# Keep the first model as the default display model.
-GEMINI_MODEL = GEMINI_MODELS[0] if GEMINI_MODELS else ""
 
 BOT2_LOGGER = logging.getLogger("CLIP_BOT_2")
 
@@ -2311,9 +2309,13 @@ _BOT2_START_LOCK = threading.Lock()
 _BOT2_ACTIVE_TASKS = set()
 _BOT2_ACTIVE_LOCK = threading.RLock()
 
+# One live admin message per task.
+_BOT2_MONITOR_MESSAGES = {}
+_BOT2_MONITOR_LOCK = threading.RLock()
+
 
 # ============================================================
-# ADMIN NOTIFICATIONS
+# LIVE ADMIN MONITOR
 # ============================================================
 
 def clip2_admin_notify(text):
@@ -2331,6 +2333,111 @@ def clip2_admin_notify(text):
         )
 
 
+def clip2_progress_bar(percent):
+    percent = max(0, min(100, int(percent)))
+    filled = int(percent / 10)
+    return (
+        "▓" * filled
+        + "░" * (10 - filled)
+        + f" {percent}%"
+    )
+
+
+def clip2_live_monitor(
+    task_id,
+    stage,
+    percent,
+    details="",
+    model=None,
+    attempt=None
+):
+    """
+    Sends one admin message per task, then edits it
+    whenever the task changes stage.
+    """
+
+    task_id = str(task_id)
+
+    bar = clip2_progress_bar(percent)
+
+    text = (
+        "🎬 CLIP MOVIE SCANNER — LIVE MONITOR\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 Task: {task_id}\n"
+        f"📍 Current location: {stage}\n\n"
+        f"{bar}\n\n"
+        f"📌 Details: {details or 'Processing...'}\n"
+    )
+
+    if model:
+        text += f"\n🧠 Gemini model: {model}\n"
+
+    if attempt:
+        text += f"🔁 Model attempt: {attempt}\n"
+
+    text += (
+        "\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕒 Updated: {datetime.now().strftime('%H:%M:%S')}"
+    )
+
+    try:
+        if not ADMIN_ID:
+            return
+
+        admin_id = int(ADMIN_ID)
+
+        with _BOT2_MONITOR_LOCK:
+            message_id = _BOT2_MONITOR_MESSAGES.get(
+                task_id
+            )
+
+            if message_id:
+                try:
+                    bot.edit_message_text(
+                        text,
+                        chat_id=admin_id,
+                        message_id=message_id
+                    )
+                    return
+                except Exception as edit_error:
+                    BOT2_LOGGER.warning(
+                        "MONITOR EDIT FAILED: %s",
+                        edit_error
+                    )
+
+            sent = bot.send_message(
+                admin_id,
+                text
+            )
+
+            _BOT2_MONITOR_MESSAGES[task_id] = (
+                sent.message_id
+            )
+
+    except Exception:
+        BOT2_LOGGER.exception(
+            "LIVE ADMIN MONITOR ERROR"
+        )
+
+
+def clip2_monitor_complete(task_id, details):
+    clip2_live_monitor(
+        task_id,
+        "✅ AN KAMMALA",
+        100,
+        details
+    )
+
+
+def clip2_monitor_failed(task_id, details):
+    clip2_live_monitor(
+        task_id,
+        "❌ AIKIN YA GAZA",
+        100,
+        details
+    )
+
+
 # ============================================================
 # DATABASE
 # ============================================================
@@ -2342,7 +2449,6 @@ def clip2_db():
 def clip2_json(value):
     if isinstance(value, str):
         return json.loads(value)
-
     return value or {}
 
 
@@ -2376,14 +2482,8 @@ def clip2_register_worker():
                 updated_at
             )
             VALUES (
-                %s,
-                %s,
-                'online',
-                %s::jsonb,
-                NOW(),
-                NOW(),
-                NOW(),
-                NOW()
+                %s, %s, 'online', %s::jsonb,
+                NOW(), NOW(), NOW(), NOW()
             )
             ON CONFLICT (worker_id)
             DO UPDATE SET
@@ -2399,7 +2499,8 @@ def clip2_register_worker():
                 "full_video_download": True,
                 "gemini_vision": True,
                 "gemini_model_fallback": True,
-                "model_count": len(GEMINI_MODELS)
+                "model_count": len(GEMINI_MODELS),
+                "live_admin_monitor": True
             })
         ))
 
@@ -2458,10 +2559,7 @@ def clip2_get_pending_tasks():
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT
-                task_id,
-                user_id,
-                payload
+            SELECT task_id, user_id, payload
             FROM tasks
             WHERE task_type = %s
               AND status = 'pending'
@@ -2478,7 +2576,7 @@ def clip2_get_pending_tasks():
 
 
 # ============================================================
-# ATOMIC TASK CLAIM
+# ATOMIC CLAIM
 # ============================================================
 
 def clip2_claim_task(task_id):
@@ -2525,7 +2623,6 @@ def clip2_claim_task(task_id):
         ))
 
         conn.commit()
-
         return True
 
     except Exception:
@@ -2537,7 +2634,7 @@ def clip2_claim_task(task_id):
 
 
 # ============================================================
-# UPDATE TASK STATUS
+# TASK STATUS
 # ============================================================
 
 def clip2_set_status(task_id, status):
@@ -2582,7 +2679,7 @@ def clip2_set_status(task_id, status):
 
 
 # ============================================================
-# SAVE TASK PAYLOAD
+# SAVE PAYLOAD
 # ============================================================
 
 def clip2_save_payload(task_id, payload):
@@ -2628,6 +2725,7 @@ def clip2_save_payload(task_id, payload):
 
 # ============================================================
 # SAVE RESULT
+# movie_name contains short title + actor
 # ============================================================
 
 def clip2_save_result(
@@ -2698,7 +2796,7 @@ def clip2_save_result(
 
 
 # ============================================================
-# MARK TASK FAILED
+# FAILURE
 # ============================================================
 
 def clip2_mark_failed(task_id, error):
@@ -2951,8 +3049,7 @@ def clip2_mark_seen(
 
 
 # ============================================================
-# GET CHANNEL MESSAGE
-# EXISTING PYROGRAM ENGINE
+# GET CHANNEL MESSAGE — EXISTING PYROGRAM
 # ============================================================
 
 def clip2_get_channel_message(
@@ -2970,7 +3067,9 @@ def clip2_get_channel_message(
             "EXISTING_PYROGRAM_LOOP_NOT_READY"
         )
 
-    ready_event = globals().get("_videocon_ready")
+    ready_event = globals().get(
+        "_videocon_ready"
+    )
 
     if not ready_event or not ready_event.is_set():
         raise RuntimeError(
@@ -2987,8 +3086,7 @@ def clip2_get_channel_message(
 
 
 # ============================================================
-# FULL VIDEO DOWNLOAD
-# REUSES OLD _videocon_download HELPER
+# FULL VIDEO DOWNLOAD — OLD WORKING HELPER
 # ============================================================
 
 def clip2_download_full_video(
@@ -3089,7 +3187,7 @@ def clip2_extract_frames(
 
     if probe.returncode != 0:
         raise RuntimeError(
-            "FULL_VIDEO_INDEX_READ_FAILED: "
+            "VIDEO_INDEX_READ_FAILED: "
             + probe.stderr[:500]
         )
 
@@ -3097,7 +3195,6 @@ def clip2_extract_frames(
         duration = float(
             probe.stdout.strip()
         )
-
     except Exception:
         raise RuntimeError(
             "VIDEO_DURATION_INVALID"
@@ -3148,8 +3245,7 @@ def clip2_extract_frames(
             or os.path.getsize(output_path) <= 0
         ):
             raise RuntimeError(
-                f"FRAME_EXTRACTION_FAILED: "
-                f"{index + 1}/10 "
+                f"FRAME_EXTRACTION_FAILED: {index + 1}/10 "
                 + result.stderr[:300]
             )
 
@@ -3164,7 +3260,73 @@ def clip2_extract_frames(
 
 
 # ============================================================
-# GEMINI ERROR CLASSIFICATION
+# SHORT GEMINI RESULT PARSER
+# Expected:
+# SUNAN FIM: Hero (2018)
+# JARUMI: Ranbir Kapoor
+# ============================================================
+
+def clip2_parse_movie_answer(answer):
+
+    text = str(answer or "").strip()
+
+    title = ""
+    actor = ""
+
+    for line in text.splitlines():
+
+        clean = line.strip()
+
+        if ":" not in clean:
+            continue
+
+        key, value = clean.split(":", 1)
+
+        key = key.strip().lower()
+        value = value.strip()
+
+        if key in (
+            "sunan fim",
+            "sunan fim din",
+            "movie",
+            "movie name",
+            "title"
+        ):
+            title = value
+
+        elif key in (
+            "jarumi",
+            "jarumai",
+            "actor",
+            "actors",
+            "main actor",
+            "lead actor"
+        ):
+            actor = value
+
+    # Remove Markdown symbols if present.
+    title = title.strip("*# ")
+    actor = actor.strip("*# ")
+
+    # Fallback if the AI returns only a short title.
+    if not title:
+        title = text.splitlines()[0].strip() if text else ""
+
+    if not title:
+        title = "Ba a tabbatar da sunan fim ba"
+
+    if not actor:
+        actor = "Ba a tabbatar da jarumi ba"
+
+    # Store the compact report in movie_name.
+    return (
+        f"Sunan fim: {title}\n"
+        f"Jarumi: {actor}"
+    )
+
+
+# ============================================================
+# GEMINI ERROR DETAILS
 # ============================================================
 
 def clip2_gemini_error_details(response):
@@ -3172,11 +3334,11 @@ def clip2_gemini_error_details(response):
     try:
         data = response.json()
 
-        detail = (
-            data.get("error", {}).get(
-                "message",
-                response.text[:1000]
-            )
+        detail = data.get(
+            "error", {}
+        ).get(
+            "message",
+            response.text[:1000]
         )
 
     except Exception:
@@ -3185,23 +3347,8 @@ def clip2_gemini_error_details(response):
     return str(detail)
 
 
-def clip2_gemini_should_fallback(status_code):
-
-    # These errors can be model-specific or temporary.
-    retryable_codes = {
-        404, 408, 409, 425,
-        429, 500, 502, 503, 504
-    }
-
-    return status_code in retryable_codes
-
-
 # ============================================================
-# GEMINI / GEMMA MULTI-MODEL IDENTIFICATION
-#
-# Tries all 14 models in order.
-# Returns:
-#     (report, successful_model)
+# GEMINI MULTI-MODEL FALLBACK
 # ============================================================
 
 def clip2_gemini_identify(
@@ -3221,26 +3368,27 @@ def clip2_gemini_identify(
 
     if not GEMINI_MODELS:
         raise RuntimeError(
-            "NO_GEMINI_MODELS_CONFIGURED"
+            "GEMINI_MODELS_EMPTY"
         )
 
     prompt = (
-        "Identify the original movie shown in these 10 video frames. "
-        "Use visual evidence across all frames. "
-        "Do not invent a title, year, actor, country or language. "
-        "If uncertain, say 'BA A TABBATAR BA'. "
-        "Respond briefly in Hausa using this format:\n"
-        "SUNAN FIM:\n"
-        "SHEKARA:\n"
-        "ƘASA:\n"
-        "HARSHEN FIM:\n"
-        "MATSAYIN TABBACI:\n"
-        "HUJJA:"
+        "You are a movie identification expert. "
+        "Identify the exact movie shown in these 10 frames. "
+        "Use visual evidence. Do not guess. "
+        "If the title or actor is uncertain, say unknown. "
+        "Return ONLY TWO SHORT LINES in Hausa:\n\n"
+        "SUNAN FIM: [official movie title and year if known]\n"
+        "JARUMI: [main actor name]\n\n"
+        "Example:\n"
+        "SUNAN FIM: Hero (2018)\n"
+        "JARUMI: Ranbir Kapoor\n\n"
+        "Do not write explanations, long descriptions, "
+        "country, language, confidence scores or extra text."
     )
 
-    # Read the 10 images once.
     parts = [{"text": prompt}]
 
+    # Load all 10 frames.
     for frame_path in frame_paths:
 
         with open(frame_path, "rb") as image_file:
@@ -3262,17 +3410,19 @@ def clip2_gemini_identify(
         }],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 700
+            "maxOutputTokens": 180
         }
     }
 
     failed_models = []
 
-    clip2_admin_notify(
-        "🧠 GEMINI MULTI-MODEL IDENTIFICATION STARTED\n"
-        f"Task: {task_id}\n"
-        f"Total models: {len(GEMINI_MODELS)}\n"
-        "Automatic fallback: ENABLED"
+    total = len(GEMINI_MODELS)
+
+    clip2_live_monitor(
+        task_id,
+        "🧠 GEMINI CHECKING",
+        75,
+        "An aika frames 10 zuwa Gemini domin gano fim."
     )
 
     for index, model_name in enumerate(
@@ -3286,11 +3436,16 @@ def clip2_gemini_identify(
             f"{model_name}:generateContent"
         )
 
-        clip2_admin_notify(
-            "🔄 GEMINI MODEL ATTEMPT\n"
-            f"Task: {task_id}\n"
-            f"Model: {model_name}\n"
-            f"Position: {index}/{len(GEMINI_MODELS)}"
+        clip2_live_monitor(
+            task_id,
+            "🧠 GEMINI CHECKING",
+            75 + int((index - 1) / total * 20),
+            (
+                f"Ana gwada model {index} cikin {total}. "
+                "Idan ya kasa, za a matsa zuwa na gaba."
+            ),
+            model=model_name,
+            attempt=f"{index}/{total}"
         )
 
         try:
@@ -3306,7 +3461,7 @@ def clip2_gemini_identify(
             )
 
             # ------------------------------------------------
-            # HTTP ERROR
+            # HTTP FAILURE
             # ------------------------------------------------
 
             if response.status_code != 200:
@@ -3316,48 +3471,47 @@ def clip2_gemini_identify(
                 )
 
                 error_text = (
-                    f"HTTP {response.status_code}: "
-                    f"{detail}"
+                    f"HTTP {response.status_code}: {detail}"
                 )
 
                 failed_models.append(
                     f"{model_name}: {error_text[:500]}"
                 )
 
-                BOT2_LOGGER.warning(
-                    "GEMINI MODEL FAILED: %s | %s",
-                    model_name,
-                    error_text
-                )
+                # Authentication and permission failures
+                # are usually project/API-key problems.
+                if response.status_code in (401, 403):
 
-                # Authentication / permission errors affect
-                # the project or API key. Trying 13 more models
-                # will not normally fix them.
-                if response.status_code in (400, 401, 403):
+                    clip2_live_monitor(
+                        task_id,
+                        "🔴 GEMINI API KEY / PERMISSION ERROR",
+                        95,
+                        error_text[:900],
+                        model=model_name
+                    )
+
                     raise RuntimeError(
-                        f"GEMINI_FATAL_HTTP_"
-                        f"{response.status_code}: {detail}"
+                        f"GEMINI_FATAL_HTTP_{response.status_code}: "
+                        f"{detail}"
                     )
 
-                if clip2_gemini_should_fallback(
-                    response.status_code
-                ):
-
-                    clip2_admin_notify(
-                        "⚠️ GEMINI MODEL FAILED — NEXT MODEL\n"
-                        f"Task: {task_id}\n"
-                        f"Failed model: {model_name}\n"
+                # Model not found, overload, quota, rate limit
+                # and temporary server errors: try next model.
+                clip2_live_monitor(
+                    task_id,
+                    "⚠️ MODEL YA KASA — ANA CANJAWA",
+                    75 + int(index / total * 20),
+                    (
+                        f"{model_name} ya kasa.\n"
                         f"HTTP: {response.status_code}\n"
-                        f"Next: {index + 1}/{len(GEMINI_MODELS)}\n"
-                        f"Reason: {detail[:700]}"
-                    )
-
-                    continue
-
-                raise RuntimeError(
-                    f"GEMINI_HTTP_{response.status_code}: "
-                    f"{detail}"
+                        f"Dalili: {detail[:350]}\n"
+                        "Ana gwada model na gaba."
+                    ),
+                    model=model_name,
+                    attempt=f"{index}/{total}"
                 )
+
+                continue
 
             # ------------------------------------------------
             # PARSE RESPONSE
@@ -3366,21 +3520,19 @@ def clip2_gemini_identify(
             try:
                 data = response.json()
 
-            except Exception as parse_error:
+            except Exception:
 
                 failed_models.append(
-                    f"{model_name}: INVALID_JSON_RESPONSE"
+                    f"{model_name}: INVALID_JSON"
                 )
 
-                BOT2_LOGGER.exception(
-                    "GEMINI RESPONSE JSON ERROR"
-                )
-
-                clip2_admin_notify(
-                    "⚠️ GEMINI INVALID RESPONSE\n"
-                    f"Task: {task_id}\n"
-                    f"Model: {model_name}\n"
-                    f"Error: {str(parse_error)[:500]}"
+                clip2_live_monitor(
+                    task_id,
+                    "⚠️ RESPONSE ERROR — NEXT MODEL",
+                    80,
+                    "Gemini ya dawo da response mara inganci.",
+                    model=model_name,
+                    attempt=f"{index}/{total}"
                 )
 
                 continue
@@ -3391,14 +3543,12 @@ def clip2_gemini_identify(
 
             if not candidates:
 
-                prompt_feedback = data.get(
-                    "promptFeedback", {}
-                )
-
                 reason = (
-                    prompt_feedback.get(
+                    data.get(
+                        "promptFeedback", {}
+                    ).get(
                         "blockReason",
-                        "NO_CANDIDATES_RETURNED"
+                        "NO_CANDIDATES"
                     )
                 )
 
@@ -3406,33 +3556,32 @@ def clip2_gemini_identify(
                     f"{model_name}: {reason}"
                 )
 
-                clip2_admin_notify(
-                    "⚠️ GEMINI RETURNED NO CANDIDATES\n"
-                    f"Task: {task_id}\n"
-                    f"Model: {model_name}\n"
-                    f"Reason: {reason}\n"
-                    "Trying next model."
+                clip2_live_monitor(
+                    task_id,
+                    "⚠️ MODEL BA TA BA DA AMSA",
+                    80,
+                    f"Dalili: {reason}. Ana gwada na gaba.",
+                    model=model_name,
+                    attempt=f"{index}/{total}"
                 )
 
                 continue
 
             candidate = candidates[0]
 
-            finish_reason = candidate.get(
-                "finishReason", ""
-            )
-
-            if finish_reason == "SAFETY":
+            if candidate.get("finishReason") == "SAFETY":
 
                 failed_models.append(
                     f"{model_name}: SAFETY_BLOCK"
                 )
 
-                clip2_admin_notify(
-                    "⚠️ GEMINI SAFETY BLOCK\n"
-                    f"Task: {task_id}\n"
-                    f"Model: {model_name}\n"
-                    "Trying next model."
+                clip2_live_monitor(
+                    task_id,
+                    "⚠️ MODEL BLOCKED — NEXT MODEL",
+                    80,
+                    "An toshe amsar model ɗin. Ana gwada na gaba.",
+                    model=model_name,
+                    attempt=f"{index}/{total}"
                 )
 
                 continue
@@ -3455,51 +3604,61 @@ def clip2_gemini_identify(
                     f"{model_name}: EMPTY_RESPONSE"
                 )
 
-                clip2_admin_notify(
-                    "⚠️ GEMINI EMPTY RESPONSE\n"
-                    f"Task: {task_id}\n"
-                    f"Model: {model_name}\n"
-                    "Trying next model."
+                clip2_live_monitor(
+                    task_id,
+                    "⚠️ EMPTY RESPONSE — NEXT MODEL",
+                    80,
+                    "Model bai dawo da sunan fim ba.",
+                    model=model_name,
+                    attempt=f"{index}/{total}"
                 )
 
                 continue
 
             # ------------------------------------------------
-            # SUCCESS
+            # FORMAT SHORT RESULT
             # ------------------------------------------------
 
-            clip2_admin_notify(
-                "✅ GEMINI MODEL SUCCESS\n"
-                f"Task: {task_id}\n"
-                f"Successful model: {model_name}\n"
-                f"Attempt: {index}/{len(GEMINI_MODELS)}\n"
-                f"Previous failures: {len(failed_models)}"
+            short_result = clip2_parse_movie_answer(
+                answer
+            )
+
+            clip2_live_monitor(
+                task_id,
+                "✅ GEMINI YA GANO FIM",
+                98,
+                (
+                    f"{short_result}\n\n"
+                    "An samu amsa daga Gemini."
+                ),
+                model=model_name,
+                attempt=f"{index}/{total}"
             )
 
             BOT2_LOGGER.info(
-                "GEMINI SUCCESS: task=%s model=%s",
+                "GEMINI SUCCESS task=%s model=%s",
                 task_id,
                 model_name
             )
 
-            return answer, model_name
+            return short_result, model_name
+
+        except RuntimeError:
+            raise
 
         except requests.exceptions.Timeout as error:
 
             failed_models.append(
-                f"{model_name}: REQUEST_TIMEOUT"
+                f"{model_name}: TIMEOUT"
             )
 
-            BOT2_LOGGER.warning(
-                "GEMINI TIMEOUT: %s",
-                model_name
-            )
-
-            clip2_admin_notify(
-                "⏳ GEMINI REQUEST TIMEOUT\n"
-                f"Task: {task_id}\n"
-                f"Model: {model_name}\n"
-                "Trying next model."
+            clip2_live_monitor(
+                task_id,
+                "⏳ MODEL TIMEOUT — ANA CANJAWA",
+                80,
+                "Lokacin amsa ya ƙare. Ana gwada model na gaba.",
+                model=model_name,
+                attempt=f"{index}/{total}"
             )
 
             continue
@@ -3507,44 +3666,37 @@ def clip2_gemini_identify(
         except requests.exceptions.RequestException as error:
 
             failed_models.append(
-                f"{model_name}: {str(error)[:400]}"
+                f"{model_name}: {str(error)[:300]}"
             )
 
-            BOT2_LOGGER.warning(
-                "GEMINI NETWORK ERROR: %s",
-                model_name
-            )
-
-            clip2_admin_notify(
-                "⚠️ GEMINI NETWORK ERROR\n"
-                f"Task: {task_id}\n"
-                f"Model: {model_name}\n"
-                f"Error: {str(error)[:500]}\n"
-                "Trying next model."
+            clip2_live_monitor(
+                task_id,
+                "⚠️ NETWORK ERROR — ANA CANJAWA",
+                80,
+                str(error)[:500],
+                model=model_name,
+                attempt=f"{index}/{total}"
             )
 
             continue
 
-        except RuntimeError:
-            raise
-
         except Exception as error:
 
             failed_models.append(
-                f"{model_name}: {str(error)[:400]}"
+                f"{model_name}: {str(error)[:300]}"
             )
 
             BOT2_LOGGER.exception(
-                "UNEXPECTED GEMINI MODEL ERROR: %s",
-                model_name
+                "GEMINI MODEL UNEXPECTED ERROR"
             )
 
-            clip2_admin_notify(
-                "⚠️ GEMINI UNEXPECTED ERROR\n"
-                f"Task: {task_id}\n"
-                f"Model: {model_name}\n"
-                f"Error: {str(error)[:500]}\n"
-                "Trying next model."
+            clip2_live_monitor(
+                task_id,
+                "⚠️ MODEL ERROR — ANA CANJAWA",
+                80,
+                str(error)[:500],
+                model=model_name,
+                attempt=f"{index}/{total}"
             )
 
             continue
@@ -3557,11 +3709,11 @@ def clip2_gemini_identify(
         failed_models[-14:]
     )
 
-    clip2_admin_notify(
-        "🔴 ALL GEMINI MODELS FAILED\n"
-        f"Task: {task_id}\n"
-        f"Models attempted: {len(GEMINI_MODELS)}\n"
-        f"Failures:\n{failure_report[:2200]}"
+    clip2_live_monitor(
+        task_id,
+        "❌ DUK MODELS 14 SUN KASA",
+        100,
+        failure_report[:1500]
     )
 
     raise RuntimeError(
@@ -3595,7 +3747,7 @@ def clip2_process_task(
     try:
 
         # ----------------------------------------------------
-        # CLAIM TASK
+        # 1. CLAIM TASK
         # ----------------------------------------------------
 
         if not clip2_claim_task(task_id):
@@ -3611,18 +3763,28 @@ def clip2_process_task(
             payload["storage_message_id"]
         )
 
-        clip2_admin_notify(
-            "📥 BOT 2 FOUND PENDING TASK\n"
-            f"Task: {task_id}\n"
-            f"User: {user_id}\n"
-            f"Channel: {channel_id}\n"
-            f"Message: {message_id}\n"
-            "DB claim: successful"
+        clip2_live_monitor(
+            task_id,
+            "📥 AN KARƁI SAKO",
+            5,
+            (
+                "Bot 2 ya gano sabon aikin a database.\n"
+                f"User ID: {user_id}\n"
+                f"Channel: {channel_id}\n"
+                f"Message ID: {message_id}"
+            )
         )
 
         # ----------------------------------------------------
-        # GET EXACT CHANNEL MESSAGE
+        # 2. GET EXACT CHANNEL MESSAGE
         # ----------------------------------------------------
+
+        clip2_live_monitor(
+            task_id,
+            "🔎 ANA DUBA STORAGE CHANNEL",
+            10,
+            "Ana nemo ainihin video ɗin da Bot 1 ya ajiye."
+        )
 
         pyro_message = clip2_get_channel_message(
             channel_id,
@@ -3635,7 +3797,7 @@ def clip2_process_task(
             )
 
         # ----------------------------------------------------
-        # VERIFY CHANNEL MESSAGE
+        # 3. VERIFY MESSAGE
         # ----------------------------------------------------
 
         media = clip2_verify_channel_message(
@@ -3645,8 +3807,19 @@ def clip2_process_task(
             payload
         )
 
+        clip2_live_monitor(
+            task_id,
+            "✅ AN TABBATAR DA VIDEO",
+            15,
+            (
+                f"File: {media.file_id}\n"
+                f"Size: {clip2_size(media.file_size)}\n"
+                f"Unique ID: {media.file_unique_id}"
+            )
+        )
+
         # ----------------------------------------------------
-        # MARK AS SEEN
+        # 4. MARK CHANNEL MESSAGE AS SEEN
         # ----------------------------------------------------
 
         try:
@@ -3660,23 +3833,18 @@ def clip2_process_task(
 
         except Exception as edit_error:
 
-            clip2_admin_notify(
-                "⚠️ BOT 2 COULD NOT EDIT CHANNEL CAPTION\n"
-                f"Task: {task_id}\n"
-                f"Error: {str(edit_error)[:700]}\n"
-                "Processing will continue."
+            clip2_live_monitor(
+                task_id,
+                "⚠️ BA A IYA GYARA CHANNEL CAPTION BA",
+                15,
+                (
+                    f"Error: {str(edit_error)[:400]}\n"
+                    "Amma processing zai ci gaba."
+                )
             )
 
-        clip2_admin_notify(
-            "✅ BOT 2 VERIFIED CHANNEL VIDEO\n"
-            f"Task: {task_id}\n"
-            f"File ID: {media.file_id}\n"
-            f"Unique ID: {media.file_unique_id}\n"
-            f"Size: {clip2_size(media.file_size)}"
-        )
-
         # ----------------------------------------------------
-        # SAVE BOT 2 FILE METADATA
+        # 5. SAVE BOT 2 FILE INFORMATION
         # ----------------------------------------------------
 
         payload["bot2_file_id"] = media.file_id
@@ -3695,7 +3863,7 @@ def clip2_process_task(
         )
 
         # ----------------------------------------------------
-        # DOWNLOAD START
+        # 6. DOWNLOAD FULL VIDEO
         # ----------------------------------------------------
 
         clip2_set_status(
@@ -3704,6 +3872,17 @@ def clip2_process_task(
         )
 
         clip2_heartbeat(task_id)
+
+        clip2_live_monitor(
+            task_id,
+            "⬇️ ANA SAUKE CIKAKKEN VIDEO",
+            25,
+            (
+                f"Video size: {clip2_size(media.file_size)}\n"
+                "Downloader: existing _videocon_download\n"
+                "Ana sauke cikakken video."
+            )
+        )
 
         temp_dir = tempfile.mkdtemp(
             prefix="clip_bot2_"
@@ -3718,17 +3897,6 @@ def clip2_process_task(
             temp_dir,
             "frames"
         )
-
-        clip2_admin_notify(
-            "⬇️ BOT 2 FULL DOWNLOAD STARTED\n"
-            f"Task: {task_id}\n"
-            f"Video: {clip2_size(media.file_size)}\n"
-            "Method: existing _videocon_download helper"
-        )
-
-        # ----------------------------------------------------
-        # FULL VIDEO DOWNLOAD
-        # ----------------------------------------------------
 
         downloaded_path, downloaded_size = (
             clip2_download_full_video(
@@ -3748,19 +3916,30 @@ def clip2_process_task(
             payload
         )
 
-        clip2_admin_notify(
-            "✅ BOT 2 FULL DOWNLOAD COMPLETED\n"
-            f"Task: {task_id}\n"
-            f"Downloaded: {clip2_size(downloaded_size)}"
+        clip2_live_monitor(
+            task_id,
+            "✅ AN SAUKE VIDEO SOSAI",
+            45,
+            (
+                f"Downloaded: {clip2_size(downloaded_size)}\n"
+                "Cikakken video ya shiga storage na wucin gadi."
+            )
         )
 
         # ----------------------------------------------------
-        # EXTRACT FRAMES
+        # 7. EXTRACT 10 FRAMES
         # ----------------------------------------------------
 
         clip2_set_status(
             task_id,
             "extracting_frames"
+        )
+
+        clip2_live_monitor(
+            task_id,
+            "🖼️ ANA CIRE FRAMES 10",
+            55,
+            "Ana daukar hotuna 10 daga wurare daban-daban na video."
         )
 
         frames = clip2_extract_frames(
@@ -3786,20 +3965,35 @@ def clip2_process_task(
             payload
         )
 
-        clip2_admin_notify(
-            "✅ BOT 2 EXTRACTED FRAMES\n"
-            f"Task: {task_id}\n"
-            f"Frames: {len(frames)}/10\n"
-            f"Images: {clip2_size(frame_total_bytes)}"
+        clip2_live_monitor(
+            task_id,
+            "✅ AN CIRE FRAMES 10",
+            70,
+            (
+                f"Frames: {len(frames)}/10\n"
+                f"Images: {clip2_size(frame_total_bytes)}\n"
+                "An shirya hotunan domin Gemini."
+            )
         )
 
         # ----------------------------------------------------
-        # GEMINI IDENTIFICATION
+        # 8. GEMINI CHECKING
         # ----------------------------------------------------
 
         clip2_set_status(
             task_id,
             "identifying"
+        )
+
+        clip2_live_monitor(
+            task_id,
+            "🧠 GEMINI CHECKING",
+            75,
+            (
+                "An shiga Gemini.\n"
+                "Ana gwada models 14 a jere.\n"
+                "Idan daya ya kasa, zai wuce zuwa na gaba."
+            )
         )
 
         report, successful_model = (
@@ -3810,8 +4004,19 @@ def clip2_process_task(
         )
 
         # ----------------------------------------------------
-        # SAVE RESULT WITH ACTUAL SUCCESSFUL MODEL
+        # 9. SAVE RESULT TO DATABASE
         # ----------------------------------------------------
+
+        clip2_live_monitor(
+            task_id,
+            "💾 ANA AJIYE AMSA A DATABASE",
+            95,
+            (
+                f"{report}\n\n"
+                f"Successful model: {successful_model}"
+            ),
+            model=successful_model
+        )
 
         clip2_save_result(
             task_id,
@@ -3821,15 +4026,26 @@ def clip2_process_task(
             len(frames)
         )
 
-        clip2_admin_notify(
-            "🎉 BOT 2 TASK COMPLETED\n"
-            f"Task: {task_id}\n"
-            f"User: {user_id}\n"
-            f"Successful model: {successful_model}\n"
-            f"Frames: {len(frames)}\n"
-            f"Download: {clip2_size(downloaded_size)}\n"
-            "DB Status: completed\n"
-            "Bot 1 can now deliver the result."
+        # ----------------------------------------------------
+        # 10. COMPLETED
+        # ----------------------------------------------------
+
+        clip2_monitor_complete(
+            task_id,
+            (
+                "🎉 AN KAMMALA AIKI\n\n"
+                f"{report}\n\n"
+                f"Model: {successful_model}\n"
+                f"Frames: {len(frames)}/10\n"
+                f"Video: {clip2_size(downloaded_size)}\n\n"
+                "Database status: completed\n"
+                "Bot 1 zai aika wa user video da sakamakon."
+            )
+        )
+
+        BOT2_LOGGER.info(
+            "BOT2 TASK COMPLETED: %s",
+            task_id
         )
 
     except Exception as error:
@@ -3852,11 +4068,13 @@ def clip2_process_task(
                 "BOT2 FAILED TO SAVE TASK FAILURE"
             )
 
-        clip2_admin_notify(
-            "❌ BOT 2 TASK FAILED\n"
-            f"Task: {task_id}\n"
-            f"User: {user_id}\n"
-            f"Error: {str(error)[:1600]}"
+        clip2_monitor_failed(
+            task_id,
+            (
+                "❌ AIKIN YA KASA\n\n"
+                f"User: {user_id}\n"
+                f"Error: {str(error)[:1800]}"
+            )
         )
 
     finally:
@@ -3869,9 +4087,7 @@ def clip2_process_task(
 
         try:
             clip2_heartbeat(None)
-
         except Exception:
-
             BOT2_LOGGER.exception(
                 "BOT2 HEARTBEAT CLEANUP FAILED"
             )
@@ -3881,7 +4097,7 @@ def clip2_process_task(
 
 
 # ============================================================
-# DATABASE POLLING WORKER
+# DB POLLING WORKER
 # ============================================================
 
 def bot2_clip_database_poller():
@@ -3956,15 +4172,7 @@ def clip2_startup():
 
     try:
 
-        # ----------------------------------------------------
-        # REGISTER WORKER
-        # ----------------------------------------------------
-
         clip2_register_worker()
-
-        # ----------------------------------------------------
-        # CHECK EXISTING PYROGRAM ENGINE
-        # ----------------------------------------------------
 
         ready_event = globals().get(
             "_videocon_ready"
@@ -3999,34 +4207,24 @@ def clip2_startup():
                 )
             )
 
-        if not globals().get(
-            "_videocon_pyro"
-        ):
+        if not globals().get("_videocon_pyro"):
             raise RuntimeError(
                 "PYROGRAM_CLIENT_NOT_AVAILABLE"
             )
 
         if not callable(
-            globals().get(
-                "_videocon_get_message"
-            )
+            globals().get("_videocon_get_message")
         ):
             raise RuntimeError(
                 "_videocon_get_message_HELPER_MISSING"
             )
 
         if not callable(
-            globals().get(
-                "_videocon_download"
-            )
+            globals().get("_videocon_download")
         ):
             raise RuntimeError(
                 "_videocon_download_HELPER_MISSING"
             )
-
-        # ----------------------------------------------------
-        # CHECK GEMINI CONFIG
-        # ----------------------------------------------------
 
         if not GEMINI_API_KEY:
             raise RuntimeError(
@@ -4038,40 +4236,25 @@ def clip2_startup():
                 "GEMINI_MODELS_EMPTY"
             )
 
-        # ----------------------------------------------------
-        # START DB POLLER
-        # ----------------------------------------------------
-
         threading.Thread(
             target=bot2_clip_database_poller,
             daemon=True,
             name="bot2-clip-db-poller"
         ).start()
 
-        # ----------------------------------------------------
-        # ADMIN STARTUP MESSAGE
-        # ----------------------------------------------------
-
-        model_list = "\n".join(
-            f"{index}. {model}"
-            for index, model in enumerate(
-                GEMINI_MODELS,
-                start=1
-            )
-        )
-
         clip2_admin_notify(
             "🟢 BOT 2 ONLINE\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
             f"Worker: {BOT2_WORKER_ID}\n"
             f"Channel: {CLIP_CHANNEL_VIDEO}\n"
             f"Video limit: {clip2_size(BOT2_MAX_VIDEO_SIZE)}\n"
             "Download: FULL VIDEO\n"
-            "Downloader: existing _videocon_download\n"
+            "Downloader: existing Pyrogram helper\n"
             f"Frames: {BOT2_FRAME_COUNT}\n"
             f"Gemini models: {len(GEMINI_MODELS)}\n"
-            "Automatic fallback: ENABLED\n\n"
-            "MODEL ORDER:\n"
-            f"{model_list}\n\n"
+            "Live monitor: ENABLED\n"
+            "Automatic fallback: ENABLED\n"
+            "Short movie report: ENABLED\n"
             "Task discovery: PostgreSQL DB polling\n"
             "Waiting for pending tasks."
         )
@@ -4100,8 +4283,10 @@ clip2_startup()
 
 
 # ============================================================
-# END BOT 2 — CLIP MOVIE SCANNER
+# END Video Gemini BOT 2
 # ============================================================
+
+
 
 
 # ============================================================
