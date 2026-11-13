@@ -720,6 +720,65 @@ bot = telebot.TeleBot(
 
 
 
+# ==================================================
+# BOT 2 — INSTANT CHANNEL MESSAGE LISTENER TEST
+# ==================================================
+
+def bot2_channel_message_listener(message):
+    try:
+        if not message.chat:
+            return
+
+        if int(message.chat.id) != int(CLIP_CHANNEL_VIDEO):
+            return
+
+        text = (
+            getattr(message, "text", None)
+            or getattr(message, "caption", None)
+            or "[Babu rubutu]"
+        )
+
+        bot.send_message(
+            int(ADMIN_ID),
+            "🟢 BOT 2 — AN GA SABON SAKO A CHANNEL\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📩 Saƙo: {text[:2500]}\n"
+            f"🆔 Message ID: {message.message_id}\n"
+            f"📢 Channel ID: {message.chat.id}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "✅ Bot 2 ya karɓi sabon saƙon."
+        )
+
+        BOT2_LOGGER.info(
+            "NEW CHANNEL MESSAGE RECEIVED: %s",
+            message.message_id
+        )
+
+    except Exception:
+        BOT2_LOGGER.exception(
+            "BOT2 CHANNEL LISTENER ERROR"
+        )
+
+
+@bot.channel_post_handler(
+    func=lambda message: (
+        message.chat
+        and int(message.chat.id) == int(CLIP_CHANNEL_VIDEO)
+    )
+)
+def bot2_channel_post_handler(message):
+    bot2_channel_message_listener(message)
+
+
+@bot.edited_channel_post_handler(
+    func=lambda message: (
+        message.chat
+        and int(message.chat.id) == int(CLIP_CHANNEL_VIDEO)
+    )
+)
+def bot2_edited_channel_post_handler(message):
+    pass
+
 # ============================================================
 # PART B/6
 # WORKER REGISTRATION & HEARTBEAT SYSTEM
