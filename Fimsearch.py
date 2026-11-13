@@ -263,7 +263,7 @@ print("✅ ALL CHAT DATABASE TABLES CREATED SUCCESSFULLY")
 
 
 
-CLIP_CHANNEL_VIDEO =  -1004449824546
+CLIP_CHANNEL_VIDEO = -1004433789999 
 
 #============================================================
 
@@ -721,16 +721,31 @@ bot = telebot.TeleBot(
 
 
 # ==================================================
-# BOT 2 — INSTANT CHANNEL MESSAGE LISTENER TEST
+# BOT 2 — INSTANT GROUP MESSAGE LISTENER + DEBUG
+# CLIP_CHANNEL_VIDEO VARIABLE REMAINS UNCHANGED
 # ==================================================
 
-def bot2_channel_message_listener(message):
+def bot2_group_message_listener(message):
     try:
         if not message.chat:
             return
 
-        if int(message.chat.id) != int(CLIP_CHANNEL_VIDEO):
+        # Check target GROUP ID
+        if str(message.chat.id) != str(CLIP_CHANNEL_VIDEO):
             return
+
+        sender = message.from_user
+        sender_name = (
+            getattr(sender, "first_name", "Unknown")
+            if sender else "Unknown"
+        )
+
+        sender_id = (
+            getattr(sender, "id", "Unknown")
+            if sender else "Unknown"
+        )
+
+        is_bot = getattr(sender, "is_bot", False) if sender else False
 
         text = (
             getattr(message, "text", None)
@@ -738,46 +753,58 @@ def bot2_channel_message_listener(message):
             or "[Babu rubutu]"
         )
 
-        bot.send_message(
-            int(ADMIN_ID),
-            "🟢 BOT 2 — AN GA SABON SAKO A CHANNEL\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"📩 Saƙo: {text[:2500]}\n"
-            f"🆔 Message ID: {message.message_id}\n"
-            f"📢 Channel ID: {message.chat.id}\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "✅ Bot 2 ya karɓi sabon saƙon."
+        # DEBUG LOG
+        BOT2_LOGGER.info(
+            "GROUP MESSAGE RECEIVED | "
+            "chat_id=%s | message_id=%s | "
+            "sender_id=%s | is_bot=%s | text=%s",
+            message.chat.id,
+            message.message_id,
+            sender_id,
+            is_bot,
+            text[:500]
         )
 
-        BOT2_LOGGER.info(
-            "NEW CHANNEL MESSAGE RECEIVED: %s",
-            message.message_id
+        # Notify ADMIN
+        bot.send_message(
+            int(ADMIN_ID),
+            "🟢 BOT 2 — AN KARƁI SAƘO A GROUP\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📩 Saƙo: {text[:2500]}\n"
+            f"👤 Sender: {sender_name}\n"
+            f"🆔 Sender ID: {sender_id}\n"
+            f"🤖 Is Bot: {is_bot}\n"
+            f"🆔 Message ID: {message.message_id}\n"
+            f"👥 Group ID: {message.chat.id}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "✅ BOT 2 RECEIVED MESSAGE"
         )
 
     except Exception:
         BOT2_LOGGER.exception(
-            "BOT2 CHANNEL LISTENER ERROR"
+            "BOT2 GROUP LISTENER ERROR"
         )
 
 
-@bot.channel_post_handler(
+@bot.message_handler(
     func=lambda message: (
         message.chat
-        and int(message.chat.id) == int(CLIP_CHANNEL_VIDEO)
-    )
+        and str(message.chat.id) == str(CLIP_CHANNEL_VIDEO)
+    ),
+    content_types=[
+        "text",
+        "photo",
+        "video",
+        "document",
+        "audio",
+        "voice",
+        "video_note",
+        "animation"
+    ]
 )
-def bot2_channel_post_handler(message):
-    bot2_channel_message_listener(message)
+def bot2_group_message_handler(message):
+    bot2_group_message_listener(message)
 
-
-@bot.edited_channel_post_handler(
-    func=lambda message: (
-        message.chat
-        and int(message.chat.id) == int(CLIP_CHANNEL_VIDEO)
-    )
-)
-def bot2_edited_channel_post_handler(message):
-    pass
 
 # ============================================================
 # PART B/6
