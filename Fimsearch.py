@@ -2308,16 +2308,15 @@ then call start_gemini_worker() once during bot startup.
 
 
 
-
 # ============================================================
 # BOT 2 — CLIP MOVIE SCANNER
-# UNIVERSAL VIDEO MESSAGE HANDLER
-# STRICT CAPTION + DATABASE VERIFICATION
-# LIVE ADMIN MONITOR + DOWNLOAD PROGRESS
-# FULL DOWNLOAD + 10 FRAMES
-# 14 MODEL FALLBACK + SHORT MOVIE IDENTIFICATION
+# SERIAL QUEUE: ONE VIDEO AT A TIME
+# FULL VIDEO DOWNLOAD + 10 FRAMES
+# ADMIN PHOTO DEBUG + LIVE MONITOR
+# GEMINI IDENTIFICATION + 14 MODEL FALLBACK
+# PROCESSING DEADLINE: 30 MINUTES FROM ACTUAL START
+# SHARED DATABASE WITH BOT 1
 # EXISTING PYROGRAM ENGINE — NO NEW CLIENT
-# COMPLETED TASKS ARE NEVER PROCESSED AGAIN
 # ============================================================
 
 import os
@@ -2332,7 +2331,7 @@ import subprocess
 import logging
 import requests
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 # ============================================================
@@ -2344,18 +2343,31 @@ CLIP_TASK_TYPE = "clip_movie_identification"
 
 BOT2_POLL_SECONDS = 3
 BOT2_MAX_VIDEO_SIZE = 50 * 1024 * 1024
-BOT2_MAX_DOWNLOAD_SECONDS = 3600
+BOT2_MAX_DOWNLOAD_SECONDS = 1200
 BOT2_FRAME_COUNT = 10
-BOT2_LEASE_MINUTES = 45
-BOT2_LEASE_REFRESH_SECONDS = 60
+
+BOT2_PROCESSING_TIMEOUT = 1800
+BOT2_LEASE_SECONDS = 2100
 
 GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY", ""
 ).strip()
 
+BOT2_LOGGER = logging.getLogger("CLIP_BOT_2")
+
+_BOT2_STOP = threading.Event()
+_BOT2_STARTED = False
+_BOT2_START_LOCK = threading.Lock()
+
+_BOT2_ACTIVE_TASK = None
+_BOT2_ACTIVE_LOCK = threading.RLock()
+
+_BOT2_MONITOR_MESSAGES = {}
+_BOT2_MONITOR_LOCK = threading.RLock()
+
 
 # ============================================================
-# 14 MODEL FALLBACK ORDER
+# GEMINI FALLBACK MODELS
 # ============================================================
 
 GEMINI_MODELS = [
@@ -2388,117 +2400,61 @@ if _custom_models:
 
 GEMINI_MODELS = list(dict.fromkeys(GEMINI_MODELS))
 
-BOT2_LOGGER = logging.getLogger("CLIP_BOT_2")
-
-_BOT2_STOP = threading.Event()
-_BOT2_STARTED = False
-_BOT2_START_LOCK = threading.Lock()
-
-_BOT2_ACTIVE_TASKS = set()
-_BOT2_ACTIVE_LOCK = threading.RLock()
-
-_BOT2_MONITOR_MESSAGES = {}
-_BOT2_MONITOR_LOCK = threading.RLock()
-
-_BOT2_RECEIVED_MESSAGES = set()
-_BOT2_RECEIVED_LOCK = threading.RLock()
-
 
 # ============================================================
-# ADMIN NOTIFICATION
+# COMMON HELPERS
 # ============================================================
 
-def clip2_admin_notify(text):
+def clip2_now():
+    return datetime.now(timezone.utc)
 
+
+def clip2_iso(value=None):
+    return (value or clip2_now()).isoformat()
+
+
+def clip2_elapsed(start):
+    return round(time.monotonic() - start, 2)
+
+
+def clip2_json(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value or {}
+
+
+def clip2_size(value):
+    try:
+        return f"{int(value or 0) / (1024 * 1024):.2f} MB"
+    except Exception:
+        return "Unknown"
+
+
+def clip2_admin_notify(message):
     try:
         if ADMIN_ID:
             bot.send_message(
                 int(ADMIN_ID),
-                "🤖 BOT 2 MONITOR\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                + str(text)[:3500]
+                "🤖 BOT 2\n━━━━━━━━━━━━━━━━━━━━\n"
+                + str(message)[:3500]
             )
-
     except Exception:
-        BOT2_LOGGER.exception(
-            "BOT2 ADMIN NOTIFICATION FAILED"
-        )
+        BOT2_LOGGER.exception("ADMIN NOTIFICATION FAILED")
 
 
-# ============================================================
-# INVALID CAPTION NOTIFICATION
-# USER IS NEVER REPLIED TO
-# ============================================================
-
-def clip2_reject_message(message, reason):
-
-    try:
-
-        chat_id = (
-            message.chat.id
-            if message.chat else "Unknown"
-        )
-
-        sender = message.from_user
-
-        sender_id = (
-            sender.id if sender else "Unknown"
-        )
-
-        caption = (
-            getattr(message, "caption", None)
-            or "[Babu caption]"
-        )
-
-        BOT2_LOGGER.warning(
-            "MESSAGE REJECTED | chat=%s | sender=%s | reason=%s",
-            chat_id,
-            sender_id,
-            reason
-        )
-
-        clip2_admin_notify(
-            "⚠️ AN GA WANI VIDEO AMMA AN WATSI DA SHI\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 Dalili: {reason}\n"
-            f"👤 Sender ID: {sender_id}\n"
-            f"💬 Chat ID: {chat_id}\n"
-            f"🆔 Message ID: {message.message_id}\n\n"
-            f"📝 Caption:\n{caption[:1800]}\n\n"
-            "❌ Ba a fara download ba.\n"
-            "❌ Ba a aika komai zuwa Gemini ba.\n"
-            "❌ Ba a ba mai aikawa amsa ba."
-        )
-
-    except Exception:
-        BOT2_LOGGER.exception(
-            "BOT2 REJECTION NOTIFICATION ERROR"
-        )
-
-
-# ============================================================
-# PROGRESS BAR
-# ============================================================
-
-def clip2_progress_bar(percent):
-
-    percent = max(
-        0,
-        min(100, int(percent))
-    )
-
-    filled = int(percent / 10)
-
-    return (
-        "▓" * filled
-        + "░" * (10 - filled)
-        + f" {percent}%"
-    )
+def clip2_db():
+    return get_all_chat_db_conn()
 
 
 # ============================================================
 # LIVE ADMIN MONITOR
 # ============================================================
+
+def clip2_progress_bar(percent):
+    percent = max(0, min(100, int(percent)))
+    filled = int(percent / 10)
+    return "▓" * filled + "░" * (10 - filled) + f" {percent}%"
+
 
 def clip2_live_monitor(
     task_id,
@@ -2508,123 +2464,57 @@ def clip2_live_monitor(
     model=None,
     attempt=None
 ):
-
     task_id = str(task_id)
 
     text = (
-        "🎬 CLIP MOVIE SCANNER — LIVE MONITOR\n"
+        "🎬 CLIP MOVIE SCANNER\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Task: {task_id}\n"
-        f"📍 Current location: {stage}\n\n"
+        f"Task: {task_id}\n"
+        f"Stage: {stage}\n\n"
         f"{clip2_progress_bar(percent)}\n\n"
-        f"📌 Details: {details or 'Processing...'}\n"
+        f"{details or 'Processing...'}\n"
     )
 
     if model:
-        text += f"\n🧠 Gemini model: {model}\n"
+        text += f"\nGemini model: {model}"
 
     if attempt:
-        text += f"🔁 Model attempt: {attempt}\n"
+        text += f"\nAttempt: {attempt}"
 
     text += (
-        "\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 Updated: {datetime.now().strftime('%H:%M:%S')}"
+        "\n\nUpdated: "
+        + datetime.now().strftime("%H:%M:%S")
     )
 
     try:
-
         if not ADMIN_ID:
             return
 
         admin_id = int(ADMIN_ID)
 
         with _BOT2_MONITOR_LOCK:
-
-            message_id = _BOT2_MONITOR_MESSAGES.get(
-                task_id
-            )
+            message_id = _BOT2_MONITOR_MESSAGES.get(task_id)
 
             if message_id:
-
                 try:
-
                     bot.edit_message_text(
                         text,
                         chat_id=admin_id,
                         message_id=message_id
                     )
-
                     return
+                except Exception:
+                    pass
 
-                except Exception as edit_error:
-
-                    BOT2_LOGGER.warning(
-                        "MONITOR EDIT FAILED: %s",
-                        edit_error
-                    )
-
-            sent = bot.send_message(
-                admin_id,
-                text
-            )
-
-            _BOT2_MONITOR_MESSAGES[
-                task_id
-            ] = sent.message_id
+            sent = bot.send_message(admin_id, text)
+            _BOT2_MONITOR_MESSAGES[task_id] = sent.message_id
 
     except Exception:
-        BOT2_LOGGER.exception(
-            "LIVE ADMIN MONITOR ERROR"
-        )
-
-
-def clip2_monitor_complete(task_id, details):
-
-    clip2_live_monitor(
-        task_id,
-        "✅ AN KAMMALA",
-        100,
-        details
-    )
-
-
-def clip2_monitor_failed(task_id, details):
-
-    clip2_live_monitor(
-        task_id,
-        "❌ AIKIN YA GAZA",
-        100,
-        details
-    )
+        BOT2_LOGGER.exception("LIVE MONITOR FAILED")
 
 
 # ============================================================
-# DATABASE
-# ============================================================
-
-def clip2_db():
-    return get_all_chat_db_conn()
-
-
-def clip2_json(value):
-
-    if isinstance(value, str):
-        return json.loads(value)
-
-    return value or {}
-
-
-def clip2_size(value):
-
-    try:
-        return f"{int(value or 0) / (1024 * 1024):.2f} MB"
-
-    except Exception:
-        return "Unknown"
-
-
-# ============================================================
-# REGISTER WORKER
+# WORKER REGISTRATION
 # ============================================================
 
 def clip2_register_worker():
@@ -2632,7 +2522,6 @@ def clip2_register_worker():
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
 
         cur.execute("""
@@ -2660,15 +2549,13 @@ def clip2_register_worker():
             "Clip Movie Scanner Bot 2",
             json.dumps({
                 "movie_identification": True,
-                "video_download": True,
                 "full_video_download": True,
-                "gemini_vision": True,
-                "gemini_model_fallback": True,
-                "model_count": len(GEMINI_MODELS),
-                "live_admin_monitor": True,
-                "universal_message_handler": True,
-                "strict_caption_verification": True,
-                "completed_task_protection": True
+                "pyrogram_existing_engine": True,
+                "frames": 10,
+                "gemini_fallback": True,
+                "serial_queue": True,
+                "admin_photo_debug": True,
+                "processing_timeout_seconds": BOT2_PROCESSING_TIMEOUT
             })
         ))
 
@@ -2691,7 +2578,6 @@ def clip2_heartbeat(task_id=None):
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
 
         cur.execute("""
@@ -2701,10 +2587,7 @@ def clip2_heartbeat(task_id=None):
                 last_heartbeat = NOW(),
                 updated_at = NOW()
             WHERE worker_id = %s
-        """, (
-            task_id,
-            BOT2_WORKER_ID
-        ))
+        """, (task_id, BOT2_WORKER_ID))
 
         conn.commit()
 
@@ -2717,133 +2600,14 @@ def clip2_heartbeat(task_id=None):
 
 
 # ============================================================
-# TASK LEASE REFRESH
-# PREVENTS AN ACTIVE TASK FROM BEING CLAIMED TWICE
+# GET NEXT TASK — ONLY ONE
 # ============================================================
 
-def clip2_refresh_task_lease(task_id):
+def clip2_get_next_pending_task():
 
     conn = clip2_db()
 
     try:
-
-        cur = conn.cursor()
-
-        cur.execute("""
-            UPDATE tasks
-            SET heartbeat_at = NOW(),
-                lease_until = NOW() + INTERVAL '45 minutes',
-                updated_at = NOW()
-            WHERE task_id = %s
-              AND assigned_worker = %s
-              AND status IN (
-                  'processing',
-                  'downloading',
-                  'extracting_frames',
-                  'identifying'
-              )
-        """, (
-            task_id,
-            BOT2_WORKER_ID
-        ))
-
-        conn.commit()
-
-        return cur.rowcount == 1
-
-    except Exception:
-
-        conn.rollback()
-
-        BOT2_LOGGER.exception(
-            "TASK LEASE REFRESH ERROR"
-        )
-
-        return False
-
-    finally:
-        conn.close()
-
-
-def clip2_task_lease_loop(task_id, stop_event):
-
-    while not stop_event.wait(
-        BOT2_LEASE_REFRESH_SECONDS
-    ):
-
-        if not clip2_refresh_task_lease(task_id):
-            BOT2_LOGGER.warning(
-                "TASK LEASE NOT REFRESHED: %s",
-                task_id
-            )
-
-
-# ============================================================
-# RECOVER EXPIRED TASKS
-# COMPLETED TASKS ARE NEVER RECOVERED
-# ============================================================
-
-def clip2_recover_expired_tasks():
-
-    conn = clip2_db()
-
-    try:
-
-        cur = conn.cursor()
-
-        cur.execute("""
-            UPDATE tasks
-            SET status = 'pending',
-                assigned_worker = NULL,
-                lease_until = NULL,
-                heartbeat_at = NULL,
-                updated_at = NOW()
-            WHERE task_type = %s
-              AND status IN (
-                  'processing',
-                  'downloading',
-                  'extracting_frames',
-                  'identifying'
-              )
-              AND lease_until IS NOT NULL
-              AND lease_until < NOW()
-              AND result_json IS NULL
-        """, (CLIP_TASK_TYPE,))
-
-        recovered = cur.rowcount
-
-        conn.commit()
-
-        if recovered:
-
-            clip2_admin_notify(
-                "♻️ BOT 2 — AN MAYAR DA AIKIN DA YA TSAYA\n"
-                f"Tasks recovered: {recovered}\n"
-                "Completed tasks ba a taɓa su ba."
-            )
-
-        return recovered
-
-    except Exception:
-
-        conn.rollback()
-        raise
-
-    finally:
-        conn.close()
-
-
-# ============================================================
-# GET PENDING TASKS
-# ONLY VALID TASKS WITH STORAGE INFORMATION
-# ============================================================
-
-def clip2_get_pending_tasks():
-
-    conn = clip2_db()
-
-    try:
-
         cur = conn.cursor()
 
         cur.execute("""
@@ -2851,22 +2615,20 @@ def clip2_get_pending_tasks():
             FROM tasks
             WHERE task_type = %s
               AND status = 'pending'
-              AND result_json IS NULL
               AND payload ? 'storage_message_id'
               AND payload ? 'storage_channel_id'
             ORDER BY priority DESC, created_at ASC
-            LIMIT 10
+            LIMIT 1
         """, (CLIP_TASK_TYPE,))
 
-        return cur.fetchall()
+        return cur.fetchone()
 
     finally:
         conn.close()
 
 
 # ============================================================
-# ATOMIC CLAIM
-# COMPLETED TASKS CANNOT BE CLAIMED
+# ATOMIC CLAIM + START 30 MINUTE TIMER
 # ============================================================
 
 def clip2_claim_task(task_id):
@@ -2874,35 +2636,68 @@ def clip2_claim_task(task_id):
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
+
+        cur.execute("""
+            SELECT payload
+            FROM tasks
+            WHERE task_id = %s
+              AND task_type = %s
+              AND status = 'pending'
+            FOR UPDATE
+        """, (task_id, CLIP_TASK_TYPE))
+
+        row = cur.fetchone()
+
+        if not row:
+            conn.commit()
+            return None
+
+        payload = clip2_json(row[0])
+
+        started = clip2_now()
+        deadline = started + timedelta(
+            seconds=BOT2_PROCESSING_TIMEOUT
+        )
+
+        payload.update({
+            "bot2_processing_started_at": started.isoformat(),
+            "bot2_processing_deadline_at": deadline.isoformat(),
+            "bot2_download_started_at": None,
+            "bot2_download_completed_at": None,
+            "bot2_frames_completed_at": None,
+            "bot2_gemini_started_at": None,
+            "bot2_gemini_completed_at": None,
+            "bot2_db_saved_at": None,
+            "bot2_download_seconds": None,
+            "bot2_frames_seconds": None,
+            "bot2_gemini_seconds": None,
+            "bot2_total_processing_seconds": None
+        })
 
         cur.execute("""
             UPDATE tasks
             SET status = 'processing',
                 assigned_worker = %s,
-                started_at = COALESCE(started_at, NOW()),
+                started_at = NOW(),
                 heartbeat_at = NOW(),
-                lease_until = NOW() + INTERVAL '45 minutes',
+                lease_until = NOW() + (%s * INTERVAL '1 second'),
                 attempts = attempts + 1,
+                payload = %s::jsonb,
                 updated_at = NOW()
             WHERE task_id = %s
-              AND task_type = %s
               AND status = 'pending'
-              AND result_json IS NULL
             RETURNING task_id
         """, (
             BOT2_WORKER_ID,
-            task_id,
-            CLIP_TASK_TYPE
+            BOT2_LEASE_SECONDS,
+            json.dumps(payload),
+            task_id
         ))
 
-        claimed = cur.fetchone()
-
-        if not claimed:
-
-            conn.commit()
-            return False
+        if not cur.fetchone():
+            conn.rollback()
+            return None
 
         cur.execute("""
             UPDATE workers
@@ -2910,17 +2705,12 @@ def clip2_claim_task(task_id):
                 last_heartbeat = NOW(),
                 updated_at = NOW()
             WHERE worker_id = %s
-        """, (
-            task_id,
-            BOT2_WORKER_ID
-        ))
+        """, (task_id, BOT2_WORKER_ID))
 
         conn.commit()
-
-        return True
+        return payload
 
     except Exception:
-
         conn.rollback()
         raise
 
@@ -2929,7 +2719,33 @@ def clip2_claim_task(task_id):
 
 
 # ============================================================
-# TASK STATUS
+# CHECK PROCESSING DEADLINE
+# ============================================================
+
+def clip2_check_deadline(payload):
+
+    deadline = payload.get(
+        "bot2_processing_deadline_at"
+    )
+
+    if not deadline:
+        raise RuntimeError("BOT2_DEADLINE_MISSING")
+
+    dt = datetime.fromisoformat(
+        deadline.replace("Z", "+00:00")
+    )
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    if clip2_now() >= dt:
+        raise TimeoutError(
+            "BOT2_PROCESSING_EXCEEDED_30_MINUTES"
+        )
+
+
+# ============================================================
+# UPDATE STATUS
 # ============================================================
 
 def clip2_set_status(task_id, status):
@@ -2937,25 +2753,22 @@ def clip2_set_status(task_id, status):
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
 
         cur.execute("""
             UPDATE tasks
             SET status = %s,
                 heartbeat_at = NOW(),
-                lease_until = NOW() + INTERVAL '45 minutes',
+                lease_until = NOW() + (%s * INTERVAL '1 second'),
                 updated_at = NOW()
             WHERE task_id = %s
               AND assigned_worker = %s
               AND status NOT IN (
-                  'completed',
-                  'delivered',
-                  'failed',
-                  'timed_out'
+                  'completed', 'delivered', 'failed', 'timed_out'
               )
         """, (
             status,
+            BOT2_LEASE_SECONDS,
             task_id,
             BOT2_WORKER_ID
         ))
@@ -2968,7 +2781,6 @@ def clip2_set_status(task_id, status):
         conn.commit()
 
     except Exception:
-
         conn.rollback()
         raise
 
@@ -2985,38 +2797,32 @@ def clip2_save_payload(task_id, payload):
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
 
         cur.execute("""
             UPDATE tasks
             SET payload = %s::jsonb,
                 heartbeat_at = NOW(),
-                lease_until = NOW() + INTERVAL '45 minutes',
+                lease_until = NOW() + (%s * INTERVAL '1 second'),
                 updated_at = NOW()
             WHERE task_id = %s
               AND assigned_worker = %s
               AND status NOT IN (
-                  'completed',
-                  'delivered',
-                  'failed',
-                  'timed_out'
+                  'completed', 'delivered', 'failed', 'timed_out'
               )
         """, (
             json.dumps(payload),
+            BOT2_LEASE_SECONDS,
             task_id,
             BOT2_WORKER_ID
         ))
 
         if cur.rowcount != 1:
-            raise RuntimeError(
-                "TASK_PAYLOAD_UPDATE_REJECTED"
-            )
+            raise RuntimeError("PAYLOAD_UPDATE_REJECTED")
 
         conn.commit()
 
     except Exception:
-
         conn.rollback()
         raise
 
@@ -3025,37 +2831,63 @@ def clip2_save_payload(task_id, payload):
 
 
 # ============================================================
-# SAVE RESULT
-# COMPLETED IS A PERMANENT STOP
+# SAVE RESULT — SAME TASK TABLE USED BY BOT 1
 # ============================================================
 
 def clip2_save_result(
     task_id,
     movie_name,
     movie_year,
+    main_actor,
     model,
-    frame_count
+    frame_count,
+    payload
 ):
 
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
+
+        now = clip2_now()
+
+        started = datetime.fromisoformat(
+            payload["bot2_processing_started_at"]
+        )
+
+        payload["bot2_db_saved_at"] = now.isoformat()
+        payload["bot2_total_processing_seconds"] = round(
+            (now - started).total_seconds(), 2
+        )
 
         result = {
             "movie_name": movie_name,
             "movie_year": movie_year,
+            "main_actor": main_actor,
             "gemini_model": model,
             "frames_extracted": frame_count,
-            "identified_at": datetime.now(
-                timezone.utc
-            ).isoformat()
+            "identified_at": now.isoformat(),
+            "processing_started_at": payload.get(
+                "bot2_processing_started_at"
+            ),
+            "download_seconds": payload.get(
+                "bot2_download_seconds"
+            ),
+            "frames_seconds": payload.get(
+                "bot2_frames_seconds"
+            ),
+            "gemini_seconds": payload.get(
+                "bot2_gemini_seconds"
+            ),
+            "total_processing_seconds": payload.get(
+                "bot2_total_processing_seconds"
+            )
         }
 
         cur.execute("""
             UPDATE tasks
-            SET result_json = %s::jsonb,
+            SET payload = %s::jsonb,
+                result_json = %s::jsonb,
                 status = 'completed',
                 completed_at = NOW(),
                 heartbeat_at = NOW(),
@@ -3065,19 +2897,16 @@ def clip2_save_result(
             WHERE task_id = %s
               AND assigned_worker = %s
               AND status = 'identifying'
-              AND result_json IS NULL
             RETURNING task_id
         """, (
+            json.dumps(payload),
             json.dumps(result),
             task_id,
             BOT2_WORKER_ID
         ))
 
         if not cur.fetchone():
-
-            raise RuntimeError(
-                "RESULT_SAVE_STATE_MISMATCH_OR_ALREADY_COMPLETED"
-            )
+            raise RuntimeError("RESULT_SAVE_STATE_MISMATCH")
 
         cur.execute("""
             UPDATE workers
@@ -3092,7 +2921,6 @@ def clip2_save_result(
         conn.commit()
 
     except Exception:
-
         conn.rollback()
         raise
 
@@ -3101,23 +2929,21 @@ def clip2_save_result(
 
 
 # ============================================================
-# FAILURE
+# FAILURE / TIMEOUT
 # ============================================================
 
-def clip2_mark_failed(task_id, error):
-
-    if not task_id:
-        return
+def clip2_mark_failed(task_id, error, timed_out=False):
 
     conn = clip2_db()
 
     try:
-
         cur = conn.cursor()
+
+        new_status = "timed_out" if timed_out else "failed"
 
         cur.execute("""
             UPDATE tasks
-            SET status = 'failed',
+            SET status = %s,
                 error_message = %s,
                 lease_until = NULL,
                 heartbeat_at = NOW(),
@@ -3125,13 +2951,11 @@ def clip2_mark_failed(task_id, error):
             WHERE task_id = %s
               AND assigned_worker = %s
               AND status NOT IN (
-                  'completed',
-                  'delivered',
-                  'failed',
-                  'timed_out'
+                  'completed', 'delivered', 'failed', 'timed_out'
               )
             RETURNING task_id
         """, (
+            new_status,
             str(error)[:2000],
             task_id,
             BOT2_WORKER_ID
@@ -3140,7 +2964,6 @@ def clip2_mark_failed(task_id, error):
         changed = cur.fetchone()
 
         if changed:
-
             cur.execute("""
                 UPDATE workers
                 SET failed_tasks = failed_tasks + 1,
@@ -3154,7 +2977,6 @@ def clip2_mark_failed(task_id, error):
         conn.commit()
 
     except Exception:
-
         conn.rollback()
         raise
 
@@ -3163,619 +2985,67 @@ def clip2_mark_failed(task_id, error):
 
 
 # ============================================================
-# CAPTION PARSER
+# GET CHANNEL MESSAGE — EXISTING PYROGRAM ENGINE
 # ============================================================
 
-def clip2_caption_fields(caption):
+def clip2_get_channel_message(channel_id, message_id):
 
-    fields = {}
+    if not globals().get("_videocon_pyro"):
+        raise RuntimeError("PYROGRAM_CLIENT_NOT_READY")
 
-    for line in (caption or "").splitlines():
+    if not globals().get("_videocon_loop"):
+        raise RuntimeError("PYROGRAM_LOOP_NOT_READY")
 
-        if ":" not in line:
-            continue
+    ready = globals().get("_videocon_ready")
 
-        key, value = line.split(":", 1)
+    if not ready or not ready.is_set():
+        raise RuntimeError("PYROGRAM_NOT_READY")
 
-        fields[key.strip().lower()] = value.strip()
-
-    return fields
-
-
-# ============================================================
-# VERIFY INCOMING VIDEO CAPTION AGAINST DATABASE
-# ============================================================
-
-def clip2_verify_incoming_message(message):
-
-    if not message.chat:
-        raise RuntimeError("MESSAGE_CHAT_MISSING")
-
-    caption = getattr(
-        message,
-        "caption",
-        None
-    ) or ""
-
-    if not caption.strip():
-        raise RuntimeError("CAPTION_MISSING")
-
-    fields = clip2_caption_fields(caption)
-
-    required_fields = [
-        "user id",
-        "name",
-        "tag",
-        "task id",
-        "source chat id",
-        "source message id",
-        "file size",
-        "file unique id",
-        "status"
-    ]
-
-    for field in required_fields:
-
-        if not fields.get(field):
-            raise RuntimeError(
-                f"CAPTION_FIELD_MISSING: {field}"
-            )
-
-    if fields.get("status", "").upper() != "WAITING FOR BOT 2":
-        raise RuntimeError(
-            "INVALID_TASK_STATUS_CAPTION"
-        )
-
-    task_id = fields["task id"].strip()
-
-    if not re.fullmatch(
-        r"[0-9a-fA-F]{8}-"
-        r"[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{12}",
-        task_id
-    ):
-        raise RuntimeError("INVALID_TASK_ID_FORMAT")
-
-    # Get incoming video/document.
-    media = (
-        getattr(message, "video", None)
-        or getattr(message, "document", None)
+    return videocon_run_async(
+        _videocon_get_message(
+            channel_id,
+            message_id
+        ),
+        timeout=180
     )
 
-    if not media:
-        raise RuntimeError("MESSAGE_HAS_NO_VIDEO")
-
-    if getattr(message, "document", None):
-
-        mime = (
-            getattr(media, "mime_type", None) or ""
-        ).lower()
-
-        if not mime.startswith("video/"):
-            raise RuntimeError("DOCUMENT_IS_NOT_VIDEO")
-
-    actual_size = int(
-        getattr(media, "file_size", 0) or 0
-    )
-
-    if actual_size <= 0:
-        raise RuntimeError("VIDEO_FILE_SIZE_INVALID")
-
-    if actual_size > BOT2_MAX_VIDEO_SIZE:
-        raise RuntimeError("VIDEO_EXCEEDS_50MB_LIMIT")
-
-    actual_unique = str(
-        getattr(media, "file_unique_id", "") or ""
-    )
-
-    if not actual_unique:
-        raise RuntimeError("VIDEO_UNIQUE_ID_MISSING")
-
-    # --------------------------------------------------------
-    # DATABASE TASK LOOKUP
-    # --------------------------------------------------------
-
-    conn = clip2_db()
-
-    try:
-
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT task_id, user_id, payload, status, result_json
-            FROM tasks
-            WHERE task_id = %s
-              AND task_type = %s
-            LIMIT 1
-        """, (
-            task_id,
-            CLIP_TASK_TYPE
-        ))
-
-        row = cur.fetchone()
-
-    finally:
-        conn.close()
-
-    if not row:
-        raise RuntimeError("TASK_NOT_FOUND_IN_DATABASE")
-
-    db_task_id, db_user_id, raw_payload, db_status, result_json = row
-
-    payload = clip2_json(raw_payload)
-
-    # A completed task must never be accepted again.
-    if db_status in (
-        "completed",
-        "delivered",
-        "failed",
-        "timed_out"
-    ) or result_json:
-
-        raise RuntimeError(
-            f"TASK_ALREADY_FINISHED: {db_status}"
-        )
-
-    if db_status != "waiting_storage":
-        raise RuntimeError(
-            f"TASK_NOT_WAITING_FOR_STORAGE: {db_status}"
-        )
-
-    # --------------------------------------------------------
-    # COMPARE CAPTION WITH DATABASE
-    # --------------------------------------------------------
-
-    expected = {
-        "user id": str(
-            payload.get("source_user_id", "")
-        ),
-        "name": str(
-            payload.get("source_user_name", "")
-        ).strip(),
-        "tag": str(
-            payload.get("source_user_tag", "")
-        ).strip(),
-        "source chat id": str(
-            payload.get("source_chat_id", "")
-        ),
-        "source message id": str(
-            payload.get("source_message_id", "")
-        ),
-        "file unique id": str(
-            payload.get("source_file_unique_id", "")
-        ),
-        "file size": clip2_size(
-            payload.get("file_size", 0)
-        )
-    }
-
-    for key, expected_value in expected.items():
-
-        actual = fields.get(key, "").strip()
-
-        if not expected_value or actual != expected_value:
-            raise RuntimeError(
-                f"DATABASE_CAPTION_MISMATCH: {key}"
-            )
-
-    if int(db_user_id) != int(
-        payload.get("source_user_id", 0)
-    ):
-        raise RuntimeError("DATABASE_USER_ID_MISMATCH")
-
-    if int(fields["user id"]) != int(db_user_id):
-        raise RuntimeError("CAPTION_USER_ID_MISMATCH")
-
-    if int(fields["file size"].split()[0].replace(",", "")) <= 0:
-        raise RuntimeError("CAPTION_FILE_SIZE_INVALID")
-
-    if actual_size != int(payload.get("file_size", 0) or 0):
-        raise RuntimeError("INCOMING_VIDEO_SIZE_MISMATCH")
-
-    if actual_unique != str(
-        payload.get("source_file_unique_id", "")
-    ):
-        raise RuntimeError("INCOMING_VIDEO_UNIQUE_ID_MISMATCH")
-
-    return task_id, int(db_user_id), payload, media
-
 
 # ============================================================
-# REGISTER INCOMING VIDEO IN STORAGE CHANNEL
-# BOT 2 COPIES ONLY VERIFIED MESSAGES
-# CLIP_CHANNEL_VIDEO REMAINS THE STORAGE DESTINATION
+# VERIFY EXACT STORAGE VIDEO
 # ============================================================
 
-def clip2_register_incoming_video(
+def clip2_verify_video(
     message,
     task_id,
     user_id,
     payload
 ):
 
-    conn = clip2_db()
-
-    try:
-
-        cur = conn.cursor()
-
-        # Atomic reservation: only one message can register
-        # a task that is waiting_storage.
-        cur.execute("""
-            UPDATE tasks
-            SET status = 'receiving',
-                assigned_worker = %s,
-                heartbeat_at = NOW(),
-                lease_until = NOW() + INTERVAL '10 minutes',
-                updated_at = NOW()
-            WHERE task_id = %s
-              AND task_type = %s
-              AND status = 'waiting_storage'
-              AND result_json IS NULL
-            RETURNING task_id
-        """, (
-            BOT2_WORKER_ID,
-            task_id,
-            CLIP_TASK_TYPE
-        ))
-
-        reserved = cur.fetchone()
-
-        if not reserved:
-
-            conn.commit()
-
-            raise RuntimeError(
-                "TASK_ALREADY_RESERVED_OR_RECEIVED"
-            )
-
-        conn.commit()
-
-    except Exception:
-
-        conn.rollback()
-        raise
-
-    finally:
-        conn.close()
-
-    try:
-
-        # Copy the exact incoming message to storage channel.
-        copied = bot.copy_message(
-            chat_id=int(CLIP_CHANNEL_VIDEO),
-            from_chat_id=message.chat.id,
-            message_id=message.message_id
-        )
-
-        storage_message_id = int(
-            copied.message_id
-        )
-
-        payload["storage_channel_id"] = int(
-            CLIP_CHANNEL_VIDEO
-        )
-
-        payload["storage_message_id"] = (
-            storage_message_id
-        )
-
-        payload["bot2_received_chat_id"] = int(
-            message.chat.id
-        )
-
-        payload["bot2_received_message_id"] = int(
-            message.message_id
-        )
-
-        payload["bot2_received_at"] = (
-            datetime.now(timezone.utc).isoformat()
-        )
-
-        payload["bot2_storage_copy_completed"] = True
-
-        conn = clip2_db()
-
-        try:
-
-            cur = conn.cursor()
-
-            cur.execute("""
-                UPDATE tasks
-                SET payload = %s::jsonb,
-                    status = 'pending',
-                    assigned_worker = NULL,
-                    heartbeat_at = NOW(),
-                    lease_until = NULL,
-                    updated_at = NOW()
-                WHERE task_id = %s
-                  AND assigned_worker = %s
-                  AND status = 'receiving'
-                  AND result_json IS NULL
-                RETURNING task_id
-            """, (
-                json.dumps(payload),
-                task_id,
-                BOT2_WORKER_ID
-            ))
-
-            if not cur.fetchone():
-                raise RuntimeError(
-                    "STORAGE_REGISTRATION_DATABASE_MISMATCH"
-                )
-
-            conn.commit()
-
-        except Exception:
-
-            conn.rollback()
-            raise
-
-        finally:
-            conn.close()
-
-        return storage_message_id
-
-    except Exception:
-
-        # Release reservation if copying or saving fails.
-        conn = clip2_db()
-
-        try:
-
-            cur = conn.cursor()
-
-            cur.execute("""
-                UPDATE tasks
-                SET status = 'waiting_storage',
-                    assigned_worker = NULL,
-                    lease_until = NULL,
-                    updated_at = NOW()
-                WHERE task_id = %s
-                  AND assigned_worker = %s
-                  AND status = 'receiving'
-                  AND result_json IS NULL
-            """, (
-                task_id,
-                BOT2_WORKER_ID
-            ))
-
-            conn.commit()
-
-        except Exception:
-
-            conn.rollback()
-
-            BOT2_LOGGER.exception(
-                "FAILED TO RELEASE RECEIVING TASK"
-            )
-
-        finally:
-            conn.close()
-
-        raise
-
-
-# ============================================================
-# UNIVERSAL VIDEO MESSAGE HANDLER
-# ACCEPTS PRIVATE / GROUP / ADMIN / BOT SENDER
-# WRONG CAPTION = ADMIN WARNING ONLY
-# NO REPLY TO SENDER
-# ============================================================
-
-@bot.message_handler(
-    content_types=["video", "document"]
-)
-def bot2_universal_video_handler(message):
-
-    try:
-
-        media = (
-            getattr(message, "video", None)
-            or getattr(message, "document", None)
-        )
-
-        if not media:
-            return
-
-        # Prevent duplicate processing of the same incoming
-        # Telegram message within this running process.
-        received_key = (
-            str(message.chat.id),
-            str(message.message_id)
-        )
-
-        with _BOT2_RECEIVED_LOCK:
-
-            if received_key in _BOT2_RECEIVED_MESSAGES:
-                return
-
-            _BOT2_RECEIVED_MESSAGES.add(
-                received_key
-            )
-
-        try:
-
-            task_id, user_id, payload, media = (
-                clip2_verify_incoming_message(message)
-            )
-
-        except Exception as verification_error:
-
-            clip2_reject_message(
-                message,
-                str(verification_error)
-            )
-
-            return
-
-        with _BOT2_ACTIVE_LOCK:
-
-            if task_id in _BOT2_ACTIVE_TASKS:
-
-                clip2_reject_message(
-                    message,
-                    "TASK_ALREADY_ACTIVE_IN_BOT2"
-                )
-
-                return
-
-        clip2_live_monitor(
-            task_id,
-            "📥 AN KARƁI VIDEO",
-            3,
-            (
-                "An karɓi video mai caption da ya dace.\n"
-                f"User ID: {user_id}\n"
-                f"File size: {clip2_size(media.file_size)}\n"
-                f"Sender chat: {message.chat.id}\n"
-                f"Message ID: {message.message_id}"
-            )
-        )
-
-        storage_message_id = (
-            clip2_register_incoming_video(
-                message,
-                task_id,
-                user_id,
-                payload
-            )
-        )
-
-        clip2_live_monitor(
-            task_id,
-            "✅ AN KWAFE VIDEO ZUWA STORAGE",
-            8,
-            (
-                f"Storage channel: {CLIP_CHANNEL_VIDEO}\n"
-                f"Storage message ID: {storage_message_id}\n"
-                "An adana bayanan task a database.\n"
-                "Ana shirin download."
-            )
-        )
-
-        clip2_admin_notify(
-            "🟢 BOT 2 — AN KARƁI VIDEO MAI INGANTACCEN CAPTION\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"Task ID: {task_id}\n"
-            f"User ID: {user_id}\n"
-            f"Video: {clip2_size(media.file_size)}\n"
-            f"Storage message ID: {storage_message_id}\n"
-            "Status: pending\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "✅ An tabbatar da caption da database."
-        )
-
-    except Exception:
-
-        BOT2_LOGGER.exception(
-            "BOT2 UNIVERSAL MESSAGE HANDLER ERROR"
-        )
-
-        clip2_admin_notify(
-            "🔴 BOT 2 MESSAGE HANDLER ERROR\n"
-            "Duba Render logs domin cikakken bayani."
-        )
-
-
-# ============================================================
-# VERIFY STORAGE MESSAGE USING EXISTING PYROGRAM
-# ============================================================
-
-def clip2_verify_channel_message(
-    pyro_message,
-    task_id,
-    user_id,
-    payload
-):
-
-    if int(pyro_message.chat.id) != int(CLIP_CHANNEL_VIDEO):
+    if int(message.chat.id) != int(
+        payload["storage_channel_id"]
+    ):
         raise RuntimeError("WRONG_STORAGE_CHANNEL")
 
-    if int(pyro_message.id) != int(
-        payload.get("storage_message_id", 0)
+    if int(message.id) != int(
+        payload["storage_message_id"]
     ):
-        raise RuntimeError("STORAGE_MESSAGE_ID_MISMATCH")
+        raise RuntimeError("WRONG_STORAGE_MESSAGE")
 
-    media = (
-        pyro_message.video
-        or pyro_message.document
-    )
+    media = message.video or message.document
 
     if not media:
-        raise RuntimeError("CHANNEL_MESSAGE_HAS_NO_VIDEO")
+        raise RuntimeError("STORAGE_MESSAGE_HAS_NO_VIDEO")
 
-    if pyro_message.document:
-
+    if message.document:
         mime = (
-            pyro_message.document.mime_type or ""
+            message.document.mime_type or ""
         ).lower()
 
         if not mime.startswith("video/"):
-            raise RuntimeError(
-                "CHANNEL_DOCUMENT_IS_NOT_VIDEO"
-            )
+            raise RuntimeError("DOCUMENT_IS_NOT_VIDEO")
 
-    fields = clip2_caption_fields(
-        pyro_message.caption
-    )
-
-    expected = {
-        "user id": str(
-            payload.get("source_user_id", "")
-        ),
-        "task id": str(task_id),
-        "name": str(
-            payload.get("source_user_name", "")
-        ).strip(),
-        "tag": str(
-            payload.get("source_user_tag", "")
-        ).strip(),
-        "source chat id": str(
-            payload.get("source_chat_id", "")
-        ),
-        "source message id": str(
-            payload.get("source_message_id", "")
-        ),
-        "file unique id": str(
-            payload.get("source_file_unique_id", "")
-        ),
-        "file size": clip2_size(
-            payload.get("file_size", 0)
-        ),
-        "status": "WAITING FOR BOT 2"
-    }
-
-    for key, expected_value in expected.items():
-
-        actual = fields.get(key, "")
-
-        if not actual:
-            raise RuntimeError(
-                f"CAPTION_FIELD_MISSING: {key}"
-            )
-
-        if actual != expected_value:
-            raise RuntimeError(
-                f"CAPTION_MISMATCH: {key}"
-            )
-
-    if int(user_id) != int(
-        payload.get("source_user_id", 0)
-    ):
+    if int(user_id) != int(payload["source_user_id"]):
         raise RuntimeError("TASK_USER_ID_MISMATCH")
-
-    if int(
-        payload.get("storage_channel_id", 0)
-    ) != int(CLIP_CHANNEL_VIDEO):
-        raise RuntimeError("DB_STORAGE_CHANNEL_MISMATCH")
-
-    if int(
-        payload.get("storage_message_id", 0)
-    ) != int(pyro_message.id):
-        raise RuntimeError("DB_STORAGE_MESSAGE_MISMATCH")
 
     expected_unique = str(
         payload.get("source_file_unique_id") or ""
@@ -3790,16 +3060,14 @@ def clip2_verify_channel_message(
         and actual_unique
         and expected_unique != actual_unique
     ):
-        raise RuntimeError(
-            "CHANNEL_FILE_UNIQUE_ID_MISMATCH"
-        )
-
-    expected_size = int(
-        payload.get("file_size", 0) or 0
-    )
+        raise RuntimeError("FILE_UNIQUE_ID_MISMATCH")
 
     actual_size = int(
         getattr(media, "file_size", 0) or 0
+    )
+
+    expected_size = int(
+        payload.get("file_size", 0) or 0
     )
 
     if (
@@ -3807,210 +3075,24 @@ def clip2_verify_channel_message(
         and actual_size
         and expected_size != actual_size
     ):
-        raise RuntimeError(
-            "CHANNEL_FILE_SIZE_MISMATCH"
-        )
+        raise RuntimeError("FILE_SIZE_MISMATCH")
 
     if actual_size > BOT2_MAX_VIDEO_SIZE:
-        raise RuntimeError(
-            "VIDEO_EXCEEDS_50MB_LIMIT"
-        )
+        raise RuntimeError("VIDEO_EXCEEDS_50MB")
 
     return media
 
 
 # ============================================================
-# MARK STORAGE MESSAGE AS SEEN
+# DOWNLOAD FULL VIDEO USING EXISTING HELPER
 # ============================================================
 
-def clip2_mark_seen(
-    channel_id,
-    message_id,
-    caption,
-    task_id
-):
+def clip2_download_full_video(message, output_path):
 
-    marker = (
-        "\n\n━━━━━━━━━━━━━━━━━━\n"
-        "👁 BOT 2 SEEN\n"
-        "⚙️ PROCESSING VIDEO\n"
-        f"🆔 TASK: {task_id}\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-
-    new_caption = (caption or "")[:650] + marker
-
-    bot.edit_message_caption(
-        chat_id=channel_id,
-        message_id=message_id,
-        caption=new_caption
-    )
-
-
-# ============================================================
-# GET STORAGE MESSAGE — EXISTING PYROGRAM
-# ============================================================
-
-def clip2_get_channel_message(
-    channel_id,
-    message_id
-):
-
-    if not globals().get("_videocon_pyro"):
-        raise RuntimeError(
-            "EXISTING_PYROGRAM_CLIENT_NOT_READY"
-        )
-
-    if not globals().get("_videocon_loop"):
-        raise RuntimeError(
-            "EXISTING_PYROGRAM_LOOP_NOT_READY"
-        )
-
-    ready_event = globals().get(
-        "_videocon_ready"
-    )
-
-    if not ready_event or not ready_event.is_set():
-        raise RuntimeError(
-            "EXISTING_PYROGRAM_NOT_READY"
-        )
-
-    return videocon_run_async(
-        _videocon_get_message(
-            channel_id,
-            message_id
-        ),
-        timeout=180
-    )
-
-
-# ============================================================
-# DOWNLOAD PROGRESS MONITOR
-# SHOWS MB / SPEED / ETA LIKE YOUR SCREENSHOT
-# ============================================================
-
-def clip2_download_progress_monitor(
-    task_id,
-    output_path,
-    expected_size,
-    stop_event
-):
-
-    last_bytes = 0
-    last_time = time.monotonic()
-    start_time = last_time
-
-    while not stop_event.wait(2):
-
-        try:
-
-            current = (
-                os.path.getsize(output_path)
-                if os.path.isfile(output_path)
-                else 0
-            )
-
-            now = time.monotonic()
-            elapsed = max(0.1, now - last_time)
-
-            speed = max(
-                0,
-                (current - last_bytes) / elapsed
-            )
-
-            total_elapsed = max(
-                0.1,
-                now - start_time
-            )
-
-            average_speed = current / total_elapsed
-
-            used_speed = speed if speed > 0 else average_speed
-
-            percent = (
-                min(100, current * 100 / expected_size)
-                if expected_size > 0 else 0
-            )
-
-            remaining = max(
-                0,
-                expected_size - current
-            )
-
-            eta_seconds = (
-                int(remaining / used_speed)
-                if used_speed > 0 else 0
-            )
-
-            eta = (
-                f"{eta_seconds // 60}m, "
-                f"{eta_seconds % 60}s"
-            )
-
-            filled = int(percent / 10)
-
-            bar = (
-                "▓ " + "■ " * max(0, filled - 1)
-                + "□ " * (10 - filled)
-            ).strip()
-
-            details = (
-                f"⬇️ Downloading: {percent:.2f}%\n"
-                f"[{bar}]\n"
-                f"{clip2_size(current)} of "
-                f"{clip2_size(expected_size)}\n"
-                f"Speed: {clip2_size(speed)}/sec\n"
-                f"ETA: {eta}"
-            )
-
-            clip2_live_monitor(
-                task_id,
-                "⬇️ ANA SAUKE VIDEO",
-                int(percent),
-                details
-            )
-
-            last_bytes = current
-            last_time = now
-
-        except Exception:
-
-            BOT2_LOGGER.exception(
-                "DOWNLOAD PROGRESS MONITOR ERROR"
-            )
-
-
-# ============================================================
-# FULL VIDEO DOWNLOAD — EXISTING WORKING HELPER
-# ============================================================
-
-def clip2_download_full_video(
-    pyro_message,
-    output_path,
-    task_id
-):
-
-    if not globals().get("_videocon_pyro"):
-        raise RuntimeError(
-            "PYROGRAM_CLIENT_NOT_READY"
-        )
-
-    downloader = globals().get(
-        "_videocon_download"
-    )
+    downloader = globals().get("_videocon_download")
 
     if not callable(downloader):
-        raise RuntimeError(
-            "OLD_VIDEOCON_DOWNLOAD_HELPER_NOT_FOUND"
-        )
-
-    expected_size = int(
-        getattr(
-            pyro_message.video or pyro_message.document,
-            "file_size",
-            0
-        ) or 0
-    )
+        raise RuntimeError("OLD_DOWNLOAD_HELPER_MISSING")
 
     progress_state = {
         "time": 0,
@@ -4018,93 +3100,50 @@ def clip2_download_full_video(
         "start_bytes": 0
     }
 
-    progress_stop = threading.Event()
-
-    progress_thread = threading.Thread(
-        target=clip2_download_progress_monitor,
-        args=(
-            task_id,
+    downloaded = videocon_run_async(
+        _videocon_download(
+            message,
             output_path,
-            expected_size,
-            progress_stop
+            None,
+            progress_state
         ),
-        daemon=True,
-        name=f"clip2-download-monitor-{str(task_id)[:8]}"
+        timeout=BOT2_MAX_DOWNLOAD_SECONDS
     )
 
-    progress_thread.start()
+    if not downloaded or not os.path.isfile(downloaded):
+        raise RuntimeError("FULL_VIDEO_DOWNLOAD_FAILED")
 
-    try:
+    size = os.path.getsize(downloaded)
 
-        downloaded_path = videocon_run_async(
-            _videocon_download(
-                pyro_message,
-                output_path,
-                None,
-                progress_state
-            ),
-            timeout=BOT2_MAX_DOWNLOAD_SECONDS
-        )
+    if size <= 0:
+        raise RuntimeError("DOWNLOADED_VIDEO_EMPTY")
 
-    finally:
+    if size > BOT2_MAX_VIDEO_SIZE:
+        raise RuntimeError("DOWNLOADED_VIDEO_EXCEEDS_50MB")
 
-        progress_stop.set()
-        progress_thread.join(timeout=5)
-
-    if (
-        not downloaded_path
-        or not os.path.isfile(downloaded_path)
-    ):
-        raise RuntimeError(
-            "FULL_VIDEO_DOWNLOAD_FAILED"
-        )
-
-    actual_size = os.path.getsize(
-        downloaded_path
-    )
-
-    if actual_size <= 0:
-        raise RuntimeError(
-            "DOWNLOADED_VIDEO_IS_EMPTY"
-        )
-
-    if actual_size > BOT2_MAX_VIDEO_SIZE:
-        raise RuntimeError(
-            "DOWNLOADED_VIDEO_EXCEEDS_50MB"
-        )
-
-    return downloaded_path, actual_size
+    return downloaded, size
 
 
 # ============================================================
 # EXTRACT EXACTLY 10 FRAMES
 # ============================================================
 
-def clip2_extract_frames(
-    video_path,
-    output_dir
-):
+def clip2_extract_frames(video_path, output_dir):
 
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
 
     if not ffmpeg or not ffprobe:
-        raise RuntimeError(
-            "FFMPEG_OR_FFPROBE_NOT_INSTALLED"
-        )
+        raise RuntimeError("FFMPEG_OR_FFPROBE_MISSING")
 
-    os.makedirs(
-        output_dir,
-        exist_ok=True
-    )
+    os.makedirs(output_dir, exist_ok=True)
 
     probe = subprocess.run(
         [
             ffprobe,
             "-v", "error",
             "-show_entries", "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             video_path
         ],
         capture_output=True,
@@ -4113,38 +3152,22 @@ def clip2_extract_frames(
     )
 
     if probe.returncode != 0:
-        raise RuntimeError(
-            "VIDEO_INDEX_READ_FAILED: "
-            + probe.stderr[:500]
-        )
+        raise RuntimeError("VIDEO_DURATION_READ_FAILED")
 
-    try:
-
-        duration = float(
-            probe.stdout.strip()
-        )
-
-    except Exception:
-
-        raise RuntimeError(
-            "VIDEO_DURATION_INVALID"
-        )
+    duration = float(probe.stdout.strip())
 
     if duration <= 0:
-        raise RuntimeError(
-            "VIDEO_DURATION_ZERO"
-        )
+        raise RuntimeError("VIDEO_DURATION_INVALID")
 
     frames = []
 
     for index in range(BOT2_FRAME_COUNT):
 
         timestamp = (
-            duration * (index + 0.5)
-            / BOT2_FRAME_COUNT
+            duration * (index + 0.5) / BOT2_FRAME_COUNT
         )
 
-        output_path = os.path.join(
+        path = os.path.join(
             output_dir,
             f"frame_{index + 1:02d}.jpg"
         )
@@ -4162,7 +3185,7 @@ def clip2_extract_frames(
                 "-q:v", "8",
                 "-threads", "1",
                 "-y",
-                output_path
+                path
             ],
             capture_output=True,
             text=True,
@@ -4171,166 +3194,155 @@ def clip2_extract_frames(
 
         if (
             result.returncode != 0
-            or not os.path.isfile(output_path)
-            or os.path.getsize(output_path) <= 0
+            or not os.path.isfile(path)
+            or os.path.getsize(path) <= 0
         ):
-
             raise RuntimeError(
-                f"FRAME_EXTRACTION_FAILED: {index + 1}/10 "
+                f"FRAME_EXTRACTION_FAILED_{index + 1}: "
                 + result.stderr[:300]
             )
 
-        frames.append(output_path)
+        frames.append(path)
 
-    if len(frames) != BOT2_FRAME_COUNT:
-        raise RuntimeError(
-            "DID_NOT_EXTRACT_10_FRAMES"
-        )
+    if len(frames) != 10:
+        raise RuntimeError("DID_NOT_EXTRACT_EXACTLY_10_FRAMES")
 
     return frames
 
 
 # ============================================================
-# SHORT GEMINI RESULT PARSER
+# SEND ALL 10 FRAMES TO ADMIN
 # ============================================================
 
-def clip2_parse_movie_answer(answer):
+def clip2_send_frames_to_admin(task_id, frames):
 
-    text = str(answer or "").strip()
+    if not ADMIN_ID:
+        raise RuntimeError("ADMIN_ID_MISSING")
 
-    title = ""
-    actor = ""
+    if len(frames) != 10:
+        raise RuntimeError("ADMIN_NEEDS_10_FRAMES")
 
-    for line in text.splitlines():
+    media = []
 
-        clean = line.strip()
+    for index, path in enumerate(frames):
+        from telebot.types import InputMediaPhoto
 
-        if ":" not in clean:
+        with open(path, "rb") as file:
+            media.append(
+                InputMediaPhoto(
+                    file.read(),
+                    caption=(
+                        f"Task: {task_id}\n"
+                        f"Frame: {index + 1}/10"
+                    ) if index == 0 else None
+                )
+            )
+
+    bot.send_media_group(
+        int(ADMIN_ID),
+        media
+    )
+
+
+# ============================================================
+# PARSE GEMINI RESPONSE
+# ============================================================
+
+def clip2_parse_answer(answer):
+
+    values = {
+        "movie_name": "",
+        "movie_year": None,
+        "main_actor": ""
+    }
+
+    for line in str(answer or "").splitlines():
+
+        if ":" not in line:
             continue
 
-        key, value = clean.split(":", 1)
+        key, value = line.split(":", 1)
 
         key = key.strip().lower()
-        value = value.strip()
+        value = value.strip().strip("*# ")
 
         if key in (
-            "sunan fim",
-            "sunan fim din",
-            "movie",
-            "movie name",
-            "title"
+            "sunan fim", "movie title", "movie name", "title"
         ):
-            title = value
+            values["movie_name"] = value
 
         elif key in (
-            "jarumi",
-            "jarumai",
-            "actor",
-            "actors",
-            "main actor",
-            "lead actor"
+            "shekara", "shekarar fitowa",
+            "release year", "year"
         ):
-            actor = value
+            match = re.search(r"\b(18|19|20|21)\d{2}\b", value)
+            if match:
+                values["movie_year"] = int(match.group())
 
-    title = title.strip("*# ")
-    actor = actor.strip("*# ")
+        elif key in (
+            "jarumi", "babban jarumi",
+            "main actor", "lead actor", "actor"
+        ):
+            values["main_actor"] = value
 
-    if not title:
-        title = (
-            text.splitlines()[0].strip()
-            if text else ""
+    if not values["movie_name"]:
+        raise RuntimeError(
+            "GEMINI_DID_NOT_RETURN_MOVIE_TITLE"
         )
 
-    if not title:
-        title = "Ba a tabbatar da sunan fim ba"
+    if not values["main_actor"]:
+        values["main_actor"] = "Unknown"
 
-    if not actor:
-        actor = "Ba a tabbatar da jarumi ba"
-
-    return (
-        f"Sunan fim: {title}\n"
-        f"Jarumi: {actor}"
-    )
+    return values
 
 
 # ============================================================
-# GEMINI ERROR DETAILS
+# GEMINI IDENTIFICATION — 14 MODEL FALLBACK
 # ============================================================
 
-def clip2_gemini_error_details(response):
-
-    try:
-
-        data = response.json()
-
-        detail = data.get(
-            "error", {}
-        ).get(
-            "message",
-            response.text[:1000]
-        )
-
-    except Exception:
-
-        detail = response.text[:1000]
-
-    return str(detail)
-
-
-# ============================================================
-# GEMINI MULTI-MODEL FALLBACK
-# ============================================================
-
-def clip2_gemini_identify(
-    frame_paths,
-    task_id
-):
+def clip2_gemini_identify(frames, task_id, payload):
 
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY_MISSING"
-        )
+        raise RuntimeError("GEMINI_API_KEY_MISSING")
 
-    if len(frame_paths) != BOT2_FRAME_COUNT:
-        raise RuntimeError(
-            "GEMINI_NEEDS_10_FRAMES"
-        )
+    if len(frames) != 10:
+        raise RuntimeError("GEMINI_NEEDS_10_FRAMES")
 
-    if not GEMINI_MODELS:
-        raise RuntimeError(
-            "GEMINI_MODELS_EMPTY"
-        )
+    prompt = """
+You are an expert movie identification system.
 
-    prompt = (
-        "You are a movie identification expert. "
-        "Identify the exact movie shown in these 10 frames. "
-        "Use visual evidence. Do not guess. "
-        "If the title or actor is uncertain, say unknown. "
-        "Return ONLY TWO SHORT LINES in Hausa:\n\n"
-        "SUNAN FIM: [official movie title and year if known]\n"
-        "JARUMI: [main actor name]\n\n"
-        "Example:\n"
-        "SUNAN FIM: Hero (2018)\n"
-        "JARUMI: Ranbir Kapoor\n\n"
-        "Do not write explanations, long descriptions, "
-        "country, language, confidence scores or extra text."
-    )
+Analyze all 10 images from the same video.
+
+Identify the ORIGINAL movie, not a similar movie.
+
+Return ONLY these three fields:
+
+MOVIE TITLE: Official original movie title
+RELEASE YEAR: Original release year
+MAIN ACTOR: Name of the leading/main actor
+
+Rules:
+- Use visual evidence from all 10 images.
+- Do not invent movie titles.
+- Do not guess the release year.
+- If the year is unknown, write Unknown.
+- If the main actor is uncertain, write Unknown.
+- Keep the answer short.
+- Do not add explanations or descriptions.
+"""
 
     parts = [{"text": prompt}]
 
-    for frame_path in frame_paths:
-
-        with open(frame_path, "rb") as image_file:
-            raw = image_file.read()
-
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": base64.b64encode(
-                    raw
-                ).decode("ascii")
-            }
-        })
+    for path in frames:
+        with open(path, "rb") as file:
+            parts.append({
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": base64.b64encode(
+                        file.read()
+                    ).decode("ascii")
+                }
+            })
 
     body = {
         "contents": [{
@@ -4343,41 +3355,27 @@ def clip2_gemini_identify(
         }
     }
 
-    failed_models = []
-    total = len(GEMINI_MODELS)
+    failures = []
 
-    clip2_live_monitor(
-        task_id,
-        "🧠 GEMINI CHECKING",
-        75,
-        "An aika frames 10 zuwa Gemini domin gano fim."
-    )
+    for index, model in enumerate(GEMINI_MODELS, start=1):
 
-    for index, model_name in enumerate(
-        GEMINI_MODELS,
-        start=1
-    ):
-
-        url = (
-            "https://generativelanguage.googleapis.com/"
-            "v1beta/models/"
-            f"{model_name}:generateContent"
-        )
+        clip2_check_deadline(payload)
 
         clip2_live_monitor(
             task_id,
-            "🧠 GEMINI CHECKING",
-            75 + int((index - 1) / total * 20),
-            (
-                f"Ana gwada model {index} cikin {total}. "
-                "Idan ya kasa, za a matsa zuwa na gaba."
-            ),
-            model=model_name,
-            attempt=f"{index}/{total}"
+            "🧠 GEMINI IDENTIFICATION",
+            75 + int(index / len(GEMINI_MODELS) * 20),
+            f"Testing model {index}/{len(GEMINI_MODELS)}",
+            model=model,
+            attempt=f"{index}/{len(GEMINI_MODELS)}"
+        )
+
+        url = (
+            "https://generativelanguage.googleapis.com/"
+            f"v1beta/models/{model}:generateContent"
         )
 
         try:
-
             response = requests.post(
                 url,
                 headers={
@@ -4385,322 +3383,131 @@ def clip2_gemini_identify(
                     "x-goog-api-key": GEMINI_API_KEY
                 },
                 json=body,
-                timeout=(20, 240)
+                timeout=(15, 150)
             )
 
             if response.status_code != 200:
 
-                detail = clip2_gemini_error_details(
-                    response
-                )
+                detail = response.text[:700]
 
-                error_text = (
-                    f"HTTP {response.status_code}: {detail}"
-                )
-
-                failed_models.append(
-                    f"{model_name}: {error_text[:500]}"
+                failures.append(
+                    f"{model}: HTTP {response.status_code}: {detail}"
                 )
 
                 if response.status_code in (401, 403):
-
-                    clip2_live_monitor(
-                        task_id,
-                        "🔴 GEMINI API KEY / PERMISSION ERROR",
-                        95,
-                        error_text[:900],
-                        model=model_name
-                    )
-
                     raise RuntimeError(
-                        f"GEMINI_FATAL_HTTP_{response.status_code}: "
-                        f"{detail}"
+                        f"GEMINI_API_KEY_OR_PERMISSION_ERROR: {detail}"
                     )
 
-                clip2_live_monitor(
-                    task_id,
-                    "⚠️ MODEL YA KASA — ANA CANJAWA",
-                    75 + int(index / total * 20),
-                    (
-                        f"{model_name} ya kasa.\n"
-                        f"HTTP: {response.status_code}\n"
-                        f"Dalili: {detail[:350]}\n"
-                        "Ana gwada model na gaba."
-                    ),
-                    model=model_name,
-                    attempt=f"{index}/{total}"
-                )
-
                 continue
 
-            try:
-
-                data = response.json()
-
-            except Exception:
-
-                failed_models.append(
-                    f"{model_name}: INVALID_JSON"
-                )
-
-                clip2_live_monitor(
-                    task_id,
-                    "⚠️ RESPONSE ERROR — NEXT MODEL",
-                    80,
-                    "Gemini ya dawo da response mara inganci.",
-                    model=model_name,
-                    attempt=f"{index}/{total}"
-                )
-
-                continue
+            data = response.json()
 
             candidates = data.get("candidates") or []
 
             if not candidates:
-
-                reason = (
-                    data.get(
-                        "promptFeedback", {}
-                    ).get(
-                        "blockReason",
-                        "NO_CANDIDATES"
-                    )
+                failures.append(
+                    f"{model}: NO_CANDIDATES"
                 )
-
-                failed_models.append(
-                    f"{model_name}: {reason}"
-                )
-
-                clip2_live_monitor(
-                    task_id,
-                    "⚠️ MODEL BA TA BA DA AMSA",
-                    80,
-                    f"Dalili: {reason}. Ana gwada na gaba.",
-                    model=model_name,
-                    attempt=f"{index}/{total}"
-                )
-
                 continue
 
             candidate = candidates[0]
 
-            if candidate.get("finishReason") == "SAFETY":
-
-                failed_models.append(
-                    f"{model_name}: SAFETY_BLOCK"
-                )
-
-                clip2_live_monitor(
-                    task_id,
-                    "⚠️ MODEL BLOCKED — NEXT MODEL",
-                    80,
-                    "An toshe amsar model ɗin. Ana gwada na gaba.",
-                    model=model_name,
-                    attempt=f"{index}/{total}"
-                )
-
-                continue
-
-            response_parts = (
-                candidate.get(
-                    "content", {}
-                ).get("parts", [])
+            text_parts = (
+                candidate.get("content", {}).get("parts", [])
             )
 
             answer = "\n".join(
-                part.get("text", "")
-                for part in response_parts
-                if part.get("text")
+                p.get("text", "")
+                for p in text_parts
+                if p.get("text")
             ).strip()
 
             if not answer:
-
-                failed_models.append(
-                    f"{model_name}: EMPTY_RESPONSE"
-                )
-
-                clip2_live_monitor(
-                    task_id,
-                    "⚠️ EMPTY RESPONSE — NEXT MODEL",
-                    80,
-                    "Model bai dawo da sunan fim ba.",
-                    model=model_name,
-                    attempt=f"{index}/{total}"
-                )
-
+                failures.append(f"{model}: EMPTY_RESPONSE")
                 continue
 
-            short_result = clip2_parse_movie_answer(
-                answer
-            )
+            result = clip2_parse_answer(answer)
 
-            clip2_live_monitor(
-                task_id,
-                "✅ GEMINI YA GANO FIM",
-                98,
-                (
-                    f"{short_result}\n\n"
-                    "An samu amsa daga Gemini."
-                ),
-                model=model_name,
-                attempt=f"{index}/{total}"
-            )
-
-            BOT2_LOGGER.info(
-                "GEMINI SUCCESS task=%s model=%s",
-                task_id,
-                model_name
-            )
-
-            return short_result, model_name
+            return result, model
 
         except RuntimeError:
             raise
 
-        except requests.exceptions.Timeout:
-
-            failed_models.append(
-                f"{model_name}: TIMEOUT"
-            )
-
-            clip2_live_monitor(
-                task_id,
-                "⏳ MODEL TIMEOUT — ANA CANJAWA",
-                80,
-                "Lokacin amsa ya ƙare. Ana gwada model na gaba.",
-                model=model_name,
-                attempt=f"{index}/{total}"
-            )
-
-            continue
-
-        except requests.exceptions.RequestException as error:
-
-            failed_models.append(
-                f"{model_name}: {str(error)[:300]}"
-            )
-
-            clip2_live_monitor(
-                task_id,
-                "⚠️ NETWORK ERROR — ANA CANJAWA",
-                80,
-                str(error)[:500],
-                model=model_name,
-                attempt=f"{index}/{total}"
-            )
-
-            continue
-
         except Exception as error:
-
-            failed_models.append(
-                f"{model_name}: {str(error)[:300]}"
+            failures.append(
+                f"{model}: {str(error)[:400]}"
             )
 
             BOT2_LOGGER.exception(
-                "GEMINI MODEL UNEXPECTED ERROR"
+                "GEMINI MODEL FAILED: %s",
+                model
             )
-
-            clip2_live_monitor(
-                task_id,
-                "⚠️ MODEL ERROR — ANA CANJAWA",
-                80,
-                str(error)[:500],
-                model=model_name,
-                attempt=f"{index}/{total}"
-            )
-
-            continue
-
-    failure_report = "\n".join(
-        failed_models[-14:]
-    )
-
-    clip2_live_monitor(
-        task_id,
-        "❌ DUK MODELS 14 SUN KASA",
-        100,
-        failure_report[:1500]
-    )
 
     raise RuntimeError(
         "ALL_GEMINI_MODELS_FAILED:\n"
-        + failure_report[:3000]
+        + "\n".join(failures[-14:])
     )
 
 
 # ============================================================
-# PROCESS ONE TASK
+# PROCESS ONE TASK — FULL PIPELINE
 # ============================================================
 
-def clip2_process_task(
-    task_id,
-    user_id,
-    raw_payload
-):
+def clip2_process_task(task_id, user_id):
+
+    global _BOT2_ACTIVE_TASK
 
     task_id = str(task_id)
-    payload = clip2_json(raw_payload)
-
-    with _BOT2_ACTIVE_LOCK:
-
-        if task_id in _BOT2_ACTIVE_TASKS:
-            return
-
-        _BOT2_ACTIVE_TASKS.add(task_id)
-
     temp_dir = None
-    lease_stop = threading.Event()
+    started_monotonic = time.monotonic()
 
     try:
 
         # ----------------------------------------------------
-        # 1. ATOMIC CLAIM
+        # 1. CLAIM TASK AND START 30-MINUTE TIMER
         # ----------------------------------------------------
 
-        if not clip2_claim_task(task_id):
+        payload = clip2_claim_task(task_id)
+
+        if payload is None:
             return
 
-        clip2_heartbeat(task_id)
-
-        lease_thread = threading.Thread(
-            target=clip2_task_lease_loop,
-            args=(task_id, lease_stop),
-            daemon=True,
-            name=f"clip2-lease-{task_id[:8]}"
-        )
-
-        lease_thread.start()
-
-        channel_id = int(
-            payload["storage_channel_id"]
-        )
-
-        message_id = int(
-            payload["storage_message_id"]
-        )
+        with _BOT2_ACTIVE_LOCK:
+            _BOT2_ACTIVE_TASK = task_id
 
         clip2_live_monitor(
             task_id,
-            "📥 AN KARƁI SAKO",
+            "📥 TASK RECEIVED",
             5,
             (
-                "Bot 2 ya gano sabon aikin a database.\n"
-                f"User ID: {user_id}\n"
-                f"Channel: {channel_id}\n"
-                f"Message ID: {message_id}"
+                f"User: {user_id}\n"
+                "Bot 2 ya karɓi aiki guda ɗaya.\n"
+                "An fara ƙidayar minti 30."
             )
         )
 
+        clip2_admin_notify(
+            "⬇️ BOT 2 YA FARA AIKIN VIDEO\n"
+            f"Task: {task_id}\n"
+            f"User: {user_id}\n"
+            "An fara ƙidayar minti 30."
+        )
+
         # ----------------------------------------------------
-        # 2. GET EXACT STORAGE MESSAGE
+        # 2. RETRIEVE EXACT STORAGE VIDEO
         # ----------------------------------------------------
+
+        channel_id = int(payload["storage_channel_id"])
+        message_id = int(payload["storage_message_id"])
+
+        clip2_check_deadline(payload)
 
         clip2_live_monitor(
             task_id,
-            "🔎 ANA DUBA STORAGE",
+            "🔎 SEARCHING STORAGE VIDEO",
             10,
-            "Ana nemo ainihin video ɗin da aka ajiye."
+            f"Channel: {channel_id}\nMessage ID: {message_id}"
         )
 
         pyro_message = clip2_get_channel_message(
@@ -4709,15 +3516,9 @@ def clip2_process_task(
         )
 
         if not pyro_message:
-            raise RuntimeError(
-                "STORAGE_MESSAGE_NOT_FOUND_BY_PYROGRAM"
-            )
+            raise RuntimeError("STORAGE_VIDEO_NOT_FOUND")
 
-        # ----------------------------------------------------
-        # 3. VERIFY STORAGE MESSAGE
-        # ----------------------------------------------------
-
-        media = clip2_verify_channel_message(
+        media = clip2_verify_video(
             pyro_message,
             task_id,
             user_id,
@@ -4726,86 +3527,20 @@ def clip2_process_task(
 
         clip2_live_monitor(
             task_id,
-            "✅ AN TABBATAR DA VIDEO",
+            "✅ VIDEO VERIFIED",
             15,
-            (
-                f"File: {media.file_id}\n"
-                f"Size: {clip2_size(media.file_size)}\n"
-                f"Unique ID: {media.file_unique_id}"
-            )
+            f"Video size: {clip2_size(media.file_size)}"
         )
 
         # ----------------------------------------------------
-        # 4. MARK STORAGE MESSAGE AS SEEN
+        # 3. PREPARE TEMPORARY DIRECTORY
         # ----------------------------------------------------
-
-        try:
-
-            clip2_mark_seen(
-                channel_id,
-                message_id,
-                pyro_message.caption,
-                task_id
-            )
-
-        except Exception as edit_error:
-
-            clip2_live_monitor(
-                task_id,
-                "⚠️ BA A IYA GYARA CAPTION BA",
-                15,
-                (
-                    f"Error: {str(edit_error)[:400]}\n"
-                    "Amma processing zai ci gaba."
-                )
-            )
-
-        # ----------------------------------------------------
-        # 5. SAVE FILE INFORMATION
-        # ----------------------------------------------------
-
-        payload["bot2_file_id"] = media.file_id
-
-        payload["bot2_file_unique_id"] = (
-            media.file_unique_id
-        )
-
-        payload["bot2_file_size"] = int(
-            media.file_size or 0
-        )
-
-        clip2_save_payload(
-            task_id,
-            payload
-        )
-
-        # ----------------------------------------------------
-        # 6. FULL DOWNLOAD
-        # ----------------------------------------------------
-
-        clip2_set_status(
-            task_id,
-            "downloading"
-        )
-
-        clip2_heartbeat(task_id)
-
-        clip2_live_monitor(
-            task_id,
-            "⬇️ ANA SAUKE CIKAKKEN VIDEO",
-            20,
-            (
-                f"Video size: {clip2_size(media.file_size)}\n"
-                "Downloader: existing _videocon_download\n"
-                "Ana fara download."
-            )
-        )
 
         temp_dir = tempfile.mkdtemp(
             prefix="clip_bot2_"
         )
 
-        video_path = os.path.join(
+        video_output = os.path.join(
             temp_dir,
             "source_video"
         )
@@ -4815,46 +3550,79 @@ def clip2_process_task(
             "frames"
         )
 
+        # ----------------------------------------------------
+        # 4. DOWNLOAD FULL VIDEO
+        # ----------------------------------------------------
+
+        clip2_set_status(task_id, "downloading")
+
+        download_start = time.monotonic()
+
+        payload["bot2_download_started_at"] = clip2_iso()
+
+        clip2_save_payload(task_id, payload)
+
+        clip2_admin_notify(
+            "⬇️ BOT 2 YA FARA DOWNLOAD\n"
+            f"Task: {task_id}\n"
+            f"Video size: {clip2_size(media.file_size)}\n"
+            "Ana sauke cikakken video."
+        )
+
+        clip2_live_monitor(
+            task_id,
+            "⬇️ DOWNLOADING FULL VIDEO",
+            25,
+            f"Size: {clip2_size(media.file_size)}"
+        )
+
         downloaded_path, downloaded_size = (
             clip2_download_full_video(
                 pyro_message,
-                video_path,
-                task_id
+                video_output
             )
         )
 
+        payload["bot2_download_completed_at"] = clip2_iso()
+        payload["bot2_download_seconds"] = clip2_elapsed(
+            download_start
+        )
         payload["downloaded_bytes"] = downloaded_size
-        payload["download_completed"] = True
 
-        clip2_save_payload(
-            task_id,
-            payload
+        clip2_save_payload(task_id, payload)
+
+        clip2_check_deadline(payload)
+
+        clip2_admin_notify(
+            "✅ BOT 2 YA GAMMA DOWNLOAD\n"
+            f"Task: {task_id}\n"
+            f"Downloaded: {clip2_size(downloaded_size)}\n"
+            f"Download time: {payload['bot2_download_seconds']} seconds"
         )
 
         clip2_live_monitor(
             task_id,
-            "✅ AN SAUKE VIDEO SOSAI",
+            "✅ DOWNLOAD COMPLETE",
             45,
             (
-                f"Downloaded: {clip2_size(downloaded_size)}\n"
-                "Cikakken video ya shiga storage na wucin gadi."
+                f"Video: {clip2_size(downloaded_size)}\n"
+                f"Download time: {payload['bot2_download_seconds']} seconds"
             )
         )
 
         # ----------------------------------------------------
-        # 7. EXTRACT 10 FRAMES
+        # 5. EXTRACT 10 FRAMES
         # ----------------------------------------------------
 
-        clip2_set_status(
-            task_id,
-            "extracting_frames"
-        )
+        clip2_set_status(task_id, "extracting_frames")
+
+        frames_start = time.monotonic()
 
         clip2_live_monitor(
             task_id,
-            "🖼️ ANA CIRE FRAMES 10",
+            "🖼️ EXTRACTING 10 FRAMES",
             55,
-            "Ana daukar hotuna 10 daga wurare daban-daban na video."
+            "Ana cire hotuna 10 daga cikakken video."
         )
 
         frames = clip2_extract_frames(
@@ -4862,102 +3630,160 @@ def clip2_process_task(
             frames_dir
         )
 
-        frame_total_bytes = sum(
-            os.path.getsize(path)
-            for path in frames
-        )
-
         payload["frames_extracted"] = len(frames)
-
-        payload["frames_total_bytes"] = (
-            frame_total_bytes
+        payload["frames_total_bytes"] = sum(
+            os.path.getsize(path) for path in frames
+        )
+        payload["bot2_frames_completed_at"] = clip2_iso()
+        payload["bot2_frames_seconds"] = clip2_elapsed(
+            frames_start
         )
 
-        clip2_save_payload(
+        clip2_save_payload(task_id, payload)
+
+        # ----------------------------------------------------
+        # 6. SEND 10 FRAMES TO ADMIN
+        # ----------------------------------------------------
+
+        clip2_send_frames_to_admin(
+            task_id,
+            frames
+        )
+
+        clip2_admin_notify(
+            "🖼️ AN CIRE HOTUNA 10\n"
+            f"Task: {task_id}\n"
+            "An aika hotuna 10 zuwa ADMIN_ID.\n"
+            f"Extraction time: {payload['bot2_frames_seconds']} seconds"
+        )
+
+        clip2_live_monitor(
+            task_id,
+            "✅ 10 FRAMES READY",
+            70,
+            (
+                "Hotuna 10 sun kammala.\n"
+                "An aika su zuwa admin.\n"
+                "Ana shirin aika su ga Gemini."
+            )
+        )
+
+        clip2_check_deadline(payload)
+
+        # ----------------------------------------------------
+        # 7. GEMINI IDENTIFICATION
+        # ----------------------------------------------------
+
+        clip2_set_status(task_id, "identifying")
+
+        gemini_start = time.monotonic()
+
+        payload["bot2_gemini_started_at"] = clip2_iso()
+
+        clip2_save_payload(task_id, payload)
+
+        clip2_admin_notify(
+            "🧠 BOT 2 YA AIKA HOTUNA GA GEMINI\n"
+            f"Task: {task_id}\n"
+            "Ana neman asalin sunan fim, shekarar fitowa da babban jarumi."
+        )
+
+        result, successful_model = clip2_gemini_identify(
+            frames,
             task_id,
             payload
         )
 
-        clip2_live_monitor(
-            task_id,
-            "✅ AN CIRE FRAMES 10",
-            70,
-            (
-                f"Frames: {len(frames)}/10\n"
-                f"Images: {clip2_size(frame_total_bytes)}\n"
-                "An shirya hotunan domin Gemini."
-            )
+        payload["bot2_gemini_completed_at"] = clip2_iso()
+        payload["bot2_gemini_seconds"] = clip2_elapsed(
+            gemini_start
         )
+
+        payload["bot2_total_processing_seconds"] = clip2_elapsed(
+            started_monotonic
+        )
+
+        clip2_check_deadline(payload)
 
         # ----------------------------------------------------
-        # 8. GEMINI CHECKING
-        # ----------------------------------------------------
-
-        clip2_set_status(
-            task_id,
-            "identifying"
-        )
-
-        clip2_live_monitor(
-            task_id,
-            "🧠 GEMINI CHECKING",
-            75,
-            (
-                "An shiga Gemini.\n"
-                "Ana gwada models 14 a jere.\n"
-                "Idan daya ya kasa, zai wuce zuwa na gaba."
-            )
-        )
-
-        report, successful_model = (
-            clip2_gemini_identify(
-                frames,
-                task_id
-            )
-        )
-
-        # ----------------------------------------------------
-        # 9. SAVE RESULT TO DATABASE
+        # 8. GEMINI RESULT RECEIVED
         # ----------------------------------------------------
 
         clip2_live_monitor(
             task_id,
-            "💾 ANA AJIYE AMSA A DATABASE",
+            "✅ GEMINI ANSWER RECEIVED",
             95,
             (
-                f"{report}\n\n"
-                f"Successful model: {successful_model}"
+                f"Movie: {result['movie_name']}\n"
+                f"Year: {result['movie_year'] or 'Unknown'}\n"
+                f"Main Actor: {result['main_actor']}\n"
+                f"Model: {successful_model}"
             ),
             model=successful_model
         )
 
-        clip2_save_result(
-            task_id,
-            report,
-            None,
-            successful_model,
-            len(frames)
+        clip2_admin_notify(
+            "✅ GEMINI YA SAMU AMSA\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"Task: {task_id}\n"
+            f"Sunan fim: {result['movie_name']}\n"
+            f“Shekara: {result['movie_year'] or 'Unknown'}\n"
+            f"Babban jarumi: {result['main_actor']}\n"
+            f"Model: {successful_model}\n"
+            f"Gemini time: {payload['bot2_gemini_seconds']} seconds"
         )
 
         # ----------------------------------------------------
-        # 10. COMPLETED — PERMANENT
+        # 9. SAVE RESULT IN SHARED DATABASE
         # ----------------------------------------------------
 
-        clip2_monitor_complete(
+        clip2_save_result(
             task_id,
+            result["movie_name"],
+            result["movie_year"],
+            result["main_actor"],
+            successful_model,
+            len(frames),
+            payload
+        )
+
+        # ----------------------------------------------------
+        # 10. COMPLETED
+        # ----------------------------------------------------
+
+        clip2_live_monitor(
+            task_id,
+            "🎉 TASK COMPLETED",
+            100,
             (
-                "🎉 AN KAMMALA AIKI\n\n"
-                f"{report}\n\n"
+                f"Movie: {result['movie_name']}\n"
+                f"Year: {result['movie_year'] or 'Unknown'}\n"
+                f"Main Actor: {result['main_actor']}\n"
                 f"Model: {successful_model}\n"
-                f"Frames: {len(frames)}/10\n"
-                f"Video: {clip2_size(downloaded_size)}\n\n"
-                "Database status: completed\n"
-                "Completed task will NEVER be processed again."
-            )
+                "DB status: completed\n"
+                "Bot 1 zai karɓi amsar."
+            ),
+            model=successful_model
+        )
+
+        clip2_admin_notify(
+            "🎉 BOT 2 YA KAMMALA AIKI\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"Task: {task_id}\n"
+            f"Movie: {result['movie_name']}\n"
+            f"Year: {result['movie_year'] or 'Unknown'}\n"
+            f"Main Actor: {result['main_actor']}\n"
+            f"Model: {successful_model}\n"
+            f"Download: {payload['bot2_download_seconds']} sec\n"
+            f"Frames: {payload['bot2_frames_seconds']} sec\n"
+            f"Gemini: {payload['bot2_gemini_seconds']} sec\n"
+            f"Total: {payload['bot2_total_processing_seconds']} sec\n"
+            "DB: completed\n"
+            "Bot 1: Ready to deliver"
         )
 
         BOT2_LOGGER.info(
-            "BOT2 TASK COMPLETED PERMANENTLY: %s",
+            "TASK COMPLETED %s",
             task_id
         )
 
@@ -4968,121 +3794,102 @@ def clip2_process_task(
             task_id
         )
 
-        try:
+        timed_out = isinstance(error, TimeoutError)
 
+        try:
             clip2_mark_failed(
                 task_id,
-                str(error)
+                str(error),
+                timed_out=timed_out
             )
-
         except Exception:
-
             BOT2_LOGGER.exception(
-                "BOT2 FAILED TO SAVE TASK FAILURE"
+                "FAILED TO SAVE TASK FAILURE"
             )
 
-        clip2_monitor_failed(
+        clip2_live_monitor(
             task_id,
-            (
-                "❌ AIKIN YA GAZA\n\n"
-                f"User: {user_id}\n"
-                f"Error: {str(error)[:1800]}"
-            )
+            "⏰ TIMEOUT" if timed_out else "❌ FAILED",
+            100,
+            str(error)[:1800]
+        )
+
+        clip2_admin_notify(
+            "❌ BOT 2 TASK FAILED\n"
+            f"Task: {task_id}\n"
+            f"User: {user_id}\n"
+            f"Error: {str(error)[:1500]}"
         )
 
     finally:
 
-        lease_stop.set()
-
         if temp_dir:
-
             shutil.rmtree(
                 temp_dir,
                 ignore_errors=True
             )
 
-        try:
-
-            clip2_heartbeat(None)
-
-        except Exception:
-
-            BOT2_LOGGER.exception(
-                "BOT2 HEARTBEAT CLEANUP FAILED"
-            )
-
         with _BOT2_ACTIVE_LOCK:
-            _BOT2_ACTIVE_TASKS.discard(task_id)
+            _BOT2_ACTIVE_TASK = None
+
+        try:
+            clip2_heartbeat(None)
+        except Exception:
+            BOT2_LOGGER.exception(
+                "WORKER HEARTBEAT CLEANUP FAILED"
+            )
 
 
 # ============================================================
-# DB POLLING WORKER
+# SERIAL DATABASE POLLER
+# IMPORTANT: DOES NOT CREATE 100 THREADS.
+# ONE TASK FINISHES BEFORE THE NEXT TASK STARTS.
 # ============================================================
 
 def bot2_clip_database_poller():
 
     BOT2_LOGGER.info(
-        "BOT2 DATABASE POLLER STARTED"
+        "BOT2 SERIAL DATABASE POLLER STARTED"
     )
-
-    # Recover only expired, unfinished tasks.
-    try:
-
-        clip2_recover_expired_tasks()
-
-    except Exception:
-
-        BOT2_LOGGER.exception(
-            "BOT2 EXPIRED TASK RECOVERY ERROR"
-        )
 
     while not _BOT2_STOP.is_set():
 
         try:
 
-            pending_tasks = (
-                clip2_get_pending_tasks()
+            with _BOT2_ACTIVE_LOCK:
+                busy = _BOT2_ACTIVE_TASK is not None
+
+            if busy:
+                _BOT2_STOP.wait(BOT2_POLL_SECONDS)
+                continue
+
+            row = clip2_get_next_pending_task()
+
+            if not row:
+                _BOT2_STOP.wait(BOT2_POLL_SECONDS)
+                continue
+
+            task_id, user_id, payload = row
+
+            # Synchronous processing:
+            # this worker cannot take another task until this ends.
+            clip2_process_task(
+                str(task_id),
+                user_id
             )
-
-            for row in pending_tasks:
-
-                if _BOT2_STOP.is_set():
-                    break
-
-                task_id, user_id, payload = row
-
-                task_id = str(task_id)
-
-                with _BOT2_ACTIVE_LOCK:
-
-                    if task_id in _BOT2_ACTIVE_TASKS:
-                        continue
-
-                threading.Thread(
-                    target=clip2_process_task,
-                    args=(
-                        task_id,
-                        user_id,
-                        payload
-                    ),
-                    daemon=True,
-                    name=f"clip2-task-{task_id[:8]}"
-                ).start()
 
         except Exception:
 
             BOT2_LOGGER.exception(
-                "BOT2 DATABASE POLLER ERROR"
+                "BOT2 SERIAL POLLER ERROR"
             )
 
             clip2_admin_notify(
                 "⚠️ BOT 2 DATABASE POLLER ERROR\n"
-                "Duba Render logs domin cikakken bayani."
+                "Zai sake gwadawa."
             )
 
-        _BOT2_STOP.wait(
-            BOT2_POLL_SECONDS
-        )
+            _BOT2_STOP.wait(BOT2_POLL_SECONDS)
 
 
 # ============================================================
@@ -5104,55 +3911,40 @@ def clip2_startup():
 
         clip2_register_worker()
 
-        ready_event = globals().get(
-            "_videocon_ready"
-        )
+        ready_event = globals().get("_videocon_ready")
 
         if not ready_event:
             raise RuntimeError(
                 "VIDEOCON_READY_EVENT_NOT_FOUND"
             )
 
-        engine_timeout = globals().get(
-            "VIDEOCON_ENGINE_START_TIMEOUT",
-            180
-        )
-
-        if not ready_event.wait(
-            timeout=engine_timeout
-        ):
+        if not ready_event.wait(timeout=180):
             raise RuntimeError(
-                "EXISTING_PYROGRAM_ENGINE_START_TIMEOUT"
+                "EXISTING_PYROGRAM_ENGINE_TIMEOUT"
             )
 
         if globals().get("_videocon_start_error"):
-
             raise RuntimeError(
-                "PYROGRAM_STARTUP_ERROR: "
-                + str(
-                    globals().get(
-                        "_videocon_start_error"
-                    )
-                )
+                str(globals()["_videocon_start_error"])
             )
 
         if not globals().get("_videocon_pyro"):
             raise RuntimeError(
-                "PYROGRAM_CLIENT_NOT_AVAILABLE"
+                "EXISTING_PYROGRAM_CLIENT_NOT_AVAILABLE"
             )
 
         if not callable(
             globals().get("_videocon_get_message")
         ):
             raise RuntimeError(
-                "_videocon_get_message_HELPER_MISSING"
+                "EXISTING_PYROGRAM_GET_MESSAGE_HELPER_MISSING"
             )
 
         if not callable(
             globals().get("_videocon_download")
         ):
             raise RuntimeError(
-                "_videocon_download_HELPER_MISSING"
+                "EXISTING_PYROGRAM_DOWNLOAD_HELPER_MISSING"
             )
 
         if not GEMINI_API_KEY:
@@ -5168,7 +3960,7 @@ def clip2_startup():
         threading.Thread(
             target=bot2_clip_database_poller,
             daemon=True,
-            name="bot2-clip-db-poller"
+            name="bot2-serial-clip-worker"
         ).start()
 
         clip2_admin_notify(
@@ -5177,25 +3969,19 @@ def clip2_startup():
             f"Worker: {BOT2_WORKER_ID}\n"
             f"Storage: {CLIP_CHANNEL_VIDEO}\n"
             f"Video limit: {clip2_size(BOT2_MAX_VIDEO_SIZE)}\n"
-            "Message handler: ENABLED\n"
-            "Caption verification: ENABLED\n"
-            "Invalid caption: ADMIN ALERT ONLY\n"
             "Download: FULL VIDEO\n"
-            "Download progress: ENABLED\n"
-            "Downloader: EXISTING PYROGRAM\n"
-            f"Frames: {BOT2_FRAME_COUNT}\n"
-            f"Gemini models: {len(GEMINI_MODELS)}\n"
+            "Pyrogram: EXISTING ENGINE\n"
+            "Frames: 10\n"
+            f"Gemini fallback models: {len(GEMINI_MODELS)}\n"
+            "Admin frame delivery: ENABLED\n"
             "Live monitor: ENABLED\n"
-            "Automatic fallback: ENABLED\n"
-            "Completed protection: ENABLED\n"
-            "Expired task recovery: ENABLED\n"
-            "Task discovery: DATABASE POLLING\n"
-            "Waiting for verified videos."
+            "Serial queue: ONE TASK AT A TIME\n"
+            "Processing timeout: 30 MINUTES\n"
+            "Shared DB: ENABLED\n"
+            "Waiting for pending tasks."
         )
 
-        BOT2_LOGGER.info(
-            "BOT2 CLIP SYSTEM READY"
-        )
+        BOT2_LOGGER.info("BOT2 SYSTEM READY")
 
     except Exception as error:
 
@@ -5217,10 +4003,8 @@ clip2_startup()
 
 
 # ============================================================
-# END BOT 2
+# END BOT 2 Download 10frama Gemini 
 # ============================================================
-
-
 
 
 # ============================================================
