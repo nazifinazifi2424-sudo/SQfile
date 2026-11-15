@@ -3450,6 +3450,7 @@ Rules:
     )
 
 
+
 # ============================================================
 # PROCESS ONE TASK — FULL PIPELINE
 # ============================================================
@@ -3727,7 +3728,7 @@ def clip2_process_task(task_id, user_id):
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Task: {task_id}\n"
             f"Sunan fim: {result['movie_name']}\n"
-            f“Shekara: {result['movie_year'] or 'Unknown'}\n"
+            f"Shekara: {result['movie_year'] or 'Unknown'}\n"
             f"Babban jarumi: {result['main_actor']}\n"
             f"Model: {successful_model}\n"
             f"Gemini time: {payload['bot2_gemini_seconds']} seconds"
