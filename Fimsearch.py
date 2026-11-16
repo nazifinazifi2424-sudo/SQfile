@@ -1,5 +1,4 @@
 
-
 import os
 import time
 import shutil
@@ -264,7 +263,7 @@ print("✅ ALL CHAT DATABASE TABLES CREATED SUCCESSFULLY")
 # BOT 2 — MOVIE IDENTIFICATION ONLY
 # ============================================================
 
-CLIP_CHANNEL_VIDEO = int(os.getenv("CLIP_CHANNEL_VIDEO", "-1004433789999"))
+# CLIP_CHANNEL_VIDEO is fixed in this file; no Render variable is required.
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 API_ID_RAW = os.getenv("API_ID", "").strip()
 API_HASH = os.getenv("API_HASH", "").strip()
@@ -285,6 +284,11 @@ try:
     ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else None
 except ValueError:
     ADMIN_ID = None
+
+# ============================================================
+# ORIGINAL VIDEO GROUP — FIXED IN CODE (NO RENDER VARIABLE)
+# ============================================================
+CLIP_CHANNEL_VIDEO = -1004449824546
 
 logging.basicConfig(
     level=logging.INFO,
