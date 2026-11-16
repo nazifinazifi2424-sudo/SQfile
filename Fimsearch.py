@@ -2307,8 +2307,6 @@ then call start_gemini_worker() once during bot startup.
 """
 
 
-
-
 # ============================================================
 # BOT 2 — FULL DEBUG MOVIE SCANNER
 # BOT 1 COMPATIBLE
@@ -2319,11 +2317,12 @@ then call start_gemini_worker() once during bot startup.
 # EXACTLY 10 FRAMES
 # SEND ALL 10 FRAMES TO ADMIN FOR VERIFICATION
 # LIVE ADMIN DEBUG AT EVERY STAGE
-# EXISTING PYROGRAM ENGINE — NO NEW CLIENT
+# BOT 2 OWN PYROGRAM CLIENT — FETCH ORIGINAL GROUP VIDEO
 # DATABASE RESULT — USER/TASK ISOLATION
 # ============================================================
 
 import os
+import asyncio
 import re
 import json
 import time
@@ -3274,45 +3273,264 @@ def clip2_mark_failed(task_id, user_id, error):
 
 
 # ============================================================
-# GET ORIGINAL GROUP MESSAGE USING EXISTING PYROGRAM
+# BOT 2 PYROGRAM ENGINE
+# FETCH THE ORIGINAL GROUP MESSAGE BY chat_id + message_id
+# BOT 2 OWNS THIS CLIENT — IT DOES NOT DEPEND ON BOT 1 GLOBALS
 # ============================================================
 
+_BOT2_PYRO_CLIENT = None
+_BOT2_PYRO_LOOP = None
+_BOT2_PYRO_THREAD = None
+_BOT2_PYRO_READY = threading.Event()
+_BOT2_PYRO_START_ERROR = None
+_BOT2_PYRO_START_LOCK = threading.Lock()
+
+
+def bot2_pyro_run_async(coroutine, timeout=180):
+    loop = _BOT2_PYRO_LOOP
+
+    if loop is None or not loop.is_running():
+        # Avoid leaving an un-awaited coroutine behind on startup failure.
+        try:
+            coroutine.close()
+        except Exception:
+            pass
+        raise RuntimeError("BOT2_PYROGRAM_EVENT_LOOP_NOT_RUNNING")
+
+    future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+
+    try:
+        return future.result(timeout=timeout)
+    except Exception:
+        future.cancel()
+        raise
+
+
+async def bot2_pyro_get_message(chat_id, message_id):
+    if _BOT2_PYRO_CLIENT is None:
+        raise RuntimeError("BOT2_PYROGRAM_CLIENT_NOT_READY")
+
+    message = await _BOT2_PYRO_CLIENT.get_messages(
+        chat_id=int(chat_id),
+        message_ids=int(message_id)
+    )
+
+    # Pyrogram may return a single Message or a list depending on input.
+    if isinstance(message, (list, tuple)):
+        message = message[0] if message else None
+
+    return message
+
+
+async def bot2_pyro_download(message, output_path, progress=None, progress_state=None):
+    if _BOT2_PYRO_CLIENT is None:
+        raise RuntimeError("BOT2_PYROGRAM_CLIENT_NOT_READY")
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    downloaded = await _BOT2_PYRO_CLIENT.download_media(
+        message,
+        file_name=output_path
+    )
+
+    if not downloaded:
+        raise RuntimeError("BOT2_PYROGRAM_DOWNLOAD_MEDIA_RETURNED_EMPTY")
+
+    return downloaded
+
+
+def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
+    global _BOT2_PYRO_CLIENT
+    global _BOT2_PYRO_LOOP
+    global _BOT2_PYRO_START_ERROR
+
+    try:
+        from pyrogram import Client
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _BOT2_PYRO_LOOP = loop
+
+        client = Client(
+            name="bot2_group_video_downloader",
+            api_id=api_id,
+            api_hash=api_hash,
+            bot_token=bot_token,
+            in_memory=True,
+            no_updates=True
+        )
+
+        _BOT2_PYRO_CLIENT = client
+        loop.run_until_complete(client.start())
+
+        # Set ready only after Telegram has accepted the MTProto session.
+        _BOT2_PYRO_READY.set()
+        BOT2_LOGGER.info(
+            "BOT2 PYROGRAM CLIENT STARTED — GROUP MESSAGE DOWNLOAD READY"
+        )
+        clip2_admin_send(
+            "✅ BOT 2 PYROGRAM CLIENT STARTED\\n"
+            "✅ MTProto connection established\\n"
+            "✅ Can fetch original group messages by chat_id/message_id"
+        )
+
+        loop.run_forever()
+
+    except Exception as error:
+        _BOT2_PYRO_START_ERROR = error
+        BOT2_LOGGER.exception("BOT2 PYROGRAM ENGINE START FAILED")
+        _BOT2_PYRO_READY.set()
+        try:
+            clip2_admin_send(
+                "🔴 BOT 2 PYROGRAM START FAILED\\n"
+                f"Error: {str(error)[:1800]}"
+            )
+        except Exception:
+            BOT2_LOGGER.exception("FAILED TO REPORT PYROGRAM START ERROR")
+
+
+def bot2_start_pyrogram_engine(timeout=180):
+    global _BOT2_PYRO_THREAD
+
+    with _BOT2_PYRO_START_LOCK:
+        if _BOT2_PYRO_READY.is_set():
+            if _BOT2_PYRO_START_ERROR:
+                raise RuntimeError(
+                    "BOT2_PYROGRAM_START_FAILED: "
+                    + str(_BOT2_PYRO_START_ERROR)
+                )
+            if _BOT2_PYRO_CLIENT is not None:
+                return True
+
+        if _BOT2_PYRO_THREAD is None or not _BOT2_PYRO_THREAD.is_alive():
+            api_id_raw = os.getenv("API_ID") or globals().get("API_ID")
+            api_hash = (os.getenv("API_HASH") or globals().get("API_HASH") or "").strip()
+            bot_token = (
+                os.getenv("BOT_TOKEN")
+                or globals().get("BOT_TOKEN")
+                or getattr(globals().get("bot"), "token", None)
+                or ""
+            ).strip()
+
+            if not api_id_raw or not api_hash or not bot_token:
+                raise RuntimeError(
+                    "BOT2_PYROGRAM_CONFIG_MISSING: set API_ID, API_HASH, BOT_TOKEN"
+                )
+
+            try:
+                api_id = int(api_id_raw)
+            except (TypeError, ValueError):
+                raise RuntimeError("BOT2_PYROGRAM_API_ID_INVALID")
+
+            _BOT2_PYRO_THREAD = threading.Thread(
+                target=_bot2_pyro_thread_main,
+                args=(api_id, api_hash, bot_token),
+                daemon=True,
+                name="bot2-pyrogram-engine"
+            )
+            _BOT2_PYRO_THREAD.start()
+
+    if not _BOT2_PYRO_READY.wait(timeout=timeout):
+        raise RuntimeError("BOT2_PYROGRAM_START_TIMEOUT")
+
+    if _BOT2_PYRO_START_ERROR:
+        raise RuntimeError(
+            "BOT2_PYROGRAM_START_FAILED: "
+            + str(_BOT2_PYRO_START_ERROR)
+        )
+
+    if _BOT2_PYRO_CLIENT is None or _BOT2_PYRO_LOOP is None:
+        raise RuntimeError("BOT2_PYROGRAM_CLIENT_OR_LOOP_MISSING")
+
+    return True
+
+
 def clip2_get_group_message(chat_id, message_id):
+    if not _BOT2_PYRO_READY.is_set() or _BOT2_PYRO_START_ERROR:
+        raise RuntimeError("BOT2_PYROGRAM_NOT_READY")
 
-    if not globals().get("_videocon_pyro"):
-        raise RuntimeError(
-            "PYROGRAM_CLIENT_NOT_READY"
-        )
-
-    if not globals().get("_videocon_loop"):
-        raise RuntimeError(
-            "PYROGRAM_EVENT_LOOP_NOT_READY"
-        )
-
-    ready_event = globals().get(
-        "_videocon_ready"
-    )
-
-    if not ready_event or not ready_event.is_set():
-
-        raise RuntimeError(
-            "PYROGRAM_ENGINE_NOT_READY"
-        )
-
-    getter = globals().get(
-        "_videocon_get_message"
-    )
-
-    if not callable(getter):
-
-        raise RuntimeError(
-            "EXISTING_PYROGRAM_GET_MESSAGE_HELPER_MISSING"
-        )
-
-    return videocon_run_async(
-        getter(chat_id, message_id),
+    message = bot2_pyro_run_async(
+        bot2_pyro_get_message(chat_id, message_id),
         timeout=180
     )
+
+    if not message:
+        raise RuntimeError(
+            f"TELEGRAM_MESSAGE_NOT_FOUND: chat_id={chat_id}, message_id={message_id}"
+        )
+
+    return message
+
+
+# ============================================================
+# DOWNLOAD FULL ORIGINAL VIDEO USING BOT 2 PYROGRAM CLIENT
+# ============================================================
+
+def clip2_download_video(
+    pyro_message,
+    output_path,
+    task_id,
+    user_name,
+    user_id,
+    monitor_id
+):
+    progress_state = {
+        "time": 0,
+        "start_time": time.time(),
+        "start_bytes": 0
+    }
+
+    clip2_admin_debug(
+        task_id,
+        user_name,
+        user_id,
+        "DOWNLOAD START",
+        (
+            "⬇️ Bot 2 Pyrogram download yana aiki.\\n"
+            "📍 An samo ainihin group message ta chat_id/message_id.\\n"
+            "📦 Ana sauke cikakken video yanzu."
+        ),
+        monitor_id
+    )
+
+    downloaded_path = bot2_pyro_run_async(
+        bot2_pyro_download(
+            pyro_message,
+            output_path,
+            None,
+            progress_state
+        ),
+        timeout=BOT2_MAX_DOWNLOAD_SECONDS
+    )
+
+    if not downloaded_path or not os.path.isfile(downloaded_path):
+        raise RuntimeError("BOT2_PYROGRAM_FULL_VIDEO_DOWNLOAD_FAILED")
+
+    actual_size = os.path.getsize(downloaded_path)
+
+    if actual_size <= 0:
+        raise RuntimeError("DOWNLOADED_VIDEO_IS_EMPTY")
+
+    if actual_size > BOT2_MAX_VIDEO_SIZE:
+        raise RuntimeError(
+            "DOWNLOADED_VIDEO_EXCEEDS_50MB: " + clip2_size(actual_size)
+        )
+
+    clip2_admin_debug(
+        task_id,
+        user_name,
+        user_id,
+        "DOWNLOAD COMPLETED",
+        (
+            "✅ AN SAUKE VIDEO LAFIYA.\\n"
+            f"📦 Downloaded size: {clip2_size(actual_size)}\\n"
+            f"📁 File path: {downloaded_path}\\n"
+            "📌 File yana cikin server yanzu."
+        ),
+        monitor_id
+    )
+
+    return downloaded_path, actual_size
 
 
 # ============================================================
@@ -3409,101 +3627,6 @@ def clip2_verify_video(
         )
 
     return media
-
-
-# ============================================================
-# DOWNLOAD FULL VIDEO
-# EXISTING PYROGRAM HELPER
-# ============================================================
-
-def clip2_download_video(
-    pyro_message,
-    output_path,
-    task_id,
-    user_name,
-    user_id,
-    monitor_id
-):
-
-    downloader = globals().get(
-        "_videocon_download"
-    )
-
-    if not callable(downloader):
-
-        raise RuntimeError(
-            "EXISTING_PYROGRAM_DOWNLOAD_HELPER_MISSING"
-        )
-
-    progress_state = {
-        "time": 0,
-        "start_time": 0,
-        "start_bytes": 0
-    }
-
-    clip2_admin_debug(
-        task_id,
-        user_name,
-        user_id,
-        "DOWNLOAD START",
-        (
-            "⬇️ Pyrogram download function yana aiki.\n"
-            "📁 Output path an shirya.\n"
-            "📦 Ana sauke cikakken video yanzu."
-        ),
-        monitor_id
-    )
-
-    downloaded_path = videocon_run_async(
-        downloader(
-            pyro_message,
-            output_path,
-            None,
-            progress_state
-        ),
-        timeout=BOT2_MAX_DOWNLOAD_SECONDS
-    )
-
-    if (
-        not downloaded_path
-        or not os.path.isfile(downloaded_path)
-    ):
-
-        raise RuntimeError(
-            "PYROGRAM_FULL_VIDEO_DOWNLOAD_FAILED"
-        )
-
-    actual_size = os.path.getsize(
-        downloaded_path
-    )
-
-    if actual_size <= 0:
-
-        raise RuntimeError(
-            "DOWNLOADED_VIDEO_IS_EMPTY"
-        )
-
-    if actual_size > BOT2_MAX_VIDEO_SIZE:
-
-        raise RuntimeError(
-            "DOWNLOADED_VIDEO_EXCEEDS_50MB"
-        )
-
-    clip2_admin_debug(
-        task_id,
-        user_name,
-        user_id,
-        "DOWNLOAD COMPLETED",
-        (
-            "✅ AN SAUKE VIDEO LAFIYA.\n"
-            f"📦 Downloaded size: {clip2_size(actual_size)}\n"
-            f"📁 File path: {downloaded_path}\n"
-            "📌 File yana cikin server yanzu."
-        ),
-        monitor_id
-    )
-
-    return downloaded_path, actual_size
 
 
 # ============================================================
@@ -4944,88 +5067,22 @@ def clip2_startup():
         )
 
         # ----------------------------------------------------
-        # 5. EXISTING PYROGRAM ENGINE
+        # 5. START BOT 2 OWN PYROGRAM DOWNLOAD ENGINE
         # ----------------------------------------------------
 
-        ready_event = globals().get(
-            "_videocon_ready"
+        clip2_admin_send(
+            "⏳ STARTING BOT 2 PYROGRAM DOWNLOAD ENGINE..."
         )
 
-        if not ready_event:
-
-            raise RuntimeError(
-                "EXISTING_PYROGRAM_READY_EVENT_MISSING"
-            )
-
-        engine_timeout = globals().get(
-            "VIDEOCON_ENGINE_START_TIMEOUT",
-            180
+        bot2_start_pyrogram_engine(
+            timeout=int(os.getenv("BOT2_PYROGRAM_START_TIMEOUT", "180"))
         )
 
         clip2_admin_send(
-            "⏳ WAITING FOR EXISTING PYROGRAM ENGINE..."
-        )
-
-        if not ready_event.wait(
-            timeout=engine_timeout
-        ):
-
-            raise RuntimeError(
-                "EXISTING_PYROGRAM_ENGINE_START_TIMEOUT"
-            )
-
-        if globals().get("_videocon_start_error"):
-
-            raise RuntimeError(
-                "PYROGRAM_STARTUP_ERROR: "
-                + str(
-                    globals().get(
-                        "_videocon_start_error"
-                    )
-                )
-            )
-
-        if not globals().get("_videocon_pyro"):
-
-            raise RuntimeError(
-                "PYROGRAM_CLIENT_NOT_AVAILABLE"
-            )
-
-        if not globals().get("_videocon_loop"):
-
-            raise RuntimeError(
-                "PYROGRAM_EVENT_LOOP_NOT_AVAILABLE"
-            )
-
-        if not callable(
-            globals().get("_videocon_get_message")
-        ):
-
-            raise RuntimeError(
-                "PYROGRAM_GET_MESSAGE_HELPER_MISSING"
-            )
-
-        if not callable(
-            globals().get("_videocon_download")
-        ):
-
-            raise RuntimeError(
-                "PYROGRAM_DOWNLOAD_HELPER_MISSING"
-            )
-
-        if not callable(
-            globals().get("videocon_run_async")
-        ):
-
-            raise RuntimeError(
-                "VIDEOCON_RUN_ASYNC_HELPER_MISSING"
-            )
-
-        clip2_admin_send(
-            "✅ PYROGRAM ENGINE READY\n"
-            "✅ Get message helper ready\n"
-            "✅ Download helper ready\n"
-            "✅ Async bridge ready"
+            "✅ BOT 2 PYROGRAM ENGINE READY\\n"
+            "✅ Group message lookup helper ready\\n"
+            "✅ Full video download helper ready\\n"
+            "✅ Independent MTProto client ready"
         )
 
         # ----------------------------------------------------
@@ -5100,6 +5157,8 @@ def clip2_startup():
             f"Error: {str(error)[:1800]}\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
+
+        raise
 
 
 # ============================================================
