@@ -2308,6 +2308,7 @@ then call start_gemini_worker() once during bot startup.
 
 
 
+
 # ============================================================
 # BOT 2 — FULL DEBUG MOVIE SCANNER
 # BOT 1 COMPATIBLE
@@ -5109,7 +5110,7 @@ clip2_startup()
 
 
 # ============================================================
-# END BOT 2 Download &Gemini FULL DEBUG SYSTEM
+# END BOT 2 FULL DEBUG SYSTEM
 # ============================================================
 
 
