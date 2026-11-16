@@ -264,7 +264,7 @@ print("✅ ALL CHAT DATABASE TABLES CREATED SUCCESSFULLY")
 
 
 
-CLIP_CHANNEL_VIDEO = -1004433789999 
+CLIP_CHANNEL_VIDEO = -1004449824546 
 
 #============================================================
 
