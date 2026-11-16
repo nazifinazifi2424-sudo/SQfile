@@ -7,6 +7,7 @@ import tempfile
 import threading
 from pathlib import Path
 import asyncio
+import inspect
 import math
 import telebot
 from telebot import types
@@ -1444,7 +1445,19 @@ def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
         )
 
         _BOT2_PYRO_CLIENT = client
-        loop.run_until_complete(client.start())
+
+        # Pyrogram forks/versions differ: some expose start() as an async
+        # method, while others wrap it synchronously and return None.
+        # Only pass an actual awaitable to run_until_complete().
+        start_result = client.start()
+        if inspect.isawaitable(start_result):
+            loop.run_until_complete(start_result)
+
+        # Do not announce readiness unless the MTProto client is connected.
+        if not getattr(client, "is_connected", False):
+            raise RuntimeError(
+                "BOT2_PYROGRAM_START_RETURNED_WITHOUT_CONNECTION"
+            )
 
         # Set ready only after Telegram has accepted the MTProto session.
         _BOT2_PYRO_READY.set()
