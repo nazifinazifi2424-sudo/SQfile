@@ -1341,6 +1341,15 @@ def clip2_mark_failed(task_id, user_id, error):
 # START GEMINI SPACE PART
 # ============================================================
 
+
+# ============================================================
+# ============================================================
+# END DATABASE SYSTEM
+# ============================================================
+# ============================================================
+# START GEMINI SPACE PART
+# ============================================================
+
 # ALL 14 ORIGINAL MODELS — PRESERVED
 # ============================================================
 
@@ -1358,6 +1367,7 @@ GEMINI_MODELS = [
     "gemini-2.5-flash-lite",
     "gemma-4-31b-it",
     "gemma-4-26b-a4b-it",
+    "gemma-4-26b-a4b-it",
     "gemini-omni-1.1-flash"
 ]
 
@@ -1366,7 +1376,7 @@ _custom_models = os.getenv(
 ).strip()
 
 if _custom_models:
-    # Preserve all 14 original models; append optional extra models.
+    # Preserve all original models; append optional extra models.
     GEMINI_MODELS.extend(
         x.strip()
         for x in _custom_models.split(",")
@@ -1377,9 +1387,8 @@ GEMINI_MODELS = list(dict.fromkeys(GEMINI_MODELS))
 
 
 # ============================================================
-
-GEMINI_MODELS = list(dict.fromkeys(GEMINI_MODELS))
-
+# ANSWER PARSER
+# ============================================================
 
 def clip2_parse_answer(answer):
     """Parse a strict three-field movie identification response."""
@@ -1405,9 +1414,11 @@ def clip2_parse_answer(answer):
     for line in text.splitlines():
         if ":" not in line:
             continue
+
         key, value = line.split(":", 1)
         key = key.strip().lower().strip("*# ")
         value = value.strip().strip("*# `")
+
         field = aliases.get(key)
         if field and value:
             fields[field] = value
@@ -1417,89 +1428,186 @@ def clip2_parse_answer(answer):
     actor = fields.get("actor", "")
 
     if not title or title.lower() in {
-        "unknown", "unknown movie", "ba a sani ba", "ba a tabbatar ba",
-        "not sure", "uncertain", "n/a"
+        "unknown",
+        "unknown movie",
+        "ba a sani ba",
+        "ba a tabbatar ba",
+        "not sure",
+        "uncertain",
+        "n/a"
     }:
-        raise RuntimeError("GEMINI_INVALID_OR_UNKNOWN_MOVIE_TITLE")
+        raise RuntimeError(
+            "GEMINI_INVALID_OR_UNKNOWN_MOVIE_TITLE"
+        )
 
     year_match = re.search(r"\b(19|20)\d{2}\b", year_raw)
+
     if not year_match:
-        raise RuntimeError("GEMINI_INVALID_OR_MISSING_RELEASE_YEAR")
+        raise RuntimeError(
+            "GEMINI_INVALID_OR_MISSING_RELEASE_YEAR"
+        )
+
     year = year_match.group(0)
 
     if not actor or actor.lower() in {
-        "unknown", "ba a sani ba", "ba a tabbatar ba", "n/a", "none"
+        "unknown",
+        "ba a sani ba",
+        "ba a tabbatar ba",
+        "n/a",
+        "none"
     }:
-        raise RuntimeError("GEMINI_INVALID_OR_MISSING_LEAD_ACTOR")
+        raise RuntimeError(
+            "GEMINI_INVALID_OR_MISSING_LEAD_ACTOR"
+        )
 
-    # Reject obvious model leakage / non-answer text.
     if len(title) > 160 or len(actor) > 120:
-        raise RuntimeError("GEMINI_MALFORMED_IDENTIFICATION_FIELDS")
+        raise RuntimeError(
+            "GEMINI_MALFORMED_IDENTIFICATION_FIELDS"
+        )
 
     return title, year, actor
 
 
-def clip2_gemini_error_category(status_code=None, detail="", error=None):
+# ============================================================
+# GEMINI ERROR CLASSIFIER
+# ============================================================
+
+def clip2_gemini_error_category(
+    status_code=None,
+    detail="",
+    error=None
+):
     """Return a human-readable API failure category and next action."""
+
     msg = str(detail or error or "").lower()
-    if status_code == 404 or "model not found" in msg or "not found for api version" in msg:
+
+    if (
+        status_code == 404
+        or "model not found" in msg
+        or "not found for api version" in msg
+    ):
         return "MODEL_UNAVAILABLE_OR_REMOVED"
+
     if status_code == 400:
         return "BAD_REQUEST_OR_UNSUPPORTED_MODEL"
+
     if status_code in (401, 403):
         return "API_KEY_OR_PERMISSION_ERROR"
+
     if status_code == 429 or "quota" in msg or "rate limit" in msg:
         return "QUOTA_OR_RATE_LIMIT"
+
     if status_code in (500, 502, 503, 504):
         return "GOOGLE_SERVER_OVERLOAD_OR_CONGESTION"
+
     if isinstance(error, requests.exceptions.Timeout):
         return "NETWORK_TIMEOUT"
+
     if isinstance(error, requests.exceptions.ConnectionError):
         return "NETWORK_CONNECTION_ERROR"
+
     if error:
         return "CLIENT_OR_RESPONSE_ERROR"
+
     return "UNKNOWN_API_ERROR"
 
 
+# ============================================================
+# CANDIDATE NORMALIZATION
+# ============================================================
+
 def clip2_candidate_key(candidate):
     title, year, actor = candidate
-    normal = lambda value: re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
-    return normal(title), str(year), normal(actor)
+
+    normal = lambda value: re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        value.lower()
+    ).strip()
+
+    return (
+        normal(title),
+        str(year),
+        normal(actor)
+    )
 
 
-def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
+# ============================================================
+# MAIN GEMINI MOVIE IDENTIFICATION SYSTEM
+# ============================================================
+
+def clip2_gemini_identify(
+    frame_paths,
+    task_id,
+    user_name,
+    user_id,
+    monitor_id
+):
+
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY_MISSING")
+
     if len(frame_paths) != BOT2_FRAME_COUNT:
         raise RuntimeError("GEMINI_REQUIRES_10_FRAMES")
 
-    prompt = (
-        "You are an expert visual film-forensics identification system. "
-        "Identify the exact film independently from the supplied ten frames. "
-        "The user has supplied NO title or hints. Never invent missing evidence. "
-        "Inspect ALL TEN frames together and reason across their continuity. "
-        "Examine: visible faces and recognizable actors; facial features; "
-        "hair and age appearance; clothing, uniforms and costumes; "
-        "locations, buildings, architecture and sets; landscape and time period; "
-        "vehicles; weapons; props; objects; scene events; character relationships; "
-        "visual style; and any readable on-screen text. "
-        "Use combinations of clues across multiple frames, not one isolated frame. "
-        "Distinguish the film from similarly named films and films featuring the same actor. "
-        "Determine the original official film title, original release year, "
-        "and the principal lead actor. Do not use guesses or fabricated certainty. "
-        "If the visual evidence is insufficient, return UNKNOWN for all fields. "
-        "Return exactly these three lines and nothing else:\n"
-        "SUNAN FIM: [full official movie title or UNKNOWN]\n"
-        "SHEKARA: [four-digit original release year or UNKNOWN]\n"
-        "JARUMI: [main lead actor or UNKNOWN]"
-    )
+    # ========================================================
+    # SIMPLE HAUSA GEMINI INSTRUCTION
+    # ========================================================
+
+    prompt = """Kai ƙwararre ne wajen gano fina-finai daga hotuna.
+
+Ka duba duk hotuna 10 tare domin gano ainihin fim ɗin.
+
+Ka yi bincike sosai kafin ka bayar da amsa.
+
+Ka kula da waɗannan abubuwa:
+
+1. Fuskokin jarumai da yadda suke kama.
+2. Tufafi, kayan yaƙi da sauran kayan sawa.
+3. Wuraren da aka ɗauki fim ɗin, duwatsu, gine-gine,
+   fada, dazuzzuka da yanayin ƙasa.
+4. Lokaci da zamanin da yanayin fim ɗin yake nunawa.
+5. Abubuwan da ke faruwa a hotunan da alaƙarsu da juna.
+6. Idan ka gane jarumai biyu ko fiye, ka yi amfani da
+   iliminka wajen tantance fina-finan da suka taɓa
+   fitowa tare, da shekarun da suka yi aiki tare.
+7. Ka kwatanta fuskokin jarumai, tufafinsu da wuraren
+   da ka gani da alamomin fina-finan da ka sani.
+
+Kada ka dogara da fuskar jarumi ɗaya kawai.
+Ka haɗa alamomin hotuna 10 kafin ka yanke hukunci.
+
+Misali, idan ka gane jarumi, ka duba ko sauran jaruman,
+gine-gine, tufafi da yanayin wurin sun dace da fim ɗin
+da kake tunani.
+
+Kada ka ƙirƙiri sunan fim, shekara ko jarumi.
+Kada ka bayar da amsar zato kamar tabbatacciyar amsa.
+Idan ba ka da isasshen tabbaci, ka rubuta
+"BA A TABBATAR BA" a dukkan filayen.
+
+Ka amsa a taƙaice da wannan tsari kawai:
+
+SUNAN FIM: [Sunan fim]
+SHEKARA: [Shekarar fitowar fim]
+JARUMI: [Babban jarumi]"""
+
+    # ========================================================
+    # ATTACH ALL 10 FRAMES
+    # ========================================================
 
     parts = [{"text": prompt}]
+
     for frame_path in frame_paths:
+
         with open(frame_path, "rb") as image_file:
             raw = image_file.read()
+
         if not raw:
-            raise RuntimeError("GEMINI_INPUT_FRAME_EMPTY")
+            raise RuntimeError(
+                "GEMINI_INPUT_FRAME_EMPTY"
+            )
+
         parts.append({
             "inline_data": {
                 "mime_type": "image/jpeg",
@@ -1507,8 +1615,17 @@ def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
             }
         })
 
+    # ========================================================
+    # GEMINI REQUEST BODY
+    # ========================================================
+
     body = {
-        "contents": [{"role": "user", "parts": parts}],
+        "contents": [
+            {
+                "role": "user",
+                "parts": parts
+            }
+        ],
         "generationConfig": {
             "temperature": 0.0,
             "maxOutputTokens": 180
@@ -1519,35 +1636,58 @@ def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
     valid_candidates = []
     attempted = 0
 
+    # ========================================================
+    # MODEL EXECUTION
+    # ========================================================
+
     with _BOT2_GEMINI_LOCK:
+
         clip2_admin_debug(
-            task_id, user_name, user_id, "GEMINI START",
+            task_id,
+            user_name,
+            user_id,
+            "GEMINI START",
             (
                 "🧠 Ana binciken frames 10 duka tare.\n"
                 f"🖼 Frames: {len(frame_paths)}\n"
                 f"🔢 Original/extra models: {len(GEMINI_MODELS)}\n"
                 "🔒 Request concurrency: 1\n"
-                "🛡 Za a bukaci independent verification kafin amincewa."
+                "🧪 Ana amfani da sabon umarnin binciken jarumai, "
+                "tufafi, wurare da gine-gine."
             ),
             monitor_id
         )
 
-        for index, model_name in enumerate(GEMINI_MODELS, start=1):
+        for index, model_name in enumerate(
+            GEMINI_MODELS,
+            start=1
+        ):
+
             attempted += 1
+
             clip2_admin_debug(
-                task_id, user_name, user_id,
+                task_id,
+                user_name,
+                user_id,
                 f"GEMINI MODEL {index}/{len(GEMINI_MODELS)}",
-                f"🧠 Model: {model_name}\n📡 Ana aika frames 10.",
+                (
+                    f"🧠 Model: {model_name}\n"
+                    "📡 Ana aika frames 10."
+                ),
                 monitor_id
             )
 
             url = (
                 "https://generativelanguage.googleapis.com/"
-                "v1beta/models/" + model_name + ":generateContent"
+                "v1beta/models/"
+                + model_name
+                + ":generateContent"
             )
+
             started = time.time()
 
             try:
+
                 response = requests.post(
                     url,
                     headers={
@@ -1557,26 +1697,42 @@ def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
                     json=body,
                     timeout=(20, 240)
                 )
+
                 elapsed = time.time() - started
 
+                # =================================================
+                # HTTP FAILURE
+                # =================================================
+
                 if response.status_code != 200:
+
                     try:
                         payload = response.json()
-                        detail = payload.get("error", {}).get(
-                            "message", response.text[:900]
+
+                        detail = payload.get(
+                            "error", {}
+                        ).get(
+                            "message",
+                            response.text[:900]
                         )
+
                     except Exception:
                         detail = response.text[:900]
 
                     category = clip2_gemini_error_category(
-                        response.status_code, detail
+                        response.status_code,
+                        detail
                     )
+
                     failures.append(
                         f"{model_name}: HTTP {response.status_code} "
                         f"[{category}]: {detail}"
                     )
+
                     clip2_admin_debug(
-                        task_id, user_name, user_id,
+                        task_id,
+                        user_name,
+                        user_id,
                         f"MODEL FAILURE: {model_name}",
                         (
                             f"❌ HTTP: {response.status_code}\n"
@@ -1585,56 +1741,121 @@ def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
                             f"⏱ {elapsed:.2f}s\n"
                             "🔄 Ana ci gaba da model na gaba."
                         ),
-                        monitor_id, status="ERROR"
+                        monitor_id,
+                        status="ERROR"
                     )
-                    # Even key/permission errors are reported and the next
-                    # configured model is attempted, as requested.
+
                     continue
+
+                # =================================================
+                # JSON RESPONSE
+                # =================================================
 
                 try:
                     data = response.json()
+
                 except Exception as error:
-                    category = clip2_gemini_error_category(error=error)
-                    failures.append(f"{model_name}: INVALID_JSON: {error}")
-                    clip2_admin_debug(
-                        task_id, user_name, user_id,
-                        f"MODEL INVALID JSON: {model_name}",
-                        f"❌ {category}: {str(error)[:900]}",
-                        monitor_id, status="ERROR"
+
+                    category = clip2_gemini_error_category(
+                        error=error
                     )
+
+                    failures.append(
+                        f"{model_name}: INVALID_JSON: {error}"
+                    )
+
+                    clip2_admin_debug(
+                        task_id,
+                        user_name,
+                        user_id,
+                        f"MODEL INVALID JSON: {model_name}",
+                        (
+                            f"❌ {category}: "
+                            f"{str(error)[:900]}"
+                        ),
+                        monitor_id,
+                        status="ERROR"
+                    )
+
                     continue
 
+                # =================================================
+                # CANDIDATE CHECK
+                # =================================================
+
                 candidates = data.get("candidates") or []
+
                 if not candidates:
-                    block_reason = data.get("promptFeedback", {}).get(
-                        "blockReason", "NO_CANDIDATES"
+
+                    block_reason = data.get(
+                        "promptFeedback", {}
+                    ).get(
+                        "blockReason",
+                        "NO_CANDIDATES"
                     )
-                    failures.append(f"{model_name}: {block_reason}")
+
+                    failures.append(
+                        f"{model_name}: {block_reason}"
+                    )
+
                     clip2_admin_debug(
-                        task_id, user_name, user_id,
+                        task_id,
+                        user_name,
+                        user_id,
                         f"MODEL EMPTY/BLOCKED: {model_name}",
-                        f"❌ No candidate. Reason: {block_reason}",
-                        monitor_id, status="ERROR"
+                        (
+                            "❌ No candidate. "
+                            f"Reason: {block_reason}"
+                        ),
+                        monitor_id,
+                        status="ERROR"
                     )
+
                     continue
 
                 candidate_obj = candidates[0]
+
                 finish_reason = str(
-                    candidate_obj.get("finishReason", "UNKNOWN")
+                    candidate_obj.get(
+                        "finishReason",
+                        "UNKNOWN"
+                    )
                 ).upper()
-                if finish_reason in ("SAFETY", "RECITATION", "BLOCKLIST"):
-                    failures.append(f"{model_name}: {finish_reason}")
+
+                if finish_reason in (
+                    "SAFETY",
+                    "RECITATION",
+                    "BLOCKLIST"
+                ):
+
+                    failures.append(
+                        f"{model_name}: {finish_reason}"
+                    )
+
                     clip2_admin_debug(
-                        task_id, user_name, user_id,
+                        task_id,
+                        user_name,
+                        user_id,
                         f"MODEL BLOCKED: {model_name}",
                         f"❌ finishReason: {finish_reason}",
-                        monitor_id, status="ERROR"
+                        monitor_id,
+                        status="ERROR"
                     )
+
                     continue
 
+                # =================================================
+                # EXTRACT GEMINI TEXT
+                # =================================================
+
                 response_parts = (
-                    candidate_obj.get("content", {}).get("parts", [])
+                    candidate_obj.get(
+                        "content", {}
+                    ).get(
+                        "parts", []
+                    )
                 )
+
                 answer = "\n".join(
                     part.get("text", "")
                     for part in response_parts
@@ -1642,39 +1863,73 @@ def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
                 ).strip()
 
                 if not answer:
-                    failures.append(f"{model_name}: EMPTY_RESPONSE")
+
+                    failures.append(
+                        f"{model_name}: EMPTY_RESPONSE"
+                    )
+
                     clip2_admin_debug(
-                        task_id, user_name, user_id,
+                        task_id,
+                        user_name,
+                        user_id,
                         f"MODEL EMPTY RESPONSE: {model_name}",
                         "❌ HTTP 200 amma babu rubutun amsa.",
-                        monitor_id, status="ERROR"
+                        monitor_id,
+                        status="ERROR"
                     )
+
                     continue
 
+                # =================================================
+                # PARSE ANSWER
+                # =================================================
+
                 try:
+
                     parsed = clip2_parse_answer(answer)
+
                 except Exception as error:
-                    failures.append(f"{model_name}: INVALID_ANSWER: {error}")
+
+                    failures.append(
+                        f"{model_name}: INVALID_ANSWER: {error}"
+                    )
+
                     clip2_admin_debug(
-                        task_id, user_name, user_id,
+                        task_id,
+                        user_name,
+                        user_id,
                         f"MODEL ANSWER REJECTED: {model_name}",
                         (
                             f"❌ Amsa ba ta cika sharudda ba: {error}\n"
                             f"Raw response: {answer[:1000]}\n"
                             "🔄 Ana gwada model na gaba."
                         ),
-                        monitor_id, status="ERROR"
+                        monitor_id,
+                        status="ERROR"
                     )
+
                     continue
 
-                valid_candidates.append((parsed, model_name))
+                # =================================================
+                # SAVE VALID CANDIDATE FOR VERIFICATION
+                # =================================================
+
+                valid_candidates.append(
+                    (parsed, model_name)
+                )
+
                 counts = {}
+
                 for item, _ in valid_candidates:
+
                     key = clip2_candidate_key(item)
+
                     counts[key] = counts.get(key, 0) + 1
 
                 clip2_admin_debug(
-                    task_id, user_name, user_id,
+                    task_id,
+                    user_name,
+                    user_id,
                     f"MODEL CANDIDATE: {model_name}",
                     (
                         f"🎬 Title: {parsed[0]}\n"
@@ -1686,62 +1941,127 @@ def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
                     monitor_id
                 )
 
-                # Require two independent models to agree on all three
-                # fields. A disagreement is not silently accepted.
+                # =================================================
+                # INDEPENDENT VERIFICATION
+                # =================================================
+
                 key = clip2_candidate_key(parsed)
+
                 if counts.get(key, 0) >= 2:
+
                     clip2_admin_debug(
-                        task_id, user_name, user_id,
+                        task_id,
+                        user_name,
+                        user_id,
                         "GEMINI INDEPENDENT VERIFICATION PASSED",
                         (
-                            f"✅ Models biyu sun amince da sakamako.\n"
-                            f"🎬 {parsed[0]}\n📅 {parsed[1]}\n"
+                            "✅ Models biyu sun amince da sakamako.\n"
+                            f"🎬 {parsed[0]}\n"
+                            f"📅 {parsed[1]}\n"
                             f"⭐ {parsed[2]}\n"
                             f"🧠 Verifying model: {model_name}"
                         ),
                         monitor_id
                     )
-                    return parsed[0], parsed[1], parsed[2], model_name
 
-                # Next model receives the same frames and prompt from scratch.
-                # Do not expose the previous model's answer to it.
+                    return (
+                        parsed[0],
+                        parsed[1],
+                        parsed[2],
+                        model_name
+                    )
+
+                # Next model receives the same frames and prompt.
+                # Previous model's answer is not shown to it.
                 continue
+
+            # =====================================================
+            # NETWORK ERRORS
+            # =====================================================
 
             except requests.exceptions.RequestException as error:
-                category = clip2_gemini_error_category(error=error)
-                failures.append(f"{model_name}: {category}: {error}")
+
+                category = clip2_gemini_error_category(
+                    error=error
+                )
+
+                failures.append(
+                    f"{model_name}: {category}: {error}"
+                )
+
                 clip2_admin_debug(
-                    task_id, user_name, user_id,
+                    task_id,
+                    user_name,
+                    user_id,
                     f"GEMINI NETWORK FAILURE: {model_name}",
-                    f"❌ {category}\nExact error: {str(error)[:1200]}\n🔄 Next model.",
-                    monitor_id, status="ERROR"
+                    (
+                        f"❌ {category}\n"
+                        f"Exact error: {str(error)[:1200]}\n"
+                        "🔄 Next model."
+                    ),
+                    monitor_id,
+                    status="ERROR"
                 )
-                continue
-            except Exception as error:
-                category = clip2_gemini_error_category(error=error)
-                failures.append(f"{model_name}: {category}: {error}")
-                clip2_admin_debug(
-                    task_id, user_name, user_id,
-                    f"GEMINI MODEL EXCEPTION: {model_name}",
-                    f"❌ {category}\n{str(error)[:1200]}\n🔄 Next model.",
-                    monitor_id, status="ERROR"
-                )
+
                 continue
 
+            # =====================================================
+            # OTHER MODEL ERRORS
+            # =====================================================
+
+            except Exception as error:
+
+                category = clip2_gemini_error_category(
+                    error=error
+                )
+
+                failures.append(
+                    f"{model_name}: {category}: {error}"
+                )
+
+                clip2_admin_debug(
+                    task_id,
+                    user_name,
+                    user_id,
+                    f"GEMINI MODEL EXCEPTION: {model_name}",
+                    (
+                        f"❌ {category}\n"
+                        f"{str(error)[:1200]}\n"
+                        "🔄 Next model."
+                    ),
+                    monitor_id,
+                    status="ERROR"
+                )
+
+                continue
+
+    # ============================================================
+    # NO CONSENSUS
+    # ============================================================
+
     if valid_candidates:
-        # No agreement means we must not present an unverified guess.
+
         summary = [
-            f"{model}: {candidate[0]} | {candidate[1]} | {candidate[2]}"
+            (
+                f"{model}: {candidate[0]} | "
+                f"{candidate[1]} | {candidate[2]}"
+            )
             for candidate, model in valid_candidates
         ]
+
         raise RuntimeError(
             "GEMINI_NO_INDEPENDENT_CONSENSUS; "
             "no result saved as verified. Candidates: "
             + " || ".join(summary[:8])
         )
 
+    # ============================================================
+    # ALL MODELS FAILED
+    # ============================================================
+
     raise RuntimeError(
-        "ALL_GEMINI_MODELS_FAILED:\n" + "\n".join(failures[-14:])
+        "ALL_GEMINI_MODELS_FAILED:\n"
+        + "\n".join(failures[-14:])
     )
 
 
