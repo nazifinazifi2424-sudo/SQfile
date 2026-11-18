@@ -77,6 +77,14 @@ def get_all_chat_db_conn():
 chat_conn = get_all_chat_db_conn()
 chat_cur = chat_conn.cursor()
 
+# Serialize shared-schema initialization across Bot 2 instances.
+# This uses the same advisory-lock key as BOT2_ADVISORY_LOCK_ID below,
+# so startup DDL cannot race with another live Bot 2 instance.
+chat_cur.execute(
+    "SELECT pg_advisory_xact_lock(%s)",
+    (7348291056712345,)
+)
+
 
 # ================= WORKERS TABLE =================
 
