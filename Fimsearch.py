@@ -1030,7 +1030,7 @@ def clip2_pending_admin_notice(
             f"👤 User: {user_name}\n"
             f"🏷 Username: {user_tag}\n"
             f"🆔 User ID: <code>{user_id}</code>\n"
-            f"🧾 Task ID: <code>{task_id}</code>\n"
+            f"?? Task ID: <code>{task_id}</code>\n"
             "📌 Status: PENDING\n"
             "⏳ Bot 2 yana shirin fara aikin wannan user.\n"
             "━━━━━━━━━━━━━━━━━━━━"
@@ -1631,19 +1631,33 @@ def clip2_gemini_parse_candidate(answer):
 
 
 def clip2_gemini_candidate_verified(candidate):
-    """Require a plausible title, 70% confidence, explicit existence and 3 evidence fields."""
+    """Basic completeness check; confidence/evidence are scored separately."""
     return bool(
         candidate.get("title")
         and candidate.get("year")
         and candidate.get("actor")
-        and candidate.get("confidence", 0) >= 70
-        and candidate.get("movie_exists") is True
-        and candidate.get("evidence_complete") is True
     )
 
 
 def clip2_gemini_title_key(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def clip2_gemini_candidate_score(candidate):
+    """Rank only the three candidates actually inspected for this task."""
+    score = 0
+    if candidate.get("title"):
+        score += 20
+    if candidate.get("year"):
+        score += 15
+    if candidate.get("actor"):
+        score += 15
+    if candidate.get("movie_exists"):
+        score += 10
+    if candidate.get("evidence_complete"):
+        score += 10
+    score += max(0, min(100, int(candidate.get("confidence", 0)))) * 0.30
+    return score
 
 
 def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
@@ -1691,20 +1705,16 @@ SUNAN FIM: [Sunan fim]
 SHEKARA: [Shekarar fitowar fim]
 JARUMI: [Babban jarumi]"""
 
-    # ADDITIONAL VERIFICATION RULES: appended; the original prompt above is not rewritten.
+    # These extra rules are appended; the original identification prompt remains unchanged.
     verification_rules = """
-KARIN UMARNI NA TABBAJI MAI TSANANI:
-- Kada ka ɗauki kowane rubutu ko lamba a matsayin sunan fim. Sunan fim dole ya zama cikakken sunan fim da ka sani; kada ka bayar da "3", lamba kaɗai, ko amsar zato.
-- Ka tabbatar fim ɗin yana wanzuwa a matsayin fim na gaske. Idan ba ka da tabbataccen sani, rubuta BA A TABBATAR BA.
-- Ka tantance ko shekarar da ka bayar ita ce shekarar fitowar WANNAN fim ɗin, ba kawai shekarar da ta yi kama ba.
-- Ka tantance ko jarumin da ka bayar yana cikin fim ɗin da aka gano, kuma fuskarsa/alamominsa sun dace da abin da ke hotuna.
-- Ka bayar da hujja ta musamman ga kowane abu; kada ka maimaita jumla ɗaya a matsayin hujja ga duka.
-- Hujjar suna: bayyana takamaiman alamomin hotuna da suka sa ka danganta hotunan da wannan fim.
-- Hujjar shekara: bayyana dalilin da ya sa ka tabbatar da shekarar fitowar fim ɗin.
-- Hujjar jarumi: bayyana alamomin fuska ko rawar da suka sa ka danganta jarumin da fim ɗin.
-- Kada ka ƙirƙiri hujja, cast, shekara ko suna. Idan ba ka da hujja, rubuta BA A TABBATAR BA.
-- Kada ka ƙara kashi na tabbaci domin kawai ka cika sharadi.
-- Amsa da waɗannan layukan daidai:
+KARIN UMARNIN TANTANCEWA:
+- Kada ka ɗauki lamba kaɗai, gajeren rubutu, ko rubutun da ke jikin bidiyo a matsayin sunan fim.
+- Ka tantance ko sunan fim, shekararsa da jarumin sun dace da hotuna.
+- Ka bayar da dalilin gano sunan fim, shekarar da jarumin a taƙaice.
+- Kada ka ƙirƙiri hujja ko ka nuna tabbaci fiye da yadda kake da shi.
+- Muhimmi: Idan ka ga rubutu kamar "AI generated", "AI-generated" ko makamancinsa a kan bidiyon, KA YI IGNORE ɗINSA GABA ƊAYA. Kada ka ɗauka cewa bidiyon AI ne saboda wannan rubutu. Wata manhajar gyaran bidiyo/cutting app na iya manna wannan alama lokacin yanke ko haɗa bidiyo. Wannan rubutun ba hujja ba ne cewa bidiyon ba na gaske ba ne. Ka tantance hotunan da abin da suke nunawa kawai.
+- Kada ka ƙi bidiyon saboda wannan alamar.
+- Amsa da waɗannan layukan:
 SUNAN FIM: ...
 SHEKARA: ...
 JARUMI: ...
@@ -1727,7 +1737,7 @@ TABBACI: ...%
 
     body = {
         "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 500}
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 650}
     }
 
     failures = []
@@ -1739,38 +1749,29 @@ TABBACI: ...%
 
     clip2_admin_debug(
         task_id, user_name, user_id, "GEMINI START",
-        f"🧠 Frames: 10\nModels: {len(GEMINI_MODELS)}\nTask concurrency: {BOT2_WORKER_COUNT}\nModel concurrency: 1 per model.",
+        f"Frames: 10\\nMatsakaicin models a wannan task: 3\\n"
+        f"Model 1: zai tsaya idan tabbaci ya kai 85% kuma bayanai sun cika.\\n"
+        "Model 2: idan ya dace da na farko, za a karɓa. Idan sun bambanta, Model 3 zai yanke hukunci.",
         monitor_id
     )
 
-    # Each model has its own lock. Busy models are skipped, never waited on.
-    for index, model_name in enumerate(GEMINI_MODELS, start=1):
+    # Hard cap: no task can call more than three distinct Gemini models.
+    for model_index, model_name in enumerate(GEMINI_MODELS, start=1):
+        if len(used_models) >= 3:
+            break
         if model_name in used_models:
             continue
+
         model_lock = model_locks.setdefault(model_name, threading.Lock())
         if not model_lock.acquire(blocking=False):
             failures.append(f"{model_name}: MODEL_BUSY_SKIPPED")
-            clip2_gemini_admin_send(
-                f"🟡 GEMINI MODEL BUSY — SKIPPED\nTask: {task_id}\nModel: {model_name}\nWani task yana amfani da wannan model yanzu."
-            )
             continue
 
         used_models.add(model_name)
         try:
-            # Once an earlier model has proposed a title, later models receive it
-            # only as an untrusted suggestion and must independently inspect all frames.
+            # Every model independently inspects the original 10 frames.
+            # Do not reveal previous answers; this avoids anchoring/bias.
             request_body = json.loads(json.dumps(body))
-            if candidates:
-                previous = candidates[-1]
-                request_body["contents"][0]["parts"][0]["text"] += (
-                    "\n\nRA'AYIN WANI MODEL (BA TABBATACCE BA NE):\n"
-                    f"Sunan fim da ya bayar: {previous['title'] or 'babu'}\n"
-                    f"Shekara: {previous['year'] or 'babu'}\n"
-                    f"Jarumi: {previous['actor'] or 'babu'}\n"
-                    "Kada ka yarda da wannan amsar kai tsaye. Ka yi naka bincike daga hotuna 10. "
-                    "Ka tabbatar ko ka ƙi, kuma ka gyara duk abin da bai dace ba."
-                )
-
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 + model_name + ":generateContent"
@@ -1794,56 +1795,38 @@ TABBACI: ...%
                     category = clip2_gemini_error_category(response.status_code, detail)
                     failures.append(f"{model_name}: HTTP {response.status_code} [{category}]: {detail}")
                     clip2_gemini_admin_send(
-                        f"🔴 GEMINI MODEL ERROR\nTask: {task_id}\nModel: {model_name}\nHTTP: {response.status_code}\nCategory: {category}\nDetails: {detail[:1800]}"
-                    )
-                    clip2_admin_debug(
-                        task_id, user_name, user_id, f"MODEL FAILURE: {model_name}",
-                        f"HTTP {response.status_code} | {category}\n{detail[:900]}",
-                        monitor_id, status="ERROR"
+                        f"GEMINI MODEL ERROR\\nTask: {task_id}\\nModel: {model_name}\\n"
+                        f"HTTP: {response.status_code}\\n{detail[:1400]}"
                     )
                     continue
 
-                try:
-                    data = response.json()
-                except Exception as error:
-                    failures.append(f"{model_name}: INVALID_JSON: {error}")
-                    clip2_gemini_admin_send(
-                        f"🔴 GEMINI INVALID JSON\nTask: {task_id}\nModel: {model_name}\n{str(error)[:1600]}"
-                    )
-                    continue
-
+                data = response.json()
                 response_candidates = data.get("candidates") or []
                 if not response_candidates:
                     reason = data.get("promptFeedback", {}).get("blockReason", "NO_CANDIDATES")
                     failures.append(f"{model_name}: {reason}")
-                    clip2_gemini_admin_send(
-                        f"🔴 GEMINI EMPTY/BLOCKED RESPONSE\nTask: {task_id}\nModel: {model_name}\nReason: {reason}"
-                    )
                     continue
 
                 candidate_obj = response_candidates[0]
                 finish_reason = str(candidate_obj.get("finishReason", "UNKNOWN")).upper()
                 if finish_reason in ("SAFETY", "RECITATION", "BLOCKLIST"):
                     failures.append(f"{model_name}: {finish_reason}")
-                    clip2_gemini_admin_send(
-                        f"🔴 GEMINI RESPONSE BLOCKED\nTask: {task_id}\nModel: {model_name}\nReason: {finish_reason}"
-                    )
                     continue
 
                 response_parts = candidate_obj.get("content", {}).get("parts", [])
-                answer = "\n".join(part.get("text", "") for part in response_parts if part.get("text")).strip()
+                answer = "\\n".join(
+                    part.get("text", "") for part in response_parts if part.get("text")
+                ).strip()
                 if not answer:
                     failures.append(f"{model_name}: EMPTY_RESPONSE")
-                    clip2_gemini_admin_send(
-                        f"🔴 GEMINI EMPTY ANSWER\nTask: {task_id}\nModel: {model_name}\nHTTP 200 but no text."
-                    )
                     continue
 
                 parsed = clip2_gemini_parse_candidate(answer)
-                if not parsed["title"]:
-                    failures.append(f"{model_name}: NO_VALID_TITLE")
+                if not clip2_gemini_candidate_verified(parsed):
+                    failures.append(f"{model_name}: INCOMPLETE_CANDIDATE")
                     clip2_gemini_admin_send(
-                        f"🟠 GEMINI ANSWER NOT USABLE\nTask: {task_id}\nModel: {model_name}\nReason: No valid title\nRaw: {answer[:1300]}"
+                        f"GEMINI ANSWER INCOMPLETE\\nTask: {task_id}\\nModel: {model_name}\\n"
+                        f"Raw: {answer[:1300]}"
                     )
                     continue
 
@@ -1852,142 +1835,115 @@ TABBACI: ...%
                 candidates.append(parsed)
 
                 clip2_admin_debug(
-                    task_id, user_name, user_id, f"MODEL CANDIDATE: {model_name}",
-                    f"Title: {parsed['title']}\nYear: {parsed['year'] or 'MISSING'}\nActor: {parsed['actor'] or 'MISSING'}\n"
-                    f"Confidence: {parsed['confidence']}%\nMovie exists: {parsed['movie_exists']}\n"
-                    f"Evidence complete: {parsed['evidence_complete']}\n"
-                    f"Title evidence: {parsed['title_evidence'] or 'MISSING'}\n"
-                    f"Year evidence: {parsed['year_evidence'] or 'MISSING'}\n"
-                    f"Actor evidence: {parsed['actor_evidence'] or 'MISSING'}\nTime: {elapsed:.2f}s",
+                    task_id, user_name, user_id, f"MODEL {len(candidates)} CANDIDATE: {model_name}",
+                    f"Title: {parsed['title']}\\nYear: {parsed['year']}\\nActor: {parsed['actor']}\\n"
+                    f"Confidence: {parsed['confidence']}%\\n"
+                    f"Movie exists: {parsed['movie_exists']}\\n"
+                    f"Evidence complete: {parsed['evidence_complete']}\\n"
+                    f"Title evidence: {parsed['title_evidence'] or 'MISSING'}\\n"
+                    f"Year evidence: {parsed['year_evidence'] or 'MISSING'}\\n"
+                    f"Actor evidence: {parsed['actor_evidence'] or 'MISSING'}\\n"
+                    f"Time: {elapsed:.2f}s",
                     monitor_id
                 )
 
-                # Confidence alone is never enough; require existence confirmation
-                # and separate evidence for title, release year and lead actor.
-                if clip2_gemini_candidate_verified(parsed):
+                # Model 1: accept immediately only at a strong confidence level.
+                if len(candidates) == 1 and parsed["confidence"] >= 85:
                     clip2_admin_debug(
-                        task_id, user_name, user_id, "EVIDENCE VERIFICATION ACCEPTED",
-                        f"Tabbaci: {parsed['confidence']}% (ma'auni: 70%).\n"
-                        f"Dalilin suna: {parsed['title_evidence'][:500]}\n"
-                        f"Dalilin shekara: {parsed['year_evidence'][:500]}\n"
-                        f"Dalilin jarumi: {parsed['actor_evidence'][:500]}\n"
-                        "Lura: hujjojin Gemini ne, ba external movie database verification ba.",
+                        task_id, user_name, user_id, "MODEL 1 HIGH CONFIDENCE — ACCEPTED",
+                        f"{parsed['title']} ({parsed['year']})\\n{parsed['actor']}\\n"
+                        f"Confidence: {parsed['confidence']}%\\n"
+                        "An tsaya a Model 1; ba a kira Model 2 ko 3 ba.",
                         monitor_id
                     )
                     return parsed["title"], parsed["year"], parsed["actor"], model_name
 
-                clip2_gemini_admin_send(
-                    f"🟠 GEMINI CANDIDATE REJECTED — EVIDENCE GATE\nTask: {task_id}\n"
-                    f"Model: {model_name}\nConfidence: {parsed['confidence']}%\n"
-                    f"Movie exists: {parsed['movie_exists']}\nEvidence complete: {parsed['evidence_complete']}\n"
-                    f"Title evidence: {parsed['title_evidence'] or 'MISSING'}\n"
-                    f"Year evidence: {parsed['year_evidence'] or 'MISSING'}\n"
-                    f"Actor evidence: {parsed['actor_evidence'] or 'MISSING'}\n"
-                    "Ba a karɓi amsar ba; ana gwada wani model."
-                )
-
-                if parsed["confidence"] <= 60:
-                    clip2_gemini_admin_send(
-                        f"🟡 GEMINI LOW CONFIDENCE — NEXT MODEL\nTask: {task_id}\n"
-                        f"Model: {model_name}\nConfidence: {parsed['confidence']}%\n"
-                        "Tabbaci bai kai 70% ba; ana gwada wani model."
+                # Model 2: if title/year/actor agree with Model 1, accept without Model 3.
+                if len(candidates) == 2:
+                    first, second = candidates[0], candidates[1]
+                    same_title = (
+                        clip2_gemini_title_key(first["title"])
+                        == clip2_gemini_title_key(second["title"])
                     )
-
-                # Scores from 61% to 69%, or incomplete answers, also continue to another model.
-                title_key = clip2_gemini_title_key(parsed["title"])
-                agreeing = [
-                    item for item in candidates
-                    if item["model"] != model_name
-                    and clip2_gemini_title_key(item["title"]) == title_key
-                ]
-                if agreeing:
-                    other = agreeing[0]
-                    year_conflict = (
-                        bool(parsed["year"] and other["year"])
-                        and parsed["year"] != other["year"]
+                    same_year = first["year"] == second["year"]
+                    same_actor = (
+                        clip2_gemini_title_key(first["actor"])
+                        == clip2_gemini_title_key(second["actor"])
                     )
-                    actor_conflict = (
-                        bool(parsed["actor"] and other["actor"])
-                        and clip2_gemini_title_key(parsed["actor"])
-                            != clip2_gemini_title_key(other["actor"])
-                    )
-                    if year_conflict or actor_conflict:
-                        clip2_gemini_admin_send(
-                            f"🟠 GEMINI MODELS DISAGREE ON DETAILS\\nTask: {task_id}\\n"
-                            f"Title: {parsed['title']}\\n"
-                            f"{parsed['model']}: {parsed['year']} | {parsed['actor']}\\n"
-                            f"{other['model']}: {other['year']} | {other['actor']}\\n"
-                            "Ana neman wani model ya warware sabanin."
-                        )
-                        continue
-                    year = parsed["year"] or other["year"]
-                    actor = parsed["actor"] or other["actor"]
-                    if (year and actor
-                            and clip2_gemini_candidate_verified(parsed)
-                            and clip2_gemini_candidate_verified(other)):
+                    if same_title and same_year and same_actor:
+                        winner = max((first, second), key=clip2_gemini_candidate_score)
                         clip2_admin_debug(
-                            task_id, user_name, user_id, "INDEPENDENT CROSS-CHECK + EVIDENCE PASSED",
-                            f"Models biyu sun amince: {parsed['title']}\nYear: {year}\nActor: {actor}",
+                            task_id, user_name, user_id, "MODEL 1 + MODEL 2 AGREEMENT — ACCEPTED",
+                            f"Models biyu sun amince da: {winner['title']} ({winner['year']})\\n"
+                            f"Jarumi: {winner['actor']}\\n"
+                            "An karɓa; ba a buƙatar Model 3.",
                             monitor_id
                         )
-                        return parsed["title"], year, actor, model_name
+                        return winner["title"], winner["year"], winner["actor"], winner["model"]
 
-                # Do not store partial/uncertain results. Keep searching other models.
+                    clip2_admin_debug(
+                        task_id, user_name, user_id, "MODEL 1 + MODEL 2 DISAGREEMENT",
+                        f"Model 1: {first['title']} | {first['year']} | {first['actor']}\\n"
+                        f"Model 2: {second['title']} | {second['year']} | {second['actor']}\\n"
+                        "Za a kira Model 3 domin yanke hukunci.",
+                        monitor_id
+                    )
+
+                # After model 3, choose the strongest complete candidate by weighted score.
+                if len(candidates) == 3:
+                    winner = max(candidates, key=clip2_gemini_candidate_score)
+                    ranking = sorted(
+                        candidates, key=clip2_gemini_candidate_score, reverse=True
+                    )
+                    report = "\\n".join(
+                        f"{i+1}. {item['model']}: {item['title']} | {item['year']} | "
+                        f"{item['actor']} | confidence={item['confidence']}% | "
+                        f"score={clip2_gemini_candidate_score(item):.1f}"
+                        for i, item in enumerate(ranking)
+                    )
+                    clip2_admin_debug(
+                        task_id, user_name, user_id, "MODEL 3 FINAL DECISION",
+                        f"An yi amfani da models uku kacal. Wanda ya fi ƙarfi: "
+                        f"{winner['title']} ({winner['year']}) — {winner['actor']}\\n\\n{report}",
+                        monitor_id
+                    )
+                    return winner["title"], winner["year"], winner["actor"], winner["model"]
+
             except requests.exceptions.RequestException as error:
                 category = clip2_gemini_error_category(error=error)
                 failures.append(f"{model_name}: {category}: {error}")
                 clip2_gemini_admin_send(
-                    f"🔴 GEMINI NETWORK/API ERROR\nTask: {task_id}\nModel: {model_name}\nCategory: {category}\n{str(error)[:1600]}"
+                    f"GEMINI NETWORK/API ERROR\\nTask: {task_id}\\nModel: {model_name}\\n"
+                    f"{category}: {str(error)[:1200]}"
                 )
             except Exception as error:
                 category = clip2_gemini_error_category(error=error)
                 failures.append(f"{model_name}: {category}: {error}")
                 clip2_gemini_admin_send(
-                    f"🔴 GEMINI MODEL/SCAN ERROR\nTask: {task_id}\nModel: {model_name}\nCategory: {category}\n{str(error)[:1600]}"
+                    f"GEMINI MODEL/SCAN ERROR\\nTask: {task_id}\\nModel: {model_name}\\n"
+                    f"{category}: {str(error)[:1200]}"
                 )
         finally:
             model_lock.release()
 
     if candidates:
-        details = " || ".join(
-            f"{x['model']}: {x['title']} | {x['year'] or '?'} | {x['actor'] or '?'} | "
-            f"{x['confidence']}% | exists={x['movie_exists']} | evidence={x['evidence_complete']}"
-            for x in candidates[:8]
-        )
-        final_detail = "GEMINI_VERIFICATION_NOT_CONFIRMED; no DB result saved. " + details
+        # If one model failed or returned incomplete output, use the strongest
+        # complete candidate among those actually received; never call a fourth model.
+        winner = max(candidates, key=clip2_gemini_candidate_score)
         clip2_gemini_admin_send(
-            f"🔴 GEMINI VERIFICATION NOT CONFIRMED\\nTask: {task_id}\\n"
-            f"Candidates: {details}\\nBa a rubuta sakamako a database ba."
+            f"GEMINI FALLBACK DECISION\\nTask: {task_id}\\n"
+            f"Models successfully answered: {len(candidates)} (limit 3)\\n"
+            f"Selected: {winner['title']} | {winner['year']} | {winner['actor']}\\n"
+            f"Confidence: {winner['confidence']}%\\n"
+            "An zaɓi mafi ƙarfi daga amsoshin da aka samu."
         )
-        raise RuntimeError(final_detail)
+        return winner["title"], winner["year"], winner["actor"], winner["model"]
 
     final_failures = "\\n".join(failures[-14:])
     clip2_gemini_admin_send(
-        f"🔴 ALL GEMINI MODELS FAILED\\nTask: {task_id}\\n{final_failures[:3000]}"
+        f"ALL GEMINI MODELS FAILED\\nTask: {task_id}\\n{final_failures[:2800]}"
     )
     raise RuntimeError("ALL_GEMINI_MODELS_FAILED:\\n" + final_failures)
-
-
-# ============================================================
-# END GEMINI SPACE PART
-# ============================================================
-
-
-# ============================================================
-# START PROGRAM SYSTEM
-# ============================================================
-
-# BOT 2 PYROGRAM ENGINE
-# FETCH THE ORIGINAL GROUP MESSAGE BY chat_id + message_id
-# BOT 2 OWNS THIS CLIENT — IT DOES NOT DEPEND ON BOT 1 GLOBALS
-# ============================================================
-
-_BOT2_PYRO_CLIENT = None
-_BOT2_PYRO_LOOP = None
-_BOT2_PYRO_THREAD = None
-_BOT2_PYRO_READY = threading.Event()
-_BOT2_PYRO_START_ERROR = None
-_BOT2_PYRO_START_LOCK = threading.Lock()
 
 
 def bot2_pyro_run_async(coroutine, timeout=180):
