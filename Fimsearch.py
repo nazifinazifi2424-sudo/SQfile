@@ -1006,7 +1006,13 @@ def clip2_get_next_task():
             FROM tasks
             WHERE task_type = %s
               AND (
-                    status IN ('pending', 'review_1')
+                    (
+                        status IN ('pending', 'review_1')
+                        AND (
+                            payload->>'bot2_next_retry_at' IS NULL
+                            OR (payload->>'bot2_next_retry_at')::timestamptz <= NOW()
+                        )
+                    )
                     OR (
                         status IN ('processing', 'downloading',
                                    'extracting_frames', 'identifying')
@@ -1331,6 +1337,81 @@ def clip2_save_result(
         conn.rollback()
         raise
 
+    finally:
+        conn.close()
+
+
+def clip2_retry_delay_from_error(error, default_seconds=10):
+    """Honor an API-provided Retry-After when present; otherwise retry after 10 seconds."""
+    import re
+    message = str(error or "")
+    match = re.search(r"retry[_ -]?after\\s*[:=]\\s*([0-9]+(?:\\.[0-9]+)?)", message, re.I)
+    if match:
+        return max(10, int(float(match.group(1)) + 0.999))
+    match = re.search(r"retryDelay[^0-9]*([0-9]+)s", message, re.I)
+    if match:
+        return max(10, int(match.group(1)))
+    return max(10, int(default_seconds))
+
+
+# ============================================================
+# TECHNICAL RETRY — KEEP TASK OUT OF REVIEW
+# ============================================================
+
+def clip2_requeue_technical_failure(task_id, user_id, error, delay_seconds=10):
+    """Requeue infrastructure/API failures without letting them decide Gemini review status."""
+    delay_seconds = max(10, int(delay_seconds or 10))
+    conn = clip2_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE tasks
+            SET status = 'pending',
+                assigned_worker = NULL,
+                error_message = %s,
+                payload = COALESCE(payload, '{}'::jsonb)
+                          || jsonb_build_object(
+                              'bot2_next_retry_at',
+                              (NOW() + (%s * INTERVAL '1 second'))::text,
+                              'bot2_last_technical_error', %s,
+                              'bot2_technical_retry_count',
+                              COALESCE(
+                                  NULLIF(payload->>'bot2_technical_retry_count', '')::integer,
+                                  0
+                              ) + 1
+                          ),
+                lease_until = NULL,
+                heartbeat_at = NULL,
+                updated_at = NOW()
+            WHERE task_id = %s
+              AND user_id = %s
+              AND assigned_worker = %s
+              AND status NOT IN ('completed', 'delivered', 'failed', 'timed_out',
+                                 'review_1', 'review_2')
+            RETURNING payload->>'bot2_next_retry_at',
+                      payload->>'bot2_technical_retry_count'
+        """, (
+            str(error)[:2000],
+            delay_seconds,
+            str(error)[:2000],
+            task_id,
+            user_id,
+            clip2_current_worker_id()
+        ))
+        result = cur.fetchone()
+        if result:
+            cur.execute("""
+                UPDATE workers
+                SET current_task_id = NULL,
+                    last_heartbeat = NOW(),
+                    updated_at = NOW()
+                WHERE worker_id = %s
+            """, (clip2_current_worker_id(),))
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -1874,7 +1955,12 @@ TABBACI: ...%
                     except Exception:
                         detail = response.text[:900]
                     category = clip2_gemini_error_category(response.status_code, detail)
-                    failure = f"{model_name}: HTTP {response.status_code} [{category}]: {detail}"
+                    retry_after_header = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                    retry_after_note = (
+                        f" Retry-After: {retry_after_header}"
+                        if retry_after_header else ""
+                    )
+                    failure = f"{model_name}: HTTP {response.status_code} [{category}]: {detail}{retry_after_note}"
                     failures.append(failure)
                     admin_gem("MODEL ERROR - SKIPPING", f"Model: {model_name}\nHTTP: {response.status_code}\nCategory: {category}\n{detail[:1300]}\nValid answers do not increase.")
                     continue
@@ -3127,37 +3213,45 @@ def clip2_process_one_task(
             stage
         )
 
-        review_status = "review_1"
-
+        retry_result = None
         try:
-
-            review_result = clip2_mark_for_review(
+            # Download, Telegram, FFmpeg, preview, database and Gemini API
+            # transport failures are technical failures, not movie decisions.
+            # They return to pending and never enter review_1/review_2 here.
+            retry_result = clip2_requeue_technical_failure(
                 task_id,
                 user_id,
-                str(error)
+                str(error),
+                delay_seconds=clip2_retry_delay_from_error(error, 10)
             )
-
-            if review_result:
-                review_status = review_result[0]
-                if review_status == "review_2":
-                    # Review 2 is terminal; retain DB record only, remove local images.
-                    clip2_delete_review_frames(task_id)
-
         except Exception:
+            BOT2_LOGGER.exception("FAILED TO REQUEUE TECHNICAL TASK FAILURE")
 
-            BOT2_LOGGER.exception(
-                "FAILED TO SAVE TASK REVIEW STATUS"
-            )
-
-        clip2_report_failure(
-            task_id,
-            user_name,
-            user_id,
-            user_tag,
-            stage,
-            error,
-            monitor_id,
-            review_status
+        retry_at = retry_result[0] if retry_result else "not requeued (task state changed)"
+        technical_retry_count = retry_result[1] if retry_result else "unknown"
+        clip2_admin_report = (
+            "🟡 BOT 2 — TECHNICAL FAILURE; RETRY SCHEDULED\\n"
+            "━━━━━━━━━━━━━━━━━━━━\\n"
+            f"👤 User: {user_name}\\n"
+            f"🏷 Username: {user_tag}\\n"
+            f"🆔 User ID: <code>{user_id}</code>\\n"
+            f"🧾 Task ID: <code>{task_id}</code>\\n\\n"
+            f"📍 Last stage: {stage}\\n"
+            f"🔍 Error category: {clip2_classify_error(error)}\\n"
+            f"⏳ Retry at: {retry_at}\\n"
+            f"🔁 Technical retries: {technical_retry_count}\\n\\n"
+            f"❌ Error: {str(error)[:1500]}\\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+        if monitor_id:
+            clip2_admin_edit(monitor_id, clip2_admin_report)
+        else:
+            clip2_admin_send(clip2_admin_report)
+        clip2_gemini_admin_send(
+            "BOT 2 TECHNICAL FAILURE — TASK REQUEUED\\n"
+            f"Task: {task_id}\\nUser: {user_id}\\nStage: {stage}\\n"
+            f"Category: {clip2_classify_error(error)}\\n"
+            f"Retry at: {retry_at}\\nError: {str(error)[:1500]}"
         )
 
     finally:
