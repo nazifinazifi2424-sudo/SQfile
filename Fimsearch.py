@@ -943,7 +943,9 @@ def clip2_heartbeat(task_id=None, user_id=None):
                       'completed',
                       'delivered',
                       'failed',
-                      'timed_out'
+                      'timed_out',
+                      'review_1',
+                      'review_2'
                   )
             """, (
                 BOT2_LEASE_SECONDS,
@@ -1001,7 +1003,14 @@ def clip2_get_next_task():
             SELECT task_id, user_id, payload
             FROM tasks
             WHERE task_type = %s
-              AND status = 'pending'
+              AND (
+                    status IN ('pending', 'review_1')
+                    OR (
+                        status IN ('processing', 'downloading',
+                                   'extracting_frames', 'identifying')
+                        AND (lease_until IS NULL OR lease_until < NOW())
+                    )
+              )
             ORDER BY priority DESC, created_at ASC
             LIMIT 1
         """, (CLIP_TASK_TYPE,))
@@ -1075,12 +1084,24 @@ def clip2_claim_task(task_id, user_id):
                 started_at = COALESCE(started_at, NOW()),
                 heartbeat_at = NOW(),
                 lease_until = NOW() + (%s * INTERVAL '1 second'),
-                attempts = attempts + 1,
+                attempts = attempts + CASE
+                    WHEN status IN ('pending', 'review_1') THEN 1
+                    ELSE 0
+                END,
+                payload = COALESCE(payload, '{}'::jsonb)
+                          || jsonb_build_object('bot2_claim_origin', status),
                 updated_at = NOW()
             WHERE task_id = %s
               AND user_id = %s
               AND task_type = %s
-              AND status = 'pending'
+              AND (
+                    status IN ('pending', 'review_1')
+                    OR (
+                        status IN ('processing', 'downloading',
+                                   'extracting_frames', 'identifying')
+                        AND (lease_until IS NULL OR lease_until < NOW())
+                    )
+              )
             RETURNING task_id
         """, (
             clip2_current_worker_id(),
@@ -1146,7 +1167,8 @@ def clip2_set_status(task_id, user_id, status):
                   'completed',
                   'delivered',
                   'failed',
-                  'timed_out'
+                  'timed_out',
+                  'review_2'
               )
         """, (
             status,
@@ -1199,7 +1221,8 @@ def clip2_save_payload(task_id, user_id, extra):
                   'completed',
                   'delivered',
                   'failed',
-                  'timed_out'
+                  'timed_out',
+                  'review_2'
               )
         """, (
             json.dumps(extra),
@@ -1311,10 +1334,12 @@ def clip2_save_result(
 
 
 # ============================================================
-# MARK TASK FAILED
+# MOVE TASK TO REVIEW 1 / REVIEW 2
+# FIRST FAILURE -> REVIEW 1 (RETRY)
+# SECOND FAILURE -> REVIEW 2 (PARK FOR FUTURE REVIEW SYSTEM)
 # ============================================================
 
-def clip2_mark_failed(task_id, user_id, error):
+def clip2_mark_for_review(task_id, user_id, error):
 
     conn = clip2_db()
 
@@ -1324,7 +1349,10 @@ def clip2_mark_failed(task_id, user_id, error):
 
         cur.execute("""
             UPDATE tasks
-            SET status = 'failed',
+            SET status = CASE
+                    WHEN attempts >= 2 THEN 'review_2'
+                    ELSE 'review_1'
+                END,
                 error_message = %s,
                 lease_until = NULL,
                 heartbeat_at = NOW(),
@@ -1336,9 +1364,10 @@ def clip2_mark_failed(task_id, user_id, error):
                   'completed',
                   'delivered',
                   'failed',
-                  'timed_out'
+                  'timed_out',
+                  'review_2'
               )
-            RETURNING task_id
+            RETURNING status, attempts
         """, (
             str(error)[:2000],
             task_id,
@@ -1346,19 +1375,28 @@ def clip2_mark_failed(task_id, user_id, error):
             clip2_current_worker_id()
         ))
 
-        if cur.fetchone():
+        review_result = cur.fetchone()
+
+        if review_result:
+            review_status, attempt_count = review_result
 
             cur.execute("""
                 UPDATE workers
-                SET failed_tasks = failed_tasks + 1,
-                    total_tasks = total_tasks + 1,
-                    current_task_id = NULL,
+                SET current_task_id = NULL,
                     last_heartbeat = NOW(),
                     updated_at = NOW()
                 WHERE worker_id = %s
             """, (clip2_current_worker_id(),))
 
+            BOT2_LOGGER.warning(
+                "TASK MOVED TO %s task=%s attempts=%s",
+                review_status,
+                task_id,
+                attempt_count
+            )
+
         conn.commit()
+        return review_result
 
     except Exception:
 
@@ -2569,13 +2607,14 @@ def clip2_report_failure(
     user_tag,
     stage,
     error,
-    monitor_id=None
+    monitor_id=None,
+    review_status="review_1"
 ):
 
     category = clip2_classify_error(error)
 
     text = (
-        "🔴 BOT 2 — TASK FAILED\n"
+        f"🟠 BOT 2 — TASK MOVED TO {str(review_status).upper()}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
         f"🏷 Username: {user_tag}\n"
@@ -2597,6 +2636,67 @@ def clip2_report_failure(
 
 
 # ============================================================
+# TASK ARTIFACT STORAGE — ONE ISOLATED DIRECTORY PER TASK
+# Render Free filesystem is ephemeral; this cache is best-effort only.
+# After redeploy, missing files are recovered from the original Telegram message.
+BOT2_REVIEW_CACHE_DIR = os.getenv(
+    "BOT2_REVIEW_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "bot2_task_artifacts")
+).strip()
+
+
+def clip2_review_frames_dir(task_id):
+    safe_task_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(task_id))
+    return os.path.join(BOT2_REVIEW_CACHE_DIR, safe_task_id)
+
+
+def clip2_task_video_path(task_id):
+    return os.path.join(clip2_review_frames_dir(task_id), "source_video.mp4")
+
+
+def clip2_get_cached_review_frames(task_id):
+    frames_dir = clip2_review_frames_dir(task_id)
+    frames = [
+        os.path.join(frames_dir, f"frame_{i:02d}.jpg")
+        for i in range(1, BOT2_FRAME_COUNT + 1)
+    ]
+    if os.path.isdir(frames_dir) and all(
+        os.path.isfile(path) and os.path.getsize(path) > 0 for path in frames
+    ):
+        return frames
+
+    # Remove incomplete frame files only; preserve a downloaded source video
+    # so a restarted task can regenerate all 10 frames without downloading again.
+    for path in frames:
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+    return []
+
+
+def clip2_get_cached_video(task_id):
+    path = clip2_task_video_path(task_id)
+    try:
+        if (
+            os.path.isfile(path)
+            and 0 < os.path.getsize(path) <= BOT2_MAX_VIDEO_SIZE
+        ):
+            return path
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+    return None
+
+
+def clip2_delete_review_frames(task_id):
+    # Historical function name retained; this now removes every artifact
+    # (video + frames) belonging only to this task.
+    shutil.rmtree(clip2_review_frames_dir(task_id), ignore_errors=True)
+
+
 # PROCESS ONE TASK
 # ============================================================
 
@@ -2731,199 +2831,126 @@ def clip2_process_one_task(
         )
 
         # ----------------------------------------------------
-        # 4. GET ORIGINAL GROUP MESSAGE
-        # ----------------------------------------------------
+        # RESUME CHECKPOINTS:
+        # 1) Reuse all 10 valid saved frames.
+        # 2) Otherwise reuse a complete saved video and regenerate frames.
+        # 3) If both are missing, fetch the exact Telegram source message and download.
+        frames = clip2_get_cached_review_frames(task_id)
+        frames_dir = clip2_review_frames_dir(task_id)
+        os.makedirs(frames_dir, exist_ok=True)
 
-        stage = "TELEGRAM MESSAGE LOOKUP"
-
-        clip2_admin_debug(
-            task_id,
-            user_name,
-            user_id,
-            "PYROGRAM MESSAGE LOOKUP",
-            (
-                "🔍 Ana neman ainihin sakon video a Group.\n"
-                "📡 Pyrogram yana neman chat_id da message_id."
-            ),
-            monitor_id
-        )
-
-        pyro_message = clip2_get_group_message(
-            chat_id,
-            message_id
-        )
-
-        if not pyro_message:
-
-            raise RuntimeError(
-                "TELEGRAM_MESSAGE_NOT_FOUND"
+        if frames:
+            stage = "RESUME — SAVED FRAMES"
+            clip2_admin_debug(
+                task_id, user_name, user_id,
+                "RESUME FOUND 10 SAVED FRAMES",
+                "♻️ An samo hotuna 10 na wannan task. Ba a sake sauke video ba.",
+                monitor_id
             )
+        else:
+            video_path = clip2_get_cached_video(task_id)
 
-        clip2_admin_debug(
-            task_id,
-            user_name,
-            user_id,
-            "GROUP MESSAGE FOUND",
-            (
-                "✅ An samo ainihin sakon Group.\n"
-                f"📍 Chat ID: <code>{pyro_message.chat.id}</code>\n"
-                f"🆔 Message ID: <code>{pyro_message.id}</code>"
-            ),
-            monitor_id
-        )
+            if video_path:
+                stage = "RESUME — SAVED VIDEO"
+                clip2_admin_debug(
+                    task_id, user_name, user_id,
+                    "RESUME FOUND DOWNLOADED VIDEO",
+                    (
+                        "♻️ An samo cikakken video a local task cache.\\n"
+                        "⏭ Za a ci gaba daga frame extraction; ba za a sake download ba."
+                    ),
+                    monitor_id
+                )
+            else:
+                # Locate and verify the original Telegram group message.
+                stage = "TELEGRAM MESSAGE LOOKUP"
+                pyro_message = clip2_get_group_message(chat_id, message_id)
+                if not pyro_message:
+                    raise RuntimeError("TELEGRAM_MESSAGE_NOT_FOUND")
 
-        # ----------------------------------------------------
-        # 5. VERIFY VIDEO AND FILE ID
-        # ----------------------------------------------------
+                stage = "VIDEO / FILE ID VERIFICATION"
+                media = clip2_verify_video(
+                    pyro_message, chat_id, message_id, payload
+                )
+                video_size = int(media.file_size or 0)
+                file_id = media.file_id
+                file_unique_id = media.file_unique_id
 
-        stage = "VIDEO / FILE ID VERIFICATION"
+                clip2_save_payload(
+                    task_id, user_id,
+                    {
+                        "bot2_file_id": file_id,
+                        "bot2_file_unique_id": file_unique_id,
+                        "bot2_file_size": video_size,
+                        "bot2_source_verified": True,
+                        "bot2_verified_user_id": user_id,
+                        "bot2_verified_chat_id": chat_id,
+                        "bot2_verified_message_id": message_id
+                    }
+                )
 
-        media = clip2_verify_video(
-            pyro_message,
-            chat_id,
-            message_id,
-            payload
-        )
+                stage = "VIDEO DOWNLOAD"
+                clip2_set_status(task_id, user_id, "downloading")
 
-        video_size = int(
-            media.file_size or 0
-        )
+                # Download to a temporary suffix, then atomically rename.
+                # A crash during download leaves no falsely-complete video.
+                partial_video_path = clip2_task_video_path(task_id) + ".part"
+                try:
+                    if os.path.exists(partial_video_path):
+                        os.remove(partial_video_path)
+                except OSError:
+                    pass
 
-        file_id = media.file_id
-        file_unique_id = media.file_unique_id
+                downloaded_path, downloaded_size = clip2_download_video(
+                    pyro_message,
+                    partial_video_path,
+                    task_id,
+                    user_name,
+                    user_id,
+                    monitor_id
+                )
+                video_path = clip2_task_video_path(task_id)
+                os.replace(downloaded_path, video_path)
 
-        clip2_admin_debug(
-            task_id,
-            user_name,
-            user_id,
-            "FILE ID RECEIVED",
-            (
-                "✅ Pyrogram ya samo file_id.\n"
-                f"📦 File size: {clip2_size(video_size)}\n"
-                f"🆔 File unique ID: <code>{clip2_safe(file_unique_id, 150)}</code>\n"
-                f"📄 Media type: {type(media).__name__}\n"
-                f"🧾 File ID available: {'YES' if file_id else 'NO'}\n"
-                "📌 Video verification ya yi nasara."
-            ),
-            monitor_id
-        )
+                clip2_save_payload(
+                    task_id, user_id,
+                    {
+                        "download_completed": True,
+                        "downloaded_bytes": downloaded_size,
+                        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+                        "downloaded_video_path": video_path,
+                        "bot2_artifacts_task_id": task_id,
+                        "bot2_artifacts_user_id": user_id
+                    }
+                )
 
-        clip2_save_payload(
-            task_id,
-            user_id,
-            {
-                "bot2_file_id": file_id,
-                "bot2_file_unique_id": file_unique_id,
-                "bot2_file_size": video_size,
-                "bot2_source_verified": True,
-                "bot2_verified_user_id": user_id,
-                "bot2_verified_chat_id": chat_id,
-                "bot2_verified_message_id": message_id
-            }
-        )
+            # Recheck exact task/user metadata before using persisted artifacts.
+            if int(payload.get("bot2_artifacts_user_id", user_id)) != user_id:
+                raise RuntimeError("PERSISTED_VIDEO_USER_ID_MISMATCH")
 
-        clip2_admin_debug(
-            task_id,
-            user_name,
-            user_id,
-            "FILE INFORMATION SAVED",
-            "✅ File information an rubuta a payload na task a DB.",
-            monitor_id
-        )
-
-        # ----------------------------------------------------
-        # 6. START DOWNLOAD
-        # ----------------------------------------------------
-
-        stage = "VIDEO DOWNLOAD"
-
-        clip2_set_status(
-            task_id,
-            user_id,
-            "downloading"
-        )
-
-        temp_dir = tempfile.mkdtemp(
-            prefix="clip_bot2_"
-        )
-
-        video_path = os.path.join(
-            temp_dir,
-            "movie_input.mp4"
-        )
-
-        downloaded_path, downloaded_size = (
-            clip2_download_video(
-                pyro_message,
+            stage = "FRAME EXTRACTION"
+            clip2_set_status(task_id, user_id, "extracting_frames")
+            frames = clip2_extract_frames(
                 video_path,
+                frames_dir,
                 task_id,
                 user_name,
                 user_id,
                 monitor_id
             )
-        )
 
-        clip2_save_payload(
-            task_id,
-            user_id,
-            {
-                "download_completed": True,
-                "downloaded_bytes": downloaded_size,
-                "downloaded_at": datetime.now(
-                    timezone.utc
-                ).isoformat()
-            }
-        )
+            clip2_save_payload(
+                task_id, user_id,
+                {
+                    "frames_extracted": len(frames),
+                    "frames_extraction_completed": True,
+                    "review_frames_cached": True,
+                    "review_frames_dir": frames_dir,
+                    "bot2_artifacts_task_id": task_id,
+                    "bot2_artifacts_user_id": user_id
+                }
+            )
 
-        clip2_admin_debug(
-            task_id,
-            user_name,
-            user_id,
-            "DOWNLOAD DATABASE CHECKPOINT",
-            (
-                "✅ Download ya kammala.\n"
-                f"📦 Downloaded size: {clip2_size(downloaded_size)}\n"
-                "💾 An rubuta download_completed=True a DB."
-            ),
-            monitor_id
-        )
-
-        # ----------------------------------------------------
-        # 7. EXTRACT 10 FRAMES
-        # ----------------------------------------------------
-
-        stage = "FRAME EXTRACTION"
-
-        clip2_set_status(
-            task_id,
-            user_id,
-            "extracting_frames"
-        )
-
-        frames_dir = os.path.join(
-            temp_dir,
-            "frames"
-        )
-
-        frames = clip2_extract_frames(
-            downloaded_path,
-            frames_dir,
-            task_id,
-            user_name,
-            user_id,
-            monitor_id
-        )
-
-        clip2_save_payload(
-            task_id,
-            user_id,
-            {
-                "frames_extracted": len(frames),
-                "frames_extraction_completed": True
-            }
-        )
-
-        # ----------------------------------------------------
         # 8. SEND FRAMES TO ADMIN
         # ----------------------------------------------------
 
@@ -3064,6 +3091,9 @@ def clip2_process_one_task(
             user_id
         )
 
+        # Completed task: immediately free the cached JPEG frames from Render.
+        clip2_delete_review_frames(task_id)
+
     except Exception as error:
 
         BOT2_LOGGER.exception(
@@ -3073,18 +3103,26 @@ def clip2_process_one_task(
             stage
         )
 
+        review_status = "review_1"
+
         try:
 
-            clip2_mark_failed(
+            review_result = clip2_mark_for_review(
                 task_id,
                 user_id,
                 str(error)
             )
 
+            if review_result:
+                review_status = review_result[0]
+                if review_status == "review_2":
+                    # Review 2 is terminal; retain DB record only, remove local images.
+                    clip2_delete_review_frames(task_id)
+
         except Exception:
 
             BOT2_LOGGER.exception(
-                "FAILED TO SAVE TASK FAILURE"
+                "FAILED TO SAVE TASK REVIEW STATUS"
             )
 
         clip2_report_failure(
@@ -3094,7 +3132,8 @@ def clip2_process_one_task(
             user_tag,
             stage,
             error,
-            monitor_id
+            monitor_id,
+            review_status
         )
 
     finally:
@@ -3127,6 +3166,43 @@ def clip2_process_one_task(
 # CHECK PENDING EVERY 3 SECONDS
 # ADMIN GETS PENDING USER NAME
 # ============================================================
+
+def clip2_recover_interrupted_tasks():
+    """After acquiring the singleton DB lock, make Bot 2's abandoned work claimable."""
+    conn = clip2_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE tasks
+            SET status = CASE
+                    WHEN payload->>'bot2_claim_origin' = 'review_1'
+                         OR status = 'review_1' THEN 'review_1'
+                    ELSE 'pending'
+                END,
+                assigned_worker = NULL,
+                lease_until = NULL,
+                heartbeat_at = NULL,
+                updated_at = NOW()
+            WHERE task_type = %s
+              AND status IN (
+                  'processing', 'downloading',
+                  'extracting_frames', 'identifying'
+              )
+        """, (CLIP_TASK_TYPE,))
+        recovered = cur.rowcount
+        conn.commit()
+        if recovered:
+            clip2_admin_send(
+                f"♻️ BOT 2 RECOVERY: an dawo da interrupted tasks {recovered}. "
+                "Za a duba local saved frames/video; idan sun bace, za a sake download daga Telegram."
+            )
+        return recovered
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 
 def bot2_clip_database_poller(worker_id):
     _BOT2_WORKER_LOCAL.worker_id = worker_id
@@ -3205,6 +3281,19 @@ def clip2_startup():
         if not ADMIN_GEMI:
             raise RuntimeError("ADMIN_GEMI_NOT_CONFIGURED")
 
+        # Render Free has ephemeral local storage. Do not require a paid
+        # Persistent Disk or block startup when no disk is mounted.
+        # The local cache accelerates retries while this instance is alive;
+        # after redeploy, recovery checks the cache and re-downloads the
+        # original Telegram video when the cached video/frames are missing.
+        os.makedirs(BOT2_REVIEW_CACHE_DIR, exist_ok=True)
+        storage_probe = os.path.join(
+            BOT2_REVIEW_CACHE_DIR, ".bot2_storage_write_test"
+        )
+        with open(storage_probe, "w", encoding="utf-8") as probe_file:
+            probe_file.write("ok")
+        os.remove(storage_probe)
+
         clip2_admin_send(
             "🟡 BOT 2 STARTUP CHECK\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -3246,6 +3335,10 @@ def clip2_startup():
         clip2_admin_send(
             "✅ DATABASE ADVISORY LOCK ACQUIRED"
         )
+
+        # The singleton lock guarantees the previous Bot 2 instance is gone.
+        # Requeue interrupted work while retaining its per-task disk artifacts.
+        recovered_tasks = clip2_recover_interrupted_tasks()
 
         # ----------------------------------------------------
         # 4. REGISTER WORKER
