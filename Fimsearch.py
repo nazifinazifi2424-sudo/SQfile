@@ -3066,13 +3066,45 @@ def clip2_process_one_task(
 
         stage = "ADMIN FRAME PREVIEW"
 
-        clip2_send_frames_to_admin(
-            frames,
-            task_id,
-            user_name,
-            user_id,
-            monitor_id
-        )
+        try:
+            clip2_send_frames_to_admin(
+                frames,
+                task_id,
+                user_name,
+                user_id,
+                monitor_id
+            )
+        except Exception as preview_error:
+            # Admin preview is optional: report the Telegram error, then
+            # continue to Gemini without retrying or stopping this task.
+            BOT2_LOGGER.exception(
+                "ADMIN FRAME PREVIEW FAILED; SKIPPING PREVIEW task=%s user=%s",
+                task_id,
+                user_id
+            )
+            preview_notice = (
+                "⚠️ BOT 2 — ADMIN FRAME PREVIEW FAILED; SKIPPED\\n"
+                "━━━━━━━━━━━━━━━━━━━━\\n"
+                f"👤 User: {user_name}\\n"
+                f"🆔 User ID: {user_id}\\n"
+                f"🧾 Task ID: {task_id}\\n"
+                f"📍 Stage: ADMIN FRAME PREVIEW\\n"
+                f"🔍 Error category: {clip2_classify_error(preview_error)}\\n"
+                f"❌ Error: {str(preview_error)[:1500]}\\n"
+                "➡️ Ana ci gaba da Gemini identification.\\n"
+                "━━━━━━━━━━━━━━━━━━━━"
+            )
+            if monitor_id:
+                clip2_admin_edit(monitor_id, preview_notice)
+            else:
+                clip2_admin_send(preview_notice)
+            clip2_gemini_admin_send(
+                "BOT 2 ADMIN FRAME PREVIEW FAILED — SKIPPED\\n"
+                f"Task: {task_id}\\nUser: {user_id}\\n"
+                f"Category: {clip2_classify_error(preview_error)}\\n"
+                f"Error: {str(preview_error)[:1500]}\\n"
+                "Gemini identification will continue."
+            )
 
         # ----------------------------------------------------
         # 9. GEMINI IDENTIFICATION
