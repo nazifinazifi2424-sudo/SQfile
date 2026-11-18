@@ -78,11 +78,13 @@ chat_conn = get_all_chat_db_conn()
 chat_cur = chat_conn.cursor()
 
 # Serialize shared-schema initialization across Bot 2 instances.
-# This uses the same advisory-lock key as BOT2_ADVISORY_LOCK_ID below,
-# so startup DDL cannot race with another live Bot 2 instance.
+# Use a separate key from BOT2_ADVISORY_LOCK_ID: that key is held as a
+# session-level singleton lock for the bot's lifetime. Reusing it here makes
+# a redeploy wait on the previous live instance until statement_timeout.
+# This transaction-level initialization lock is released by chat_conn.commit().
 chat_cur.execute(
     "SELECT pg_advisory_xact_lock(%s)",
-    (7348291056712345,)
+    (7348291056712346,)
 )
 
 
