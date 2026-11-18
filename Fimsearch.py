@@ -888,6 +888,8 @@ def clip2_register_worker(worker_id=None):
                 "frames": BOT2_FRAME_COUNT,
                 "gemini_fallback": True,
                 "gemini_models": GEMINI_MODELS,
+                "gemini_max_valid_answers": 3,
+                "gemini_api_attempts_not_limited_to_three": True,
                 "admin_monitor": True,
                 "admin_frame_preview": True,
                 "user_task_isolation": True
@@ -1708,6 +1710,14 @@ def clip2_gemini_candidate_score(candidate):
 
 
 def clip2_gemini_identify(frame_paths, task_id, user_name, user_id, monitor_id):
+    """Try models until 3 VALID answers are received; API errors do not count.
+
+    Model 1 may be accepted on its own only when it is complete and strongly
+    confident. Otherwise obtain a second valid answer. Matching movie titles
+    are merged field-by-field and accepted; different titles require a third
+    valid answer. The third valid answer is the tie-breaker, not the third API
+    attempt. All failed/busy/incomplete model attempts are skipped and logged.
+    """
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY_MISSING")
     if len(frame_paths) != BOT2_FRAME_COUNT:
@@ -1752,7 +1762,7 @@ SUNAN FIM: [Sunan fim]
 SHEKARA: [Shekarar fitowar fim]
 JARUMI: [Babban jarumi]"""
 
-    # These extra rules are appended; the original identification prompt remains unchanged.
+    # Existing verification instructions retained unchanged.
     verification_rules = """
 KARIN UMARNIN TANTANCEWA:
 - Kada ka ɗauki lamba kaɗai, gajeren rubutu, ko rubutun da ke jikin bidiyo a matsayin sunan fim.
@@ -1786,38 +1796,63 @@ TABBACI: ...%
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"temperature": 0.0, "maxOutputTokens": 650}
     }
-
     failures = []
-    candidates = []
-    used_models = set()
+    candidates = []                 # Only valid, parseable model answers count.
+    attempted_models = 0            # API attempts; deliberately NOT capped at 3.
     model_locks = _BOT2_MODEL_LOCKS
     if not model_locks:
         model_locks.update({name: threading.Lock() for name in GEMINI_MODELS})
 
-    clip2_admin_debug(
-        task_id, user_name, user_id, "GEMINI START",
-        f"Frames: 10\\nMatsakaicin models a wannan task: 3\\n"
-        f"Model 1: zai tsaya idan tabbaci ya kai 85% kuma bayanai sun cika.\\n"
-        "Model 2: idan ya dace da na farko, za a karɓa. Idan sun bambanta, Model 3 zai yanke hukunci.",
-        monitor_id
+    def admin_gem(stage, details):
+        # Dedicated Gemini admin receives both normal progress and all errors.
+        clip2_gemini_admin_send(
+            f"GEMINI DEBUG | {stage}\nTask: {task_id}\nUser: {user_id}\n{details}"
+        )
+
+    def title_key(value):
+        return clip2_gemini_title_key(value)
+
+    def titles_match(a, b):
+        import difflib
+        ka, kb = title_key(a), title_key(b)
+        if not ka or not kb:
+            return False
+        return ka == kb or difflib.SequenceMatcher(None, ka, kb).ratio() >= 0.84
+
+    def merge_matching_answers(items):
+        # Same film title: fill missing year/actor using the best available
+        # non-empty field from the agreeing models; never mix different titles.
+        ranked = sorted(items, key=clip2_gemini_candidate_score, reverse=True)
+        merged = dict(ranked[0])
+        for field in ("year", "actor"):
+            if not merged.get(field):
+                for item in ranked[1:]:
+                    if item.get(field):
+                        merged[field] = item[field]
+                        break
+        merged["model"] = "+".join(item["model"] for item in items)
+        return merged
+
+    admin_gem(
+        "START",
+        f"Frames=10 | Models configured={len(GEMINI_MODELS)} | "
+        "Maximum VALID answers=3 (not maximum API attempts). "
+        "Any error/empty/incomplete response is skipped and the next model is tried."
     )
 
-    # Hard cap: no task can call more than three distinct Gemini models.
-    for model_index, model_name in enumerate(GEMINI_MODELS, start=1):
-        if len(used_models) >= 3:
+    for model_name in GEMINI_MODELS:
+        if len(candidates) >= 3:
             break
-        if model_name in used_models:
-            continue
-
         model_lock = model_locks.setdefault(model_name, threading.Lock())
         if not model_lock.acquire(blocking=False):
-            failures.append(f"{model_name}: MODEL_BUSY_SKIPPED")
+            failure = f"{model_name}: MODEL_BUSY_SKIPPED"
+            failures.append(failure)
+            admin_gem("MODEL SKIPPED - BUSY", failure)
             continue
 
-        used_models.add(model_name)
+        attempted_models += 1
+        admin_gem("MODEL ATTEMPT", f"Attempt #{attempted_models}: {model_name}; valid answers so far={len(candidates)}/3")
         try:
-            # Every model independently inspects the original 10 frames.
-            # Do not reveal previous answers; this avoids anchoring/bias.
             request_body = json.loads(json.dumps(body))
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -1827,8 +1862,7 @@ TABBACI: ...%
             try:
                 response = requests.post(
                     url,
-                    headers={"Content-Type": "application/json",
-                             "x-goog-api-key": GEMINI_API_KEY},
+                    headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY},
                     json=request_body,
                     timeout=(20, 240)
                 )
@@ -1840,157 +1874,139 @@ TABBACI: ...%
                     except Exception:
                         detail = response.text[:900]
                     category = clip2_gemini_error_category(response.status_code, detail)
-                    failures.append(f"{model_name}: HTTP {response.status_code} [{category}]: {detail}")
-                    clip2_gemini_admin_send(
-                        f"GEMINI MODEL ERROR\\nTask: {task_id}\\nModel: {model_name}\\n"
-                        f"HTTP: {response.status_code}\\n{detail[:1400]}"
-                    )
+                    failure = f"{model_name}: HTTP {response.status_code} [{category}]: {detail}"
+                    failures.append(failure)
+                    admin_gem("MODEL ERROR - SKIPPING", f"Model: {model_name}\nHTTP: {response.status_code}\nCategory: {category}\n{detail[:1300]}\nValid answers do not increase.")
                     continue
 
                 data = response.json()
                 response_candidates = data.get("candidates") or []
                 if not response_candidates:
                     reason = data.get("promptFeedback", {}).get("blockReason", "NO_CANDIDATES")
-                    failures.append(f"{model_name}: {reason}")
+                    failure = f"{model_name}: {reason}"
+                    failures.append(failure)
+                    admin_gem("MODEL NO CANDIDATE - SKIPPING", failure)
                     continue
 
                 candidate_obj = response_candidates[0]
                 finish_reason = str(candidate_obj.get("finishReason", "UNKNOWN")).upper()
                 if finish_reason in ("SAFETY", "RECITATION", "BLOCKLIST"):
-                    failures.append(f"{model_name}: {finish_reason}")
+                    failure = f"{model_name}: {finish_reason}"
+                    failures.append(failure)
+                    admin_gem("MODEL BLOCKED - SKIPPING", failure)
                     continue
 
                 response_parts = candidate_obj.get("content", {}).get("parts", [])
-                answer = "\\n".join(
-                    part.get("text", "") for part in response_parts if part.get("text")
-                ).strip()
+                answer = "\n".join(part.get("text", "") for part in response_parts if part.get("text")).strip()
                 if not answer:
-                    failures.append(f"{model_name}: EMPTY_RESPONSE")
+                    failure = f"{model_name}: EMPTY_RESPONSE"
+                    failures.append(failure)
+                    admin_gem("MODEL EMPTY ANSWER - SKIPPING", failure)
                     continue
 
                 parsed = clip2_gemini_parse_candidate(answer)
-                if not clip2_gemini_candidate_verified(parsed):
-                    failures.append(f"{model_name}: INCOMPLETE_CANDIDATE")
-                    clip2_gemini_admin_send(
-                        f"GEMINI ANSWER INCOMPLETE\\nTask: {task_id}\\nModel: {model_name}\\n"
-                        f"Raw: {answer[:1300]}"
-                    )
+                # A valid candidate must identify a movie title. Year/actor may
+                # be missing; the next agreeing model can fill those fields.
+                if not parsed.get("title"):
+                    failure = f"{model_name}: INVALID_OR_MISSING_MOVIE_TITLE"
+                    failures.append(failure)
+                    admin_gem("MODEL INVALID ANSWER - SKIPPING", f"{failure}\nRaw: {answer[:1100]}")
                     continue
 
                 parsed["model"] = model_name
                 parsed["elapsed"] = elapsed
                 candidates.append(parsed)
-
-                clip2_admin_debug(
-                    task_id, user_name, user_id, f"MODEL {len(candidates)} CANDIDATE: {model_name}",
-                    f"Title: {parsed['title']}\\nYear: {parsed['year']}\\nActor: {parsed['actor']}\\n"
-                    f"Confidence: {parsed['confidence']}%\\n"
-                    f"Movie exists: {parsed['movie_exists']}\\n"
-                    f"Evidence complete: {parsed['evidence_complete']}\\n"
-                    f"Title evidence: {parsed['title_evidence'] or 'MISSING'}\\n"
-                    f"Year evidence: {parsed['year_evidence'] or 'MISSING'}\\n"
-                    f"Actor evidence: {parsed['actor_evidence'] or 'MISSING'}\\n"
-                    f"Time: {elapsed:.2f}s",
-                    monitor_id
+                answer_no = len(candidates)
+                admin_gem(
+                    f"VALID ANSWER {answer_no}/3",
+                    f"Model: {model_name}\nTitle: {parsed['title']}\nYear: {parsed.get('year') or 'MISSING'}\n"
+                    f"Actor: {parsed.get('actor') or 'MISSING'}\nConfidence: {parsed.get('confidence', 0)}%\n"
+                    f"Time: {elapsed:.1f}s\nRaw: {answer[:900]}"
                 )
 
-                # Model 1: accept immediately only at a strong confidence level.
-                if len(candidates) == 1 and parsed["confidence"] >= 85:
-                    clip2_admin_debug(
-                        task_id, user_name, user_id, "MODEL 1 HIGH CONFIDENCE — ACCEPTED",
-                        f"{parsed['title']} ({parsed['year']})\\n{parsed['actor']}\\n"
-                        f"Confidence: {parsed['confidence']}%\\n"
-                        "An tsaya a Model 1; ba a kira Model 2 ko 3 ba.",
-                        monitor_id
-                    )
-                    return parsed["title"], parsed["year"], parsed["actor"], model_name
+                # Model 1 can finish immediately only when its answer is complete
+                # and meets the existing strong-confidence threshold.
+                if answer_no == 1:
+                    complete = bool(parsed.get("year") and parsed.get("actor"))
+                    if complete and parsed.get("confidence", 0) >= 85:
+                        admin_gem("MODEL 1 ACCEPTED", "Model 1 has a complete answer and confidence >=85%. No second model is needed.")
+                        return parsed["title"], parsed["year"], parsed["actor"], model_name
+                    admin_gem("MODEL 1 NEEDS CONFIRMATION", "Answer is not yet strong/complete. Continue through remaining models until another VALID answer is received.")
+                    continue
 
-                # Model 2: if title/year/actor agree with Model 1, accept without Model 3.
-                if len(candidates) == 2:
+                # Model 2 valid answer: if the movie title matches Model 1,
+                # combine missing fields and stop; otherwise seek a third VALID answer.
+                if answer_no == 2:
                     first, second = candidates[0], candidates[1]
-                    same_title = (
-                        clip2_gemini_title_key(first["title"])
-                        == clip2_gemini_title_key(second["title"])
-                    )
-                    same_year = first["year"] == second["year"]
-                    same_actor = (
-                        clip2_gemini_title_key(first["actor"])
-                        == clip2_gemini_title_key(second["actor"])
-                    )
-                    if same_title and same_year and same_actor:
-                        winner = max((first, second), key=clip2_gemini_candidate_score)
-                        clip2_admin_debug(
-                            task_id, user_name, user_id, "MODEL 1 + MODEL 2 AGREEMENT — ACCEPTED",
-                            f"Models biyu sun amince da: {winner['title']} ({winner['year']})\\n"
-                            f"Jarumi: {winner['actor']}\\n"
-                            "An karɓa; ba a buƙatar Model 3.",
-                            monitor_id
+                    if titles_match(first["title"], second["title"]):
+                        winner = merge_matching_answers(candidates[:2])
+                        admin_gem(
+                            "MODEL 1 + MODEL 2 SAME MOVIE - ACCEPTED",
+                            f"Titles match: {first['title']} / {second['title']}\n"
+                            f"Merged result: {winner['title']} | {winner.get('year') or 'Ba a tabbatar ba'} | {winner.get('actor') or 'Ba a tabbatar ba'}\n"
+                            "No third model required."
                         )
-                        return winner["title"], winner["year"], winner["actor"], winner["model"]
+                        return winner["title"], winner.get("year", ""), winner.get("actor", ""), winner["model"]
+                    admin_gem(
+                        "MODEL 1 + MODEL 2 DIFFERENT MOVIES",
+                        f"Model 1: {first['title']} | {first.get('year') or '?'} | {first.get('actor') or '?'}\n"
+                        f"Model 2: {second['title']} | {second.get('year') or '?'} | {second.get('actor') or '?'}\n"
+                        "Titles differ. Continue trying models until a THIRD VALID answer is obtained; errors do not count."
+                    )
+                    continue
 
-                    clip2_admin_debug(
-                        task_id, user_name, user_id, "MODEL 1 + MODEL 2 DISAGREEMENT",
-                        f"Model 1: {first['title']} | {first['year']} | {first['actor']}\\n"
-                        f"Model 2: {second['title']} | {second['year']} | {second['actor']}\\n"
-                        "Za a kira Model 3 domin yanke hukunci.",
-                        monitor_id
+                # Third VALID answer is the tie-breaker. A matching title gives
+                # a 2-of-3 agreement; if all differ, rank only valid answers.
+                if answer_no == 3:
+                    first, second, third = candidates
+                    if titles_match(first["title"], third["title"]):
+                        agreeing = [first, third]
+                        decision = "Model 1 + Model 3 title agreement"
+                    elif titles_match(second["title"], third["title"]):
+                        agreeing = [second, third]
+                        decision = "Model 2 + Model 3 title agreement"
+                    else:
+                        # No two titles agree: Model 3 is the final independent
+                        # adjudicator, rather than counting failed models or
+                        # letting API errors influence the decision.
+                        agreeing = [third]
+                        decision = "All three valid titles differ; Model 3 is the final adjudicator"
+                    winner = merge_matching_answers(agreeing) if len(agreeing) >= 2 and titles_match(agreeing[0]["title"], agreeing[1]["title"]) else agreeing[0]
+                    report = "\n".join(
+                        f"{i+1}. {item['model']}: {item['title']} | {item.get('year') or '?'} | "
+                        f"{item.get('actor') or '?'} | confidence={item.get('confidence', 0)}%"
+                        for i, item in enumerate(candidates)
                     )
-
-                # After model 3, choose the strongest complete candidate by weighted score.
-                if len(candidates) == 3:
-                    winner = max(candidates, key=clip2_gemini_candidate_score)
-                    ranking = sorted(
-                        candidates, key=clip2_gemini_candidate_score, reverse=True
-                    )
-                    report = "\\n".join(
-                        f"{i+1}. {item['model']}: {item['title']} | {item['year']} | "
-                        f"{item['actor']} | confidence={item['confidence']}% | "
-                        f"score={clip2_gemini_candidate_score(item):.1f}"
-                        for i, item in enumerate(ranking)
-                    )
-                    clip2_admin_debug(
-                        task_id, user_name, user_id, "MODEL 3 FINAL DECISION",
-                        f"An yi amfani da models uku kacal. Wanda ya fi ƙarfi: "
-                        f"{winner['title']} ({winner['year']}) — {winner['actor']}\\n\\n{report}",
-                        monitor_id
-                    )
-                    return winner["title"], winner["year"], winner["actor"], winner["model"]
+                    admin_gem("MODEL 3 FINAL DECISION", f"{decision}\nChosen: {winner['title']} | {winner.get('year') or '?'} | {winner.get('actor') or '?'}\n\n{report}")
+                    return winner["title"], winner.get("year", ""), winner.get("actor", ""), winner["model"]
 
             except requests.exceptions.RequestException as error:
                 category = clip2_gemini_error_category(error=error)
-                failures.append(f"{model_name}: {category}: {error}")
-                clip2_gemini_admin_send(
-                    f"GEMINI NETWORK/API ERROR\\nTask: {task_id}\\nModel: {model_name}\\n"
-                    f"{category}: {str(error)[:1200]}"
-                )
+                failure = f"{model_name}: {category}: {error}"
+                failures.append(failure)
+                admin_gem("NETWORK/API ERROR - SKIPPING", f"Model: {model_name}\n{category}: {str(error)[:1200]}\nValid answers do not increase.")
             except Exception as error:
                 category = clip2_gemini_error_category(error=error)
-                failures.append(f"{model_name}: {category}: {error}")
-                clip2_gemini_admin_send(
-                    f"GEMINI MODEL/SCAN ERROR\\nTask: {task_id}\\nModel: {model_name}\\n"
-                    f"{category}: {str(error)[:1200]}"
-                )
+                failure = f"{model_name}: {category}: {error}"
+                failures.append(failure)
+                admin_gem("MODEL ERROR - SKIPPING", f"Model: {model_name}\n{category}: {str(error)[:1200]}\nValid answers do not increase.")
         finally:
             model_lock.release()
 
-    if candidates:
-        # If one model failed or returned incomplete output, use the strongest
-        # complete candidate among those actually received; never call a fourth model.
-        winner = max(candidates, key=clip2_gemini_candidate_score)
-        clip2_gemini_admin_send(
-            f"GEMINI FALLBACK DECISION\\nTask: {task_id}\\n"
-            f"Models successfully answered: {len(candidates)} (limit 3)\\n"
-            f"Selected: {winner['title']} | {winner['year']} | {winner['actor']}\\n"
-            f"Confidence: {winner['confidence']}%\\n"
-            "An zaɓi mafi ƙarfi daga amsoshin da aka samu."
-        )
-        return winner["title"], winner["year"], winner["actor"], winner["model"]
+    # If the list was exhausted before a third valid answer could be obtained,
+    # do not pretend an error response is a candidate or invent consensus.
+    if len(candidates) == 2 and titles_match(candidates[0]["title"], candidates[1]["title"]):
+        winner = merge_matching_answers(candidates)
+        admin_gem("MODEL LIST EXHAUSTED - TWO ANSWERS AGREE", f"All configured models were tried. Both valid answers identify {winner['title']}; merged the available fields.")
+        return winner["title"], winner.get("year", ""), winner.get("actor", ""), winner["model"]
 
-    final_failures = "\\n".join(failures[-14:])
-    clip2_gemini_admin_send(
-        f"ALL GEMINI MODELS FAILED\\nTask: {task_id}\\n{final_failures[:2800]}"
+    final_failures = "\n".join(failures[-14:]) or "No valid Gemini response was received."
+    admin_gem(
+        "MODEL LIST EXHAUSTED - NO SAFE FINAL ANSWER",
+        f"Models configured: {len(GEMINI_MODELS)}\nAPI attempts: {attempted_models}\n"
+        f"Valid answers: {len(candidates)}/3\nFailures/skips:\n{final_failures[:2300]}"
     )
-    raise RuntimeError("ALL_GEMINI_MODELS_FAILED:\\n" + final_failures)
+    raise RuntimeError("ALL_GEMINI_MODELS_FAILED_OR_NO_VALID_CONSENSUS:\n" + final_failures)
 
 
 def bot2_pyro_run_async(coroutine, timeout=180):
@@ -2634,6 +2650,14 @@ def clip2_report_failure(
     else:
         clip2_admin_send(text)
 
+    # Mirror every task failure to the dedicated Gemini admin as requested.
+    clip2_gemini_admin_send(
+        "BOT 2 TASK FAILURE / REVIEW\n"
+        f"Task: {task_id}\nUser: {user_id}\nStage: {stage}\n"
+        f"Category: {category}\nStatus: {review_status}\n"
+        f"Error: {str(error)[:1800]}"
+    )
+
 
 # ============================================================
 # TASK ARTIFACT STORAGE — ONE ISOLATED DIRECTORY PER TASK
@@ -3228,10 +3252,12 @@ def bot2_clip_database_poller(worker_id):
             )
         except Exception as error:
             BOT2_LOGGER.exception("BOT2 DATABASE POLLER ERROR worker=%s", worker_id)
-            clip2_admin_send(
+            poller_error_text = (
                 f"🔴 BOT 2 DATABASE POLLER ERROR\\nWorker: {worker_id}\\n"
                 f"Category: {clip2_classify_error(error)}\\nError: {str(error)[:1500]}"
             )
+            clip2_admin_send(poller_error_text)
+            clip2_gemini_admin_send(poller_error_text)
             _BOT2_STOP.wait(3)
 
 
@@ -3416,6 +3442,7 @@ def clip2_startup():
             f"Gemini models: {len(GEMINI_MODELS)}\n"
             "Task concurrency: 3\n"
             "Gemini concurrency: 1 per model\n"
+            "Gemini valid-answer limit: 3 (API attempts can use all configured models)\n"
             "Full video download: ENABLED\n"
             "Admin frame preview: ENABLED\n"
             "Admin stage debugging: ENABLED\n"
@@ -3437,13 +3464,15 @@ def clip2_startup():
 
         clip2_release_database_lock()
 
-        clip2_admin_send(
+        startup_error_text = (
             "🔴 BOT 2 STARTUP FAILED\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Category: {clip2_classify_error(error)}\n"
             f"Error: {str(error)[:1800]}\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
+        clip2_admin_send(startup_error_text)
+        clip2_gemini_admin_send(startup_error_text)
 
         raise
 
