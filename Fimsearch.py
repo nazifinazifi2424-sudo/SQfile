@@ -472,6 +472,15 @@ _BOT2_STOP = threading.Event()
 _BOT2_STARTED = False
 _BOT2_START_LOCK = threading.Lock()
 
+# Pyrogram engine state — initialize every shared object before startup.
+# The Pyrogram engine uses its own lock so it cannot collide with Bot 2 startup.
+_BOT2_PYRO_START_LOCK = threading.Lock()
+_BOT2_PYRO_READY = threading.Event()
+_BOT2_PYRO_THREAD = None
+_BOT2_PYRO_CLIENT = None
+_BOT2_PYRO_LOOP = None
+_BOT2_PYRO_START_ERROR = None
+
 BOT2_WORKER_COUNT = 3
 BOT2_WORKER_IDS = [f"CLIP_BOT_2_{i}" for i in range(1, BOT2_WORKER_COUNT + 1)]
 _BOT2_WORKER_LOCAL = threading.local()
