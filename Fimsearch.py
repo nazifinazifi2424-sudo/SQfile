@@ -404,13 +404,17 @@ def bot2_group_message_handler(message):
     bot2_group_message_listener(message)
 
 
-
 # ============================================================
 # OPENROUTER DM VIDEO MOVIE IDENTIFICATION SYSTEM
-# INDEPENDENT SYSTEM — BOT 2
+# IMAGE-FRAME VERSION — INDEPENDENT SYSTEM — BOT 2
 # TELEBOT + EXISTING PYROGRAM CLIENT
-# MAX VIDEO SIZE: 50 MB
-# MAX VIDEO SENT TO AI: 59 SECONDS
+#
+# VIDEO MAX SIZE: 50 MB
+# VIDEO MAX DURATION SENT TO AI: 59 SECONDS
+# FRAMES EXTRACTED: 10
+# MAX FRAME SIZE: 500 KB
+#
+# DEBUG: REPORTS EVERY IMPORTANT STAGE TO ADMIN
 # ============================================================
 
 import os
@@ -423,6 +427,7 @@ import shutil
 import threading
 import requests
 import logging
+import html
 
 from telebot import types
 
@@ -435,6 +440,10 @@ O_ROUTER = os.getenv("O_ROUTER", "").strip()
 
 OR_VIDEO_MAX_SIZE = 50 * 1024 * 1024
 OR_VIDEO_MAX_SECONDS = 59
+
+OR_FRAME_COUNT = 10
+OR_FRAME_MAX_SIZE = 500 * 1024
+OR_FRAME_WIDTH = 960
 
 OR_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -455,15 +464,15 @@ OR_ACTIVE_LOCK = threading.Lock()
 
 
 # ============================================================
-# ADMIN REPORT
+# DEBUG / ADMIN REPORT
 # ============================================================
 
 def or_admin_report(stage, details):
 
     message = (
-        "🔴 OPENROUTER DM SCANNER REPORT\n"
+        "🔴 OPENROUTER DM SCANNER DEBUG\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Stage: {stage}\n\n"
+        f"STAGE: {stage}\n\n"
         f"{str(details)[:2500]}\n"
         "━━━━━━━━━━━━━━━━━━━━"
     )
@@ -480,6 +489,46 @@ def or_admin_report(stage, details):
     except Exception:
         OR_LOGGER.exception(
             "OPENROUTER ADMIN REPORT FAILED"
+        )
+
+
+def or_debug(stage, details):
+
+    OR_LOGGER.info(
+        "[OPENROUTER DEBUG] %s | %s",
+        stage,
+        str(details)[:2000]
+    )
+
+    or_admin_report(stage, details)
+
+
+def or_debug_exception(stage, error):
+
+    details = (
+        f"Exception type: {type(error).__name__}\n"
+        f"Exception: {str(error)[:1800]}"
+    )
+
+    OR_LOGGER.exception(
+        "OPENROUTER FAILURE AT STAGE: %s",
+        stage
+    )
+
+    or_admin_report(stage, details)
+
+
+def or_user_status(chat_id, message_id, text):
+
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id,
+            message_id
+        )
+    except Exception:
+        OR_LOGGER.exception(
+            "FAILED TO UPDATE USER STATUS"
         )
 
 
@@ -533,7 +582,6 @@ def or_pending_key(chat_id, message_id):
 
 # ============================================================
 # FETCH ORIGINAL MESSAGE AND DOWNLOAD THROUGH PYROGRAM
-# NO FAKE TELEGRAM MESSAGE
 # ============================================================
 
 def or_download_dm_video(
@@ -541,6 +589,11 @@ def or_download_dm_video(
     message_id,
     output_path
 ):
+
+    or_debug(
+        "PYROGRAM CHECK",
+        f"Chat ID: {chat_id}\nMessage ID: {message_id}"
+    )
 
     if not _BOT2_PYRO_READY.is_set():
         raise RuntimeError(
@@ -551,6 +604,11 @@ def or_download_dm_video(
         raise RuntimeError(
             "PYROGRAM_CLIENT_MISSING"
         )
+
+    or_debug(
+        "FETCH ORIGINAL TELEGRAM MESSAGE",
+        f"Chat ID: {chat_id}\nMessage ID: {message_id}"
+    )
 
     pyro_message = bot2_pyro_run_async(
         bot2_pyro_get_message(
@@ -576,6 +634,11 @@ def or_download_dm_video(
         getattr(media, "file_size", 0) or 0
     )
 
+    or_debug(
+        "TELEGRAM VIDEO VALIDATION",
+        f"Original size: {actual_size / 1048576:.2f} MB"
+    )
+
     if actual_size <= 0:
         raise RuntimeError(
             "TELEGRAM_VIDEO_SIZE_UNKNOWN"
@@ -585,6 +648,11 @@ def or_download_dm_video(
         raise RuntimeError(
             "VIDEO_EXCEEDS_50MB"
         )
+
+    or_debug(
+        "PYROGRAM DOWNLOAD STARTED",
+        f"Saving video to: {output_path}"
+    )
 
     downloaded = bot2_pyro_run_async(
         bot2_pyro_download(
@@ -616,16 +684,27 @@ def or_download_dm_video(
             "DOWNLOADED_VIDEO_EXCEEDS_50MB"
         )
 
+    or_debug(
+        "PYROGRAM DOWNLOAD COMPLETED",
+        f"Downloaded path: {downloaded}\n"
+        f"Downloaded size: {downloaded_size / 1048576:.2f} MB"
+    )
+
     return downloaded
 
 
 # ============================================================
-# VIDEO DURATION AND MP4 PREPARATION
-# MAXIMUM 59 SECONDS
-# SHORTER VIDEOS ARE NOT CUT
+# VIDEO DURATION AND FRAME EXTRACTION
+# EXTRACT 10 IMAGES FROM FIRST 59 SECONDS
 # ============================================================
 
-def or_prepare_video(input_path, output_path):
+def or_prepare_video(input_path, frames_dir):
+
+    or_debug(
+        "FFMPEG CHECK",
+        f"Input video: {input_path}\n"
+        f"Output folder: {frames_dir}"
+    )
 
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -634,6 +713,16 @@ def or_prepare_video(input_path, output_path):
         raise RuntimeError(
             "FFMPEG_OR_FFPROBE_NOT_INSTALLED"
         )
+
+    os.makedirs(
+        frames_dir,
+        exist_ok=True
+    )
+
+    or_debug(
+        "FFPROBE STARTED",
+        "Reading original video duration."
+    )
 
     probe = subprocess.run(
         [
@@ -652,14 +741,15 @@ def or_prepare_video(input_path, output_path):
     if probe.returncode != 0:
         raise RuntimeError(
             "VIDEO_DURATION_READ_FAILED: "
-            + probe.stderr[:500]
+            + probe.stderr[:700]
         )
 
     try:
         duration = float(probe.stdout.strip())
     except Exception:
         raise RuntimeError(
-            "VIDEO_DURATION_INVALID"
+            "VIDEO_DURATION_INVALID: "
+            + probe.stdout[:300]
         )
 
     if duration <= 0:
@@ -667,63 +757,157 @@ def or_prepare_video(input_path, output_path):
             "VIDEO_DURATION_ZERO"
         )
 
-    # If original video is longer than 59 seconds,
-    # only the first 59 seconds will be processed.
-    #
-    # If shorter than 59 seconds, the complete video
-    # will be processed without cutting its duration.
-    #
-    # All videos are converted to MP4 to ensure the
-    # outgoing data URL has the correct MIME type.
-
     selected_duration = min(
         duration,
         OR_VIDEO_MAX_SECONDS
     )
 
-    result = subprocess.run(
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel", "error",
-            "-nostdin",
-            "-i", input_path,
-            "-t", str(selected_duration),
-            "-map", "0:v:0",
-            "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "25",
-            "-c:a", "aac",
-            "-b:a", "96k",
-            "-movflags", "+faststart",
-            "-threads", "2",
-            "-y",
-            output_path
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300
+    or_debug(
+        "VIDEO DURATION CONFIRMED",
+        f"Original duration: {duration:.2f} seconds\n"
+        f"Duration to scan: {selected_duration:.2f} seconds\n"
+        f"Frames requested: {OR_FRAME_COUNT}"
     )
 
-    if (
-        result.returncode != 0
-        or not os.path.isfile(output_path)
-        or os.path.getsize(output_path) <= 0
-    ):
-        raise RuntimeError(
-            "VIDEO_MP4_PREPARATION_FAILED: "
-            + result.stderr[:1000]
+    frame_paths = []
+
+    # Select one frame from the middle of each interval.
+    interval = selected_duration / OR_FRAME_COUNT
+
+    for index in range(OR_FRAME_COUNT):
+
+        timestamp = (
+            index * interval
+            + interval / 2
         )
 
-    prepared_size = os.path.getsize(output_path)
-
-    if prepared_size > OR_VIDEO_MAX_SIZE:
-        raise RuntimeError(
-            "PREPARED_VIDEO_EXCEEDS_50MB"
+        # Keep timestamp slightly before the end.
+        timestamp = min(
+            timestamp,
+            max(0, selected_duration - 0.05)
         )
 
-    return duration, selected_duration
+        frame_path = os.path.join(
+            frames_dir,
+            f"frame_{index + 1:02d}.jpg"
+        )
+
+        or_debug(
+            "FRAME EXTRACTION STARTED",
+            f"Frame: {index + 1}/{OR_FRAME_COUNT}\n"
+            f"Timestamp: {timestamp:.2f}s"
+        )
+
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-nostdin",
+                "-ss", f"{timestamp:.3f}",
+                "-i", input_path,
+                "-frames:v", "1",
+                "-vf", f"scale={OR_FRAME_WIDTH}:-2",
+                "-q:v", "5",
+                "-y",
+                frame_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90
+        )
+
+        if (
+            result.returncode != 0
+            or not os.path.isfile(frame_path)
+            or os.path.getsize(frame_path) <= 0
+        ):
+            raise RuntimeError(
+                f"FRAME_EXTRACTION_FAILED_{index + 1}: "
+                + result.stderr[:700]
+            )
+
+        # Compress oversized frames.
+        frame_size = os.path.getsize(frame_path)
+
+        if frame_size > OR_FRAME_MAX_SIZE:
+
+            or_debug(
+                "FRAME COMPRESSION STARTED",
+                f"Frame: {index + 1}\n"
+                f"Original size: {frame_size / 1024:.1f} KB"
+            )
+
+            compressed = False
+
+            for quality in [8, 12, 18, 24]:
+
+                compressed_result = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-hide_banner",
+                        "-loglevel", "error",
+                        "-nostdin",
+                        "-i", frame_path,
+                        "-frames:v", "1",
+                        "-vf", "scale=640:-2",
+                        "-q:v", str(quality),
+                        "-y",
+                        frame_path
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+                if (
+                    compressed_result.returncode == 0
+                    and os.path.isfile(frame_path)
+                    and os.path.getsize(frame_path) > 0
+                    and os.path.getsize(frame_path) <= OR_FRAME_MAX_SIZE
+                ):
+                    compressed = True
+                    break
+
+            if not compressed:
+                raise RuntimeError(
+                    f"FRAME_COMPRESSION_FAILED_{index + 1}"
+                )
+
+        final_size = os.path.getsize(frame_path)
+
+        frame_paths.append(frame_path)
+
+        or_debug(
+            "FRAME READY",
+            f"Frame: {index + 1}/{OR_FRAME_COUNT}\n"
+            f"Timestamp: {timestamp:.2f}s\n"
+            f"Final size: {final_size / 1024:.1f} KB\n"
+            f"Path: {frame_path}"
+        )
+
+    if len(frame_paths) != OR_FRAME_COUNT:
+        raise RuntimeError(
+            f"FRAME_COUNT_MISMATCH: "
+            f"{len(frame_paths)}/{OR_FRAME_COUNT}"
+        )
+
+    total_size = sum(
+        os.path.getsize(path)
+        for path in frame_paths
+    )
+
+    or_debug(
+        "ALL FRAMES EXTRACTED",
+        f"Frames: {len(frame_paths)}\n"
+        f"Total image size: {total_size / 1048576:.2f} MB"
+    )
+
+    return (
+        duration,
+        selected_duration,
+        frame_paths
+    )
 
 
 # ============================================================
@@ -733,27 +917,27 @@ def or_prepare_video(input_path, output_path):
 OR_MOVIE_PROMPT = """
 You are an expert movie identification system.
 
-Identify the ORIGINAL movie shown in the supplied video.
-
-Analyze the actual video content carefully.
+Your task is to identify the ORIGINAL movie shown in
+the supplied images.
 
 IMPORTANT:
 
-1. Study the moving images and visual scenes.
-2. Identify actors by their faces and appearance.
-3. Examine costumes, locations, objects and action scenes.
-4. Read subtitles when visible.
-5. Examine the story context and sequence of scenes.
-6. Pay attention to background music and soundtrack.
-7. Do not rely mainly on spoken dialogue.
-8. The dialogue may have been dubbed or translated into
-   Hausa or another language.
-9. Do not assume that the spoken language is the original
-   language of the movie.
-10. Use visual evidence and actor recognition as important
-    identification clues.
-11. Do not invent a movie title, year or actor.
-12. If you cannot identify the movie, say so honestly.
+1. You will receive 10 images extracted from different
+   moments of one video.
+2. Treat the images as frames from the same movie clip.
+3. Examine actors, faces, costumes and appearances.
+4. Examine locations, objects, vehicles and backgrounds.
+5. Examine action scenes and the sequence of events.
+6. Read subtitles and visible text where possible.
+7. Use recognizable actors and visual evidence to identify
+   the original movie.
+8. The movie may be dubbed into Hausa or another language.
+9. Do not assume the spoken language is the original language.
+10. Do not invent a title, release year or actor.
+11. Do not claim to have heard music or dialogue.
+    Only images have been supplied; audio is unavailable.
+12. If the frames are insufficient, say NOT IDENTIFIED.
+13. Do not guess just to provide an answer.
 
 Return your answer in this exact format:
 
@@ -764,7 +948,7 @@ CONFIDENCE: ...%
 
 SHORT VISUAL EVIDENCE: ...
 SUBTITLE EVIDENCE: ...
-MUSIC EVIDENCE: ...
+MUSIC EVIDENCE: AUDIO NOT PROVIDED
 
 If the movie cannot be identified confidently, return:
 
@@ -776,25 +960,100 @@ CONFIDENCE: 0%
 
 
 # ============================================================
-# OPENROUTER REQUEST
+# OPENROUTER IMAGE REQUEST
+# SENDS 10 EXTRACTED IMAGES — NOT VIDEO
 # ============================================================
 
-def or_identify_with_model(model_name, video_path):
+def or_identify_with_model(model_name, frame_paths):
 
     if not O_ROUTER:
         raise RuntimeError(
             "O_ROUTER_API_KEY_MISSING"
         )
 
-    with open(video_path, "rb") as video_file:
+    if not frame_paths:
+        raise RuntimeError(
+            "NO_EXTRACTED_FRAMES_AVAILABLE"
+        )
 
-        encoded_video = base64.b64encode(
-            video_file.read()
-        ).decode("ascii")
+    or_debug(
+        "OPENROUTER REQUEST PREPARATION",
+        f"Model: {model_name}\n"
+        f"Frames: {len(frame_paths)}"
+    )
 
-    data_url = (
-        "data:video/mp4;base64,"
-        + encoded_video
+    content = [
+        {
+            "type": "text",
+            "text": OR_MOVIE_PROMPT
+        }
+    ]
+
+    total_encoded_size = 0
+
+    for index, frame_path in enumerate(
+        frame_paths,
+        start=1
+    ):
+
+        if not os.path.isfile(frame_path):
+            raise RuntimeError(
+                f"FRAME_FILE_MISSING_{index}"
+            )
+
+        frame_size = os.path.getsize(frame_path)
+
+        if frame_size <= 0:
+            raise RuntimeError(
+                f"FRAME_FILE_EMPTY_{index}"
+            )
+
+        if frame_size > OR_FRAME_MAX_SIZE:
+            raise RuntimeError(
+                f"FRAME_EXCEEDS_MAX_SIZE_{index}"
+            )
+
+        with open(frame_path, "rb") as image_file:
+            encoded_image = base64.b64encode(
+                image_file.read()
+            ).decode("ascii")
+
+        total_encoded_size += len(encoded_image)
+
+        data_url = (
+            "data:image/jpeg;base64,"
+            + encoded_image
+        )
+
+        content.append(
+            {
+                "type": "text",
+                "text": f"FRAME {index}"
+            }
+        )
+
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": data_url
+                }
+            }
+        )
+
+        or_debug(
+            "FRAME ENCODED",
+            f"Model: {model_name}\n"
+            f"Frame: {index}/{len(frame_paths)}\n"
+            f"Image size: {frame_size / 1024:.1f} KB"
+        )
+
+    or_debug(
+        "OPENROUTER PAYLOAD READY",
+        f"Model: {model_name}\n"
+        f"Images: {len(frame_paths)}\n"
+        f"Encoded image data: "
+        f"{total_encoded_size / 1048576:.2f} MB"
     )
 
     headers = {
@@ -809,18 +1068,7 @@ def or_identify_with_model(model_name, video_path):
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": OR_MOVIE_PROMPT
-                    },
-                    {
-                        "type": "video_url",
-                        "video_url": {
-                            "url": data_url
-                        }
-                    }
-                ]
+                "content": content
             }
         ],
         "temperature": 0.1,
@@ -828,11 +1076,30 @@ def or_identify_with_model(model_name, video_path):
         "stream": False
     }
 
+    or_debug(
+        "OPENROUTER API REQUEST STARTED",
+        f"Model: {model_name}\n"
+        f"Endpoint: {OR_API_URL}\n"
+        f"Images: {len(frame_paths)}"
+    )
+
+    request_started = time.time()
+
     response = requests.post(
         OR_API_URL,
         headers=headers,
         json=payload,
         timeout=(30, 300)
+    )
+
+    elapsed = time.time() - request_started
+
+    or_debug(
+        "OPENROUTER API RESPONSE RECEIVED",
+        f"Model: {model_name}\n"
+        f"HTTP status: {response.status_code}\n"
+        f"Response time: {elapsed:.2f} seconds\n"
+        f"Response preview: {response.text[:1000]}"
     )
 
     if response.status_code != 200:
@@ -877,6 +1144,12 @@ def or_identify_with_model(model_name, video_path):
         raise RuntimeError(
             "OPENROUTER_EMPTY_MODEL_RESPONSE"
         )
+
+    or_debug(
+        "MODEL ANSWER RECEIVED",
+        f"Model: {model_name}\n"
+        f"Answer:\n{answer[:1800]}"
+    )
 
     return answer
 
@@ -952,7 +1225,7 @@ def or_parse_movie_answer(answer):
 # TRY MODELS IN ORDER
 # ============================================================
 
-def or_try_all_models(video_path, user_id):
+def or_try_all_models(frame_paths, user_id):
 
     failures = []
 
@@ -963,20 +1236,36 @@ def or_try_all_models(video_path, user_id):
 
         try:
 
-            or_admin_report(
+            or_debug(
                 "MODEL STARTED",
                 f"User: {user_id}\n"
-                f"Model {index}/{len(OR_MODELS)}:\n"
-                f"{model_name}"
+                f"Model: {index}/{len(OR_MODELS)}\n"
+                f"Name: {model_name}"
             )
 
             answer = or_identify_with_model(
                 model_name,
-                video_path
+                frame_paths
+            )
+
+            or_debug(
+                "PARSING MODEL ANSWER",
+                f"User: {user_id}\n"
+                f"Model: {model_name}"
             )
 
             title, year, actor, confidence = (
                 or_parse_movie_answer(answer)
+            )
+
+            or_debug(
+                "MODEL IDENTIFICATION SUCCESS",
+                f"User: {user_id}\n"
+                f"Model: {model_name}\n"
+                f"Title: {title}\n"
+                f"Year: {year}\n"
+                f"Actor: {actor}\n"
+                f"Confidence: {confidence}"
             )
 
             return {
@@ -998,10 +1287,21 @@ def or_try_all_models(video_path, user_id):
 
             failures.append(failure)
 
-            or_admin_report(
-                "MODEL FAILED — MOVING TO NEXT MODEL",
-                f"User: {user_id}\n{failure}"
+            or_debug_exception(
+                f"MODEL {index} FAILED — {model_name}",
+                error
             )
+
+            # A 402 balance error is account-level.
+            # Trying all models will not solve it.
+            if "HTTP_402" in str(error):
+                or_debug(
+                    "MODEL TESTING STOPPED",
+                    "OpenRouter returned HTTP 402. "
+                    "The account needs the required balance "
+                    "before continuing."
+                )
+                break
 
             continue
 
@@ -1013,7 +1313,6 @@ def or_try_all_models(video_path, user_id):
 
 # ============================================================
 # MAIN BACKGROUND TASK
-# FETCHES ORIGINAL VIDEO MESSAGE FROM PYROGRAM
 # ============================================================
 
 def or_process_dm_video(
@@ -1024,13 +1323,25 @@ def or_process_dm_video(
     temp_dir
 ):
 
+    current_stage = "TASK STARTED"
+
     try:
 
-        bot.edit_message_text(
-            "⏳ Ana sauke bidiyon daga Telegram...",
-            chat_id,
-            status_message_id
+        or_debug(
+            current_stage,
+            f"User: {user_id}\n"
+            f"Chat ID: {chat_id}\n"
+            f"Message ID: {message_id}\n"
+            f"Temporary folder: {temp_dir}"
         )
+
+        or_user_status(
+            chat_id,
+            status_message_id,
+            "⏳ Ana sauke bidiyon daga Telegram..."
+        )
+
+        current_stage = "PYROGRAM VIDEO DOWNLOAD"
 
         original_path = os.path.join(
             temp_dir,
@@ -1043,61 +1354,89 @@ def or_process_dm_video(
             original_path
         )
 
-        bot.edit_message_text(
-            "🎞 An sauke bidiyon.\n"
-            "Ana duba tsawonsa da shirya sakan 59...",
+        or_user_status(
             chat_id,
-            status_message_id
+            status_message_id,
+            "🎞 An sauke bidiyon.\n"
+            "Ana duba tsawonsa sannan a cire hotuna..."
         )
 
-        prepared_path = os.path.join(
+        current_stage = "VIDEO FRAME EXTRACTION"
+
+        frames_dir = os.path.join(
             temp_dir,
-            "openrouter_video.mp4"
+            "extracted_frames"
         )
 
-        duration, selected_duration = (
+        duration, selected_duration, frame_paths = (
             or_prepare_video(
                 downloaded_path,
-                prepared_path
+                frames_dir
             )
         )
 
-        prepared_size = os.path.getsize(
-            prepared_path
+        total_frame_size = sum(
+            os.path.getsize(path)
+            for path in frame_paths
         )
 
-        or_admin_report(
-            "VIDEO READY FOR OPENROUTER",
+        or_debug(
+            "VIDEO FRAMES READY FOR OPENROUTER",
             f"User: {user_id}\n"
             f"Original duration: {duration:.2f}s\n"
-            f"Duration sent: {selected_duration:.2f}s\n"
-            f"Prepared size: "
-            f"{prepared_size / 1048576:.2f} MB"
+            f"Duration scanned: {selected_duration:.2f}s\n"
+            f"Frames extracted: {len(frame_paths)}\n"
+            f"Total image size: "
+            f"{total_frame_size / 1048576:.2f} MB"
         )
 
-        bot.edit_message_text(
-            "🔍 An shirya bidiyon.\n"
-            "Ana gwada OpenRouter AI models a jere.\n"
-            "Ka jira...",
+        or_user_status(
             chat_id,
-            status_message_id
+            status_message_id,
+            "🖼 An cire hotuna 10 daga bidiyon.\n"
+            "Ana aika hotunan ga OpenRouter AI...\n"
+            "Ka jira."
         )
+
+        current_stage = "OPENROUTER MODEL IDENTIFICATION"
 
         result = or_try_all_models(
-            prepared_path,
+            frame_paths,
             user_id
+        )
+
+        current_stage = "SENDING RESULT TO USER"
+
+        safe_title = html.escape(
+            str(result["title"])
+        )
+
+        safe_actor = html.escape(
+            str(result["actor"])
+        )
+
+        safe_year = html.escape(
+            str(result["year"])
+        )
+
+        safe_confidence = html.escape(
+            str(result["confidence"] or "Ba a bayar ba")
+        )
+
+        safe_model = html.escape(
+            str(result["model"])
         )
 
         caption = (
             "🎬 <b>AN GANO SUNAN FIM!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎞 <b>Sunan fim:</b> {result['title']}\n"
-            f"📅 <b>Shekara:</b> {result['year']}\n"
-            f"⭐ <b>Babban jarumi:</b> {result['actor']}\n"
-            f"🎯 <b>Tabbaci:</b> "
-            f"{result['confidence'] or 'Ba a bayar ba'}\n"
+            f"🎞 <b>Sunan fim:</b> {safe_title}\n"
+            f"📅 <b>Shekara:</b> {safe_year}\n"
+            f"⭐ <b>Babban jarumi:</b> {safe_actor}\n"
+            f"🎯 <b>Tabbaci:</b> {safe_confidence}\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>AI Model:</b> {result['model']}"
+            f"<b>AI Model:</b> {safe_model}\n"
+            "🖼 <b>Hanyar bincike:</b> Hotuna 10 daga bidiyo"
         )
 
         bot.edit_message_text(
@@ -1107,8 +1446,10 @@ def or_process_dm_video(
             parse_mode="HTML"
         )
 
-        or_admin_report(
-            "TASK COMPLETED",
+        current_stage = "TASK COMPLETED"
+
+        or_debug(
+            current_stage,
             f"User: {user_id}\n"
             f"Movie: {result['title']}\n"
             f"Year: {result['year']}\n"
@@ -1122,16 +1463,17 @@ def or_process_dm_video(
             "OPENROUTER DM VIDEO TASK FAILED"
         )
 
-        or_admin_report(
-            "VIDEO TASK FAILED",
-            f"User: {user_id}\n"
-            f"Error: {type(error).__name__}: {error}"
+        or_debug_exception(
+            f"TASK FAILED AT: {current_stage}",
+            error
         )
 
         try:
             bot.edit_message_text(
                 "❌ An kasa gano fim ɗin.\n\n"
-                "An aika rahoton matsalar zuwa Admin.\n"
+                f"Matakin da aka samu matsala: "
+                f"{current_stage}\n\n"
+                "An aika cikakken rahoto zuwa Admin.\n"
                 "Ka iya sake gwadawa da wani video.",
                 chat_id,
                 status_message_id
@@ -1148,15 +1490,28 @@ def or_process_dm_video(
                 temp_dir,
                 ignore_errors=True
             )
-        except Exception:
-            OR_LOGGER.exception(
-                "OPENROUTER TEMP CLEANUP FAILED"
+
+            or_debug(
+                "TEMPORARY FILE CLEANUP",
+                f"Temporary folder removed: {temp_dir}"
+            )
+
+        except Exception as cleanup_error:
+
+            or_debug_exception(
+                "TEMPORARY FILE CLEANUP FAILED",
+                cleanup_error
             )
 
         with OR_ACTIVE_LOCK:
             OR_ACTIVE_USERS.discard(
                 int(user_id)
             )
+
+        or_debug(
+            "USER TASK RELEASED",
+            f"User ID: {user_id}"
+        )
 
 
 # ============================================================
@@ -1184,6 +1539,13 @@ def or_dm_video_receiver(message):
 
     try:
 
+        or_debug(
+            "DM VIDEO RECEIVED",
+            f"User: {user_id}\n"
+            f"Chat: {message.chat.id}\n"
+            f"Message: {message.message_id}"
+        )
+
         media = or_get_video_media(message)
 
         if not media:
@@ -1191,6 +1553,12 @@ def or_dm_video_receiver(message):
 
         size = int(
             getattr(media, "file_size", 0) or 0
+        )
+
+        or_debug(
+            "DM VIDEO SIZE CHECK",
+            f"User: {user_id}\n"
+            f"Size: {size / 1048576:.2f} MB"
         )
 
         if size <= 0:
@@ -1215,7 +1583,7 @@ def or_dm_video_receiver(message):
                 "Admin ya duba O_ROUTER a Render."
             )
 
-            or_admin_report(
+            or_debug(
                 "API KEY MISSING",
                 "O_ROUTER is not configured in Render."
             )
@@ -1259,7 +1627,8 @@ def or_dm_video_receiver(message):
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Kana so mu gano asalin sunan wannan fim?\n\n"
             f"📦 Girman video: {size / 1048576:.2f} MB\n"
-            "⏱ Za a aika wa AI sakan 59 mafi yawa.\n"
+            "🖼 Za a cire hotuna 10 daga bidiyon.\n"
+            "⏱ Za a binciki sakan 59 mafi yawa.\n"
             "━━━━━━━━━━━━━━━━━━━━"
         )
 
@@ -1286,18 +1655,20 @@ def or_dm_video_receiver(message):
                 "created_at": time.time()
             }
 
+        or_debug(
+            "VIDEO WAITING FOR USER CONFIRMATION",
+            f"User: {user_id}\n"
+            f"Pending key: {key}"
+        )
+
     except Exception as error:
 
         with OR_ACTIVE_LOCK:
             OR_ACTIVE_USERS.discard(user_id)
 
-        OR_LOGGER.exception(
-            "OPENROUTER DM RECEIVER FAILED"
-        )
-
-        or_admin_report(
-            "DM RECEIVER ERROR",
-            f"{type(error).__name__}: {error}"
+        or_debug_exception(
+            "DM VIDEO RECEIVER FAILED",
+            error
         )
 
 
@@ -1334,6 +1705,13 @@ def or_dm_video_confirmation(call):
             message_id
         )
 
+        or_debug(
+            "CALLBACK RECEIVED",
+            f"Action: {action}\n"
+            f"User: {call.from_user.id}\n"
+            f"Pending key: {key}"
+        )
+
         with OR_PENDING_LOCK:
 
             pending = OR_PENDING.get(key)
@@ -1356,7 +1734,6 @@ def or_dm_video_confirmation(call):
                 )
                 return
 
-            # Expire old confirmation buttons after 30 minutes.
             if time.time() - pending["created_at"] > 1800:
 
                 OR_PENDING.pop(key, None)
@@ -1370,6 +1747,12 @@ def or_dm_video_confirmation(call):
                     call.id,
                     "Lokacin wannan aikin ya wuce.",
                     show_alert=True
+                )
+
+                or_debug(
+                    "CONFIRMATION EXPIRED",
+                    f"User: {call.from_user.id}\n"
+                    f"Key: {key}"
                 )
                 return
 
@@ -1393,6 +1776,11 @@ def or_dm_video_confirmation(call):
             except Exception:
                 pass
 
+            or_debug(
+                "USER CANCELLED TASK",
+                f"User: {call.from_user.id}"
+            )
+
             return
 
         if action != "yes":
@@ -1402,13 +1790,19 @@ def or_dm_video_confirmation(call):
 
         bot.edit_message_text(
             "✅ An amince.\n"
-            "Ana fara aikin gano fim...",
+            "Ana fara cire hotuna daga bidiyon...",
             chat_id,
             pending["prompt_message_id"]
         )
 
         temp_dir = tempfile.mkdtemp(
             prefix="or_dm_movie_"
+        )
+
+        or_debug(
+            "BACKGROUND THREAD STARTING",
+            f"User: {call.from_user.id}\n"
+            f"Temporary folder: {temp_dir}"
         )
 
         thread = threading.Thread(
@@ -1426,6 +1820,12 @@ def or_dm_video_confirmation(call):
 
         thread.start()
 
+        or_debug(
+            "BACKGROUND THREAD STARTED",
+            f"User: {call.from_user.id}\n"
+            f"Thread: {thread.name}"
+        )
+
     except Exception as error:
 
         OR_LOGGER.exception(
@@ -1441,9 +1841,9 @@ def or_dm_video_confirmation(call):
         except Exception:
             pass
 
-        or_admin_report(
-            "YES/NO CALLBACK ERROR",
-            f"{type(error).__name__}: {error}"
+        or_debug_exception(
+            "YES/NO CALLBACK FAILED",
+            error
         )
 
         try:
@@ -1466,9 +1866,8 @@ def or_dm_video_confirmation(call):
 
 
 # ============================================================
-# END OPENROUTER DM VIDEO SYSTEM
+# END OPENROUTER DM IMAGE-FRAME SYSTEM
 # ============================================================
-
 
 
 
