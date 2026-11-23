@@ -405,6 +405,971 @@ def bot2_group_message_handler(message):
 
 
 
+
+# ============================================================
+# OPENROUTER DM VIDEO MOVIE IDENTIFICATION SYSTEM
+# INDEPENDENT SYSTEM — DOES NOT REPLACE GEMINI OR BOT2 WORKERS
+# TELEBOT + EXISTING BOT2 PYROGRAM CLIENT
+# MAX VIDEO SIZE: 50 MB
+# MAX VIDEO SENT TO AI: 59 SECONDS
+# ============================================================
+
+import os
+import re
+import json
+import time
+import base64
+import tempfile
+import subprocess
+import shutil
+import threading
+import requests
+import logging
+
+from telebot import types
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+O_ROUTER = os.getenv("O_ROUTER", "").strip()
+
+OR_VIDEO_MAX_SIZE = 50 * 1024 * 1024
+OR_VIDEO_MAX_SECONDS = 59
+
+OR_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+OR_MODELS = [
+    "nvidia/nemotron-3.5-super-vl:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "google/gemma-4-31b-it:free",
+]
+
+OR_LOGGER = logging.getLogger("OPENROUTER_DM_SCANNER")
+
+OR_PENDING = {}
+OR_PENDING_LOCK = threading.RLock()
+
+OR_ACTIVE_USERS = set()
+OR_ACTIVE_LOCK = threading.Lock()
+
+
+# ============================================================
+# ADMIN REPORT
+# ============================================================
+
+def or_admin_report(stage, details):
+
+    message = (
+        "🔴 OPENROUTER DM SCANNER REPORT\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Stage: {stage}\n\n"
+        f"{str(details)[:2500]}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    OR_LOGGER.error("%s", message)
+
+    try:
+        if ADMIN_ID:
+            bot.send_message(
+                int(ADMIN_ID),
+                message,
+                parse_mode=None
+            )
+    except Exception:
+        OR_LOGGER.exception("OPENROUTER ADMIN REPORT FAILED")
+
+
+# ============================================================
+# USER VIDEO HELPERS
+# ============================================================
+
+def or_get_video_media(message):
+
+    media = getattr(message, "video", None)
+
+    if media:
+        return media
+
+    document = getattr(message, "document", None)
+
+    if document:
+        mime = str(
+            getattr(document, "mime_type", "") or ""
+        ).lower()
+
+        if mime.startswith("video/"):
+            return document
+
+    return None
+
+
+def or_get_file_extension(message):
+
+    document = getattr(message, "document", None)
+
+    if document:
+        filename = getattr(document, "file_name", "") or ""
+
+        extension = os.path.splitext(filename)[1].lower()
+
+        if extension and len(extension) <= 10:
+            return extension
+
+    return ".mp4"
+
+
+# ============================================================
+# VIDEO DOWNLOAD THROUGH EXISTING PYROGRAM CLIENT
+# ============================================================
+
+def or_download_dm_video(message, output_path):
+
+    if not _BOT2_PYRO_READY.is_set():
+        raise RuntimeError(
+            "PYROGRAM_CLIENT_NOT_READY"
+        )
+
+    if not _BOT2_PYRO_CLIENT:
+        raise RuntimeError(
+            "PYROGRAM_CLIENT_MISSING"
+        )
+
+    # Fetch the original DM message using the existing
+    # Pyrogram client belonging to this same bot.
+
+    pyro_message = bot2_pyro_run_async(
+        bot2_pyro_get_message(
+            int(message.chat.id),
+            int(message.message_id)
+        ),
+        timeout=120
+    )
+
+    if not pyro_message:
+        raise RuntimeError(
+            "PYROGRAM_DM_MESSAGE_NOT_FOUND"
+        )
+
+    downloaded = bot2_pyro_run_async(
+        bot2_pyro_download(
+            pyro_message,
+            output_path
+        ),
+        timeout=900
+    )
+
+    if not downloaded or not os.path.isfile(downloaded):
+        raise RuntimeError(
+            "PYROGRAM_DM_VIDEO_DOWNLOAD_FAILED"
+        )
+
+    actual_size = os.path.getsize(downloaded)
+
+    if actual_size <= 0:
+        raise RuntimeError(
+            "DOWNLOADED_VIDEO_EMPTY"
+        )
+
+    if actual_size > OR_VIDEO_MAX_SIZE:
+        raise RuntimeError(
+            "DOWNLOADED_VIDEO_EXCEEDS_50MB"
+        )
+
+    return downloaded
+
+
+# ============================================================
+# VIDEO DURATION AND 59 SECOND CUT
+# ============================================================
+
+def or_prepare_video(input_path, output_path):
+
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+
+    if not ffmpeg or not ffprobe:
+        raise RuntimeError(
+            "FFMPEG_OR_FFPROBE_NOT_INSTALLED"
+        )
+
+    probe = subprocess.run(
+        [
+            ffprobe,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            input_path
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60
+    )
+
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "VIDEO_DURATION_READ_FAILED: "
+            + probe.stderr[:500]
+        )
+
+    try:
+        duration = float(probe.stdout.strip())
+    except Exception:
+        raise RuntimeError(
+            "VIDEO_DURATION_INVALID"
+        )
+
+    if duration <= 0:
+        raise RuntimeError(
+            "VIDEO_DURATION_ZERO"
+        )
+
+    # Video shorter than 59 seconds:
+    # preserve the complete video.
+    #
+    # Video longer than 59 seconds:
+    # take only the first 59 seconds.
+
+    if duration <= OR_VIDEO_MAX_SECONDS:
+
+        shutil.copy2(input_path, output_path)
+
+        return duration, False
+
+    result = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-nostdin",
+            "-i", input_path,
+            "-t", str(OR_VIDEO_MAX_SECONDS),
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "25",
+            "-c:a", "aac",
+            "-b:a", "96k",
+            "-movflags", "+faststart",
+            "-threads", "2",
+            "-y",
+            output_path
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300
+    )
+
+    if (
+        result.returncode != 0
+        or not os.path.isfile(output_path)
+        or os.path.getsize(output_path) <= 0
+    ):
+        raise RuntimeError(
+            "VIDEO_59_SECOND_CUT_FAILED: "
+            + result.stderr[:1000]
+        )
+
+    return duration, True
+
+
+# ============================================================
+# OPENROUTER VIDEO IDENTIFICATION PROMPT
+# ============================================================
+
+OR_MOVIE_PROMPT = """
+You are an expert movie identification system.
+
+Your task is to identify the ORIGINAL movie shown in the
+provided video clip.
+
+Analyze the video carefully. Do not guess.
+
+IMPORTANT IDENTIFICATION RULES:
+
+1. Study the moving images and visual scenes carefully.
+2. Recognize actors by their faces, appearance and movements.
+3. Examine costumes, locations, objects, action scenes,
+   cinematography and visual details.
+4. Read subtitles if they are visible and useful.
+5. Examine the story context and sequence of scenes.
+6. Pay attention to background music, soundtrack and
+   recognizable musical themes.
+7. Do NOT rely mainly on spoken dialogue.
+8. The dialogue may have been dubbed or translated into
+   Hausa or another language. Do not assume the spoken
+   language is the original movie language.
+9. If the lips and expressions provide useful clues,
+   consider them, but do not make dialogue the main evidence.
+10. Compare the actors and visual scenes with movies you know.
+11. Do not invent a movie title, release year or actor.
+12. If you cannot identify the movie confidently, say so.
+
+Return your answer in this exact format:
+
+MOVIE TITLE: ...
+RELEASE YEAR: ...
+LEAD ACTOR: ...
+CONFIDENCE: ...%
+
+SHORT VISUAL EVIDENCE: ...
+SUBTITLE EVIDENCE: ...
+MUSIC EVIDENCE: ...
+
+If you cannot confidently identify it, write:
+
+MOVIE TITLE: NOT IDENTIFIED
+RELEASE YEAR: UNKNOWN
+LEAD ACTOR: UNKNOWN
+CONFIDENCE: 0%
+"""
+
+
+# ============================================================
+# OPENROUTER API REQUEST
+# ============================================================
+
+def or_identify_with_model(model_name, video_path):
+
+    if not O_ROUTER:
+        raise RuntimeError(
+            "O_ROUTER_API_KEY_MISSING"
+        )
+
+    with open(video_path, "rb") as video_file:
+        encoded_video = base64.b64encode(
+            video_file.read()
+        ).decode("ascii")
+
+    data_url = (
+        "data:video/mp4;base64,"
+        + encoded_video
+    )
+
+    headers = {
+        "Authorization": f"Bearer {O_ROUTER}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://openrouter.ai",
+        "X-Title": "Bot2 Movie Identification"
+    }
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": OR_MOVIE_PROMPT
+                    },
+                    {
+                        "type": "video_url",
+                        "video_url": {
+                            "url": data_url
+                        }
+                    }
+                ]
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 900,
+        "stream": False
+    }
+
+    response = requests.post(
+        OR_API_URL,
+        headers=headers,
+        json=payload,
+        timeout=(30, 300)
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"OPENROUTER_HTTP_{response.status_code}: "
+            + response.text[:1800]
+        )
+
+    data = response.json()
+
+    choices = data.get("choices") or []
+
+    if not choices:
+        raise RuntimeError(
+            "OPENROUTER_EMPTY_CHOICES"
+        )
+
+    answer = (
+        choices[0]
+        .get("message", {})
+        .get("content", "")
+    )
+
+    if isinstance(answer, list):
+        answer = "\n".join(
+            str(item.get("text", ""))
+            for item in answer
+            if isinstance(item, dict)
+        )
+
+    answer = str(answer).strip()
+
+    if not answer:
+        raise RuntimeError(
+            "OPENROUTER_EMPTY_MODEL_RESPONSE"
+        )
+
+    return answer
+
+
+# ============================================================
+# CHECK AND PARSE MOVIE ANSWER
+# ============================================================
+
+def or_parse_movie_answer(answer):
+
+    def get_field(label):
+
+        match = re.search(
+            rf"(?im)^\s*{re.escape(label)}\s*:\s*(.+?)\s*$",
+            answer
+        )
+
+        return match.group(1).strip() if match else ""
+
+    title = get_field("MOVIE TITLE")
+    year = get_field("RELEASE YEAR")
+    actor = get_field("LEAD ACTOR")
+    confidence = get_field("CONFIDENCE")
+
+    if not title:
+        raise RuntimeError(
+            "MOVIE_TITLE_MISSING"
+        )
+
+    if title.lower() in {
+        "not identified",
+        "unknown",
+        "unknown movie",
+        "not sure",
+        "uncertain"
+    }:
+        raise RuntimeError(
+            "MOVIE_NOT_IDENTIFIED"
+        )
+
+    year_match = re.search(
+        r"\b(19|20)\d{2}\b",
+        year
+    )
+
+    if not year_match:
+        raise RuntimeError(
+            "MOVIE_RELEASE_YEAR_NOT_CONFIRMED"
+        )
+
+    if not actor or actor.lower() in {
+        "unknown", "not identified", "none"
+    }:
+        raise RuntimeError(
+            "LEAD_ACTOR_NOT_CONFIRMED"
+        )
+
+    return (
+        title,
+        year_match.group(0),
+        actor,
+        confidence
+    )
+
+
+# ============================================================
+# TRY ALL MODELS IN ORDER
+# ============================================================
+
+def or_try_all_models(video_path, user_id):
+
+    failures = []
+
+    for index, model_name in enumerate(OR_MODELS, start=1):
+
+        try:
+
+            or_admin_report(
+                "MODEL STARTED",
+                f"User: {user_id}\n"
+                f"Model {index}/{len(OR_MODELS)}:\n"
+                f"{model_name}"
+            )
+
+            answer = or_identify_with_model(
+                model_name,
+                video_path
+            )
+
+            title, year, actor, confidence = (
+                or_parse_movie_answer(answer)
+            )
+
+            or_admin_report(
+                "MODEL IDENTIFIED MOVIE",
+                f"User: {user_id}\n"
+                f"Model: {model_name}\n"
+                f"Title: {title}\n"
+                f"Year: {year}\n"
+                f"Actor: {actor}\n"
+                f"Confidence: {confidence}"
+            )
+
+            return {
+                "title": title,
+                "year": year,
+                "actor": actor,
+                "confidence": confidence,
+                "model": model_name,
+                "raw": answer
+            }
+
+        except Exception as error:
+
+            failure = (
+                f"{model_name}\n"
+                f"{type(error).__name__}: {str(error)[:1400]}"
+            )
+
+            failures.append(failure)
+
+            or_admin_report(
+                "MODEL FAILED — NEXT MODEL WILL BE TRIED",
+                f"User: {user_id}\n"
+                f"{failure}"
+            )
+
+            continue
+
+    raise RuntimeError(
+        "ALL_OPENROUTER_MODELS_FAILED:\n"
+        + "\n\n".join(failures)
+    )
+
+
+# ============================================================
+# MAIN BACKGROUND TASK
+# ============================================================
+
+def or_process_dm_video(
+    message,
+    status_message_id,
+    temp_dir
+):
+
+    user_id = int(message.from_user.id)
+    chat_id = int(message.chat.id)
+
+    try:
+
+        bot.edit_message_text(
+            "⏳ Ana sauke bidiyon daga Telegram...",
+            chat_id,
+            status_message_id
+        )
+
+        original_path = os.path.join(
+            temp_dir,
+            "original_video"
+            + or_get_file_extension(message)
+        )
+
+        downloaded_path = or_download_dm_video(
+            message,
+            original_path
+        )
+
+        bot.edit_message_text(
+            "🎞 An sauke bidiyon.\n"
+            "Ana duba tsawonsa da shirya sakan 59...",
+            chat_id,
+            status_message_id
+        )
+
+        prepared_path = os.path.join(
+            temp_dir,
+            "openrouter_video.mp4"
+        )
+
+        duration, was_cut = or_prepare_video(
+            downloaded_path,
+            prepared_path
+        )
+
+        prepared_size = os.path.getsize(
+            prepared_path
+        )
+
+        if prepared_size > OR_VIDEO_MAX_SIZE:
+            raise RuntimeError(
+                "PREPARED_VIDEO_EXCEEDS_50MB"
+            )
+
+        or_admin_report(
+            "VIDEO READY FOR OPENROUTER",
+            f"User: {user_id}\n"
+            f"Original duration: {duration:.2f}s\n"
+            f"Was cut: {was_cut}\n"
+            f"Prepared size: {prepared_size / 1048576:.2f} MB"
+        )
+
+        bot.edit_message_text(
+            "🔍 An shirya bidiyon.\n"
+            "Ana gwada OpenRouter AI models a jere.\n"
+            "Ka jira...",
+            chat_id,
+            status_message_id
+        )
+
+        result = or_try_all_models(
+            prepared_path,
+            user_id
+        )
+
+        caption = (
+            "🎬 <b>AN GANO SUNAN FIM!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎞 <b>Sunan fim:</b> {result['title']}\n"
+            f"📅 <b>Shekara:</b> {result['year']}\n"
+            f"⭐ <b>Babban jarumi:</b> {result['actor']}\n"
+            f"🎯 <b>Tabbaci:</b> {result['confidence'] or 'Ba a bayar ba'}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>AI Model:</b> {result['model']}"
+        )
+
+        bot.edit_message_text(
+            caption,
+            chat_id,
+            status_message_id,
+            parse_mode="HTML"
+        )
+
+        or_admin_report(
+            "TASK COMPLETED",
+            f"User: {user_id}\n"
+            f"Movie: {result['title']}\n"
+            f"Year: {result['year']}\n"
+            f"Actor: {result['actor']}\n"
+            f"Model: {result['model']}"
+        )
+
+    except Exception as error:
+
+        OR_LOGGER.exception(
+            "OPENROUTER DM VIDEO TASK FAILED"
+        )
+
+        or_admin_report(
+            "VIDEO TASK FAILED",
+            f"User: {user_id}\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+        try:
+            bot.edit_message_text(
+                "❌ An kasa gano fim ɗin.\n\n"
+                "An aika rahoton matsalar zuwa Admin.\n"
+                "Ka iya sake gwadawa da wani video.",
+                chat_id,
+                status_message_id
+            )
+        except Exception:
+            pass
+
+    finally:
+
+        try:
+            shutil.rmtree(
+                temp_dir,
+                ignore_errors=True
+            )
+        except Exception:
+            OR_LOGGER.exception(
+                "OPENROUTER TEMP CLEANUP FAILED"
+            )
+
+        with OR_ACTIVE_LOCK:
+            OR_ACTIVE_USERS.discard(user_id)
+
+
+# ============================================================
+# DM VIDEO RECEIVER
+# ONLY PRIVATE CHAT — NO GROUP OR CHANNEL ACTION
+# ============================================================
+
+@bot.message_handler(
+    content_types=["video", "document"],
+    func=lambda message: (
+        bool(message.chat)
+        and message.chat.type == "private"
+        and bool(message.from_user)
+        and not getattr(message.from_user, "is_bot", False)
+        and or_get_video_media(message) is not None
+    )
+)
+def or_dm_video_receiver(message):
+
+    try:
+
+        media = or_get_video_media(message)
+
+        if not media:
+            return
+
+        user_id = int(message.from_user.id)
+
+        size = int(
+            getattr(media, "file_size", 0) or 0
+        )
+
+        if size <= 0:
+            bot.reply_to(
+                message,
+                "❌ Ba a iya tantance girman bidiyon ba."
+            )
+            return
+
+        if size > OR_VIDEO_MAX_SIZE:
+            bot.reply_to(
+                message,
+                "❌ Bidiyon ya wuce 50MB.\n"
+                "Iyakar da aka yarda da ita ita ce 50MB."
+            )
+            return
+
+        if not O_ROUTER:
+            bot.reply_to(
+                message,
+                "❌ OpenRouter API key bai samu ba.\n"
+                "Admin ya duba O_ROUTER a Render."
+            )
+
+            or_admin_report(
+                "API KEY MISSING",
+                "O_ROUTER is not configured in Render."
+            )
+            return
+
+        with OR_ACTIVE_LOCK:
+
+            if user_id in OR_ACTIVE_USERS:
+                bot.reply_to(
+                    message,
+                    "⏳ Kana da wani aikin video da ake yi.\n"
+                    "Ka jira a kammala shi kafin ka turo wani."
+                )
+                return
+
+            OR_ACTIVE_USERS.add(user_id)
+
+        keyboard = types.InlineKeyboardMarkup(
+            row_width=2
+        )
+
+        keyboard.add(
+            types.InlineKeyboardButton(
+                "✅ YES",
+                callback_data=f"or_yes_{message.message_id}"
+            ),
+            types.InlineKeyboardButton(
+                "❌ NO",
+                callback_data=f"or_no_{message.message_id}"
+            )
+        )
+
+        prompt = (
+            "🎬 <b>GANO ASALIN SUNAN FIM</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Kana so mu gano asalin sunan wannan fim?\n\n"
+            f"📦 Girman video: {size / 1048576:.2f} MB\n"
+            "⏱ Za a aika wa AI sakan 59 mafi yawa.\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+
+        sent = bot.reply_to(
+            message,
+            prompt,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+
+        with OR_PENDING_LOCK:
+
+            OR_PENDING[
+                str(message.message_id)
+            ] = {
+                "user_id": user_id,
+                "chat_id": int(message.chat.id),
+                "message_id": int(message.message_id),
+                "prompt_message_id": int(sent.message_id),
+                "size": size,
+                "created_at": time.time()
+            }
+
+    except Exception as error:
+
+        with OR_ACTIVE_LOCK:
+            OR_ACTIVE_USERS.discard(
+                int(message.from_user.id)
+            )
+
+        OR_LOGGER.exception(
+            "OPENROUTER DM RECEIVER FAILED"
+        )
+
+        or_admin_report(
+            "DM RECEIVER ERROR",
+            f"{type(error).__name__}: {error}"
+        )
+
+
+# ============================================================
+# YES / NO BUTTON HANDLER
+# ============================================================
+
+@bot.callback_query_handler(
+    func=lambda call: (
+        bool(call.data)
+        and (
+            call.data.startswith("or_yes_")
+            or call.data.startswith("or_no_")
+        )
+    )
+)
+def or_dm_video_confirmation(call):
+
+    try:
+
+        action, message_id = call.data.split("_", 2)[1:]
+
+        message_id = int(message_id)
+
+        with OR_PENDING_LOCK:
+
+            pending = OR_PENDING.get(
+                str(message_id)
+            )
+
+            if not pending:
+                bot.answer_callback_query(
+                    call.id,
+                    "Wannan aikin ya ƙare ko ba a same shi ba.",
+                    show_alert=True
+                )
+                return
+
+            if int(call.from_user.id) != int(
+                pending["user_id"]
+            ):
+                bot.answer_callback_query(
+                    call.id,
+                    "Wannan aikin ba naka ba ne.",
+                    show_alert=True
+                )
+                return
+
+            OR_PENDING.pop(
+                str(message_id),
+                None
+            )
+
+        bot.answer_callback_query(call.id)
+
+        if action == "no":
+
+            with OR_ACTIVE_LOCK:
+                OR_ACTIVE_USERS.discard(
+                    int(call.from_user.id)
+                )
+
+            try:
+                bot.edit_message_text(
+                    "An soke aikin gano fim.",
+                    pending["chat_id"],
+                    pending["prompt_message_id"]
+                )
+            except Exception:
+                pass
+
+            return
+
+        bot.edit_message_text(
+            "✅ An amince.\n"
+            "Ana fara aikin gano fim...",
+            pending["chat_id"],
+            pending["prompt_message_id"]
+        )
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="or_dm_movie_"
+        )
+
+        thread = threading.Thread(
+            target=or_process_dm_video,
+            args=(
+                types.SimpleNamespace(
+                    chat=types.SimpleNamespace(
+                        id=pending["chat_id"]
+                    ),
+                    from_user=call.from_user,
+                    message_id=pending["message_id"],
+                    video=None,
+                    document=None
+                ),
+                pending["prompt_message_id"],
+                temp_dir
+            ),
+            daemon=True,
+            name=f"or-dm-video-{call.from_user.id}"
+        )
+
+        # Rebuild the original TeleBot message from the saved
+        # Telegram message before processing. The worker fetches
+        # the message from Pyrogram by chat_id/message_id.
+
+        thread._or_pending = pending
+        thread.start()
+
+    except Exception as error:
+
+        OR_LOGGER.exception(
+            "OPENROUTER CALLBACK FAILED"
+        )
+
+        or_admin_report(
+            "YES/NO CALLBACK ERROR",
+            f"{type(error).__name__}: {error}"
+        )
+
+        try:
+            bot.answer_callback_query(
+                call.id,
+                "An samu matsala. An sanar da Admin.",
+                show_alert=True
+            )
+        except Exception:
+            pass
+
+
+# ============================================================
+# END OPENROUTER DM VIDEO SYSTEM
+# ============================================================
+
+
+
+
+
 # BOT 2 — FULL DEBUG MOVIE SCANNER
 # BOT 1 COMPATIBLE
 # ONE TASK AT A TIME
