@@ -2162,18 +2162,14 @@ async def bot2_pyro_download(message, output_path, progress=None, progress_state
 
 def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
     """
-    Start Bot 2's own Pyrogram client.
-
-    Telegram may temporarily return 500 RPC_CALL_FAIL while importing the
-    bot authorization. Retry the Pyrogram startup with a fresh Client and
-    event loop; do not mark the engine ready until the MTProto connection
-    has actually succeeded.
+    Start Bot 2's own Pyrogram client and collect detailed diagnostics
+    if Telegram authorization fails. No other Bot 2 systems are changed.
     """
     global _BOT2_PYRO_CLIENT
     global _BOT2_PYRO_LOOP
     global _BOT2_PYRO_START_ERROR
 
-    from pyrogram import Client
+    import traceback
 
     max_attempts = max(
         1, int(os.getenv("BOT2_PYROGRAM_START_ATTEMPTS", "5"))
@@ -2184,16 +2180,28 @@ def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
     for attempt in range(1, max_attempts + 1):
         loop = None
         client = None
+        phase = "IMPORT_PYROGRAM"
 
         try:
+            # Keep the import inside the guarded block. If Pyrogram is missing
+            # or broken, the startup waiter must receive the real exception
+            # instead of waiting until its timeout.
+            import pyrogram
+            from pyrogram import Client
+
+            phase = "CREATE_EVENT_LOOP"
             BOT2_LOGGER.info(
-                "BOT2 PYROGRAM START ATTEMPT %s/%s",
-                attempt, max_attempts
+                "BOT2 PYROGRAM START | attempt=%s/%s | phase=%s | "
+                "pyrogram_version=%s | python=%s",
+                attempt, max_attempts, phase,
+                getattr(pyrogram, "__version__", "unknown"),
+                __import__("sys").version.split()[0]
             )
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
+            phase = "CREATE_CLIENT"
             client = Client(
                 name="bot2_group_video_downloader",
                 api_id=api_id,
@@ -2203,28 +2211,32 @@ def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
                 no_updates=True
             )
 
-            # Publish the current attempt's objects only while this thread
-            # owns their lifecycle. They are cleared if this attempt fails.
             _BOT2_PYRO_CLIENT = client
             _BOT2_PYRO_LOOP = loop
 
-            # Preserve compatibility with the installed Pyrogram API:
-            # start() may return an awaitable or may complete synchronously.
+            # Keep compatibility with Pyrogram versions where start() may
+            # return either an awaitable or a completed synchronous result.
+            phase = "TELEGRAM_BOT_AUTHORIZATION"
+            BOT2_LOGGER.info(
+                "BOT2 PYROGRAM AUTH STARTING | attempt=%s/%s",
+                attempt, max_attempts
+            )
             start_result = client.start()
             if inspect.isawaitable(start_result):
                 loop.run_until_complete(start_result)
 
+            phase = "VERIFY_MTPROTO_CONNECTION"
             if not getattr(client, "is_connected", False):
                 raise RuntimeError(
                     "BOT2_PYROGRAM_START_RETURNED_WITHOUT_CONNECTION"
                 )
 
-            # The client is genuinely connected; only now expose READY.
             _BOT2_PYRO_START_ERROR = None
             _BOT2_PYRO_READY.set()
 
             BOT2_LOGGER.info(
-                "BOT2 PYROGRAM CLIENT STARTED — GROUP MESSAGE DOWNLOAD READY"
+                "BOT2 PYROGRAM CLIENT STARTED | attempt=%s/%s",
+                attempt, max_attempts
             )
             clip2_admin_send(
                 "✅ BOT 2 PYROGRAM CLIENT STARTED\\n"
@@ -2240,10 +2252,33 @@ def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
         except Exception as error:
             last_error = error
             _BOT2_PYRO_START_ERROR = error
+            error_trace = traceback.format_exc()
 
-            BOT2_LOGGER.exception(
-                "BOT2 PYROGRAM START FAILED — attempt %s/%s",
-                attempt, max_attempts
+            try:
+                import pyrogram
+                pyro_version = getattr(pyrogram, "__version__", "unknown")
+            except Exception:
+                pyro_version = "not-importable"
+
+            error_details = (
+                f"Attempt: {attempt}/{max_attempts}\\n"
+                f"Failed phase: {phase}\\n"
+                f"Exception type: {type(error).__module__}.{type(error).__name__}\\n"
+                f"Exception: {str(error)[:1000]}\\n"
+                f"Pyrogram version: {pyro_version}\\n"
+                f"API_ID configured: {bool(api_id)}\\n"
+                f"API_HASH configured: {bool(api_hash)}\\n"
+                f"BOT_TOKEN configured: {bool(bot_token)}\\n"
+                "Credentials are intentionally not printed.\\n\\n"
+                f"TRACEBACK:\\n{error_trace[-1900:]}"
+            )
+
+            BOT2_LOGGER.error(
+                "BOT2 PYROGRAM START FAILED | attempt=%s/%s | phase=%s | "
+                "exception=%s.%s | error=%s\\n%s",
+                attempt, max_attempts, phase,
+                type(error).__module__, type(error).__name__,
+                str(error), error_trace
             )
 
             # Best-effort cleanup of a partially initialized client.
@@ -2275,13 +2310,12 @@ def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
                 delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
                 clip2_admin_send(
                     "🟠 BOT 2 PYROGRAM START RETRY\\n"
-                    f"Attempt: {attempt}/{max_attempts}\\n"
-                    f"Error: {str(error)[:900]}\\n"
+                    f"{error_details[:2800]}\\n"
                     f"Next retry in {delay} seconds."
                 )
                 time.sleep(delay)
 
-    # All attempts failed. Signal the waiting startup function exactly once.
+    # Signal startup failure once all attempts are exhausted.
     _BOT2_PYRO_CLIENT = None
     _BOT2_PYRO_LOOP = None
     _BOT2_PYRO_START_ERROR = last_error or RuntimeError(
@@ -2296,8 +2330,12 @@ def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
     try:
         clip2_admin_send(
             "🔴 BOT 2 PYROGRAM START FAILED AFTER ALL RETRIES\\n"
-            f"Attempts: {max_attempts}\\n"
-            f"Error: {str(_BOT2_PYRO_START_ERROR)[:1800]}"
+            f"Total attempts: {max_attempts}\\n"
+            f"Last exception: {type(_BOT2_PYRO_START_ERROR).__name__}: "
+            f"{str(_BOT2_PYRO_START_ERROR)[:1000]}\\n"
+            "Check the per-attempt messages and Render logs for the exact "
+            "failed phase and traceback.\\n"
+            "The full traceback was sent in the per-attempt diagnostic above."
         )
     except Exception:
         BOT2_LOGGER.exception("FAILED TO REPORT PYROGRAM START ERROR")
