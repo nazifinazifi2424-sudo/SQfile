@@ -2161,83 +2161,187 @@ async def bot2_pyro_download(message, output_path, progress=None, progress_state
 
 
 def _bot2_pyro_thread_main(api_id, api_hash, bot_token):
+    """
+    Start Bot 2's own Pyrogram client.
+
+    Telegram may temporarily return 500 RPC_CALL_FAIL while importing the
+    bot authorization. Retry the Pyrogram startup with a fresh Client and
+    event loop; do not mark the engine ready until the MTProto connection
+    has actually succeeded.
+    """
     global _BOT2_PYRO_CLIENT
     global _BOT2_PYRO_LOOP
     global _BOT2_PYRO_START_ERROR
 
-    try:
-        from pyrogram import Client
+    from pyrogram import Client
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        _BOT2_PYRO_LOOP = loop
+    max_attempts = max(
+        1, int(os.getenv("BOT2_PYROGRAM_START_ATTEMPTS", "5"))
+    )
+    retry_delays = (5, 10, 20, 30, 45)
+    last_error = None
 
-        client = Client(
-            name="bot2_group_video_downloader",
-            api_id=api_id,
-            api_hash=api_hash,
-            bot_token=bot_token,
-            in_memory=True,
-            no_updates=True
-        )
+    for attempt in range(1, max_attempts + 1):
+        loop = None
+        client = None
 
-        _BOT2_PYRO_CLIENT = client
-
-        # Pyrogram forks/versions differ: some expose start() as an async
-        # method, while others wrap it synchronously and return None.
-        # Only pass an actual awaitable to run_until_complete().
-        start_result = client.start()
-        if inspect.isawaitable(start_result):
-            loop.run_until_complete(start_result)
-
-        # Do not announce readiness unless the MTProto client is connected.
-        if not getattr(client, "is_connected", False):
-            raise RuntimeError(
-                "BOT2_PYROGRAM_START_RETURNED_WITHOUT_CONNECTION"
-            )
-
-        # Set ready only after Telegram has accepted the MTProto session.
-        _BOT2_PYRO_READY.set()
-        BOT2_LOGGER.info(
-            "BOT2 PYROGRAM CLIENT STARTED — GROUP MESSAGE DOWNLOAD READY"
-        )
-        clip2_admin_send(
-            "✅ BOT 2 PYROGRAM CLIENT STARTED\\n"
-            "✅ MTProto connection established\\n"
-            "✅ Can fetch original group messages by chat_id/message_id"
-        )
-
-        loop.run_forever()
-
-    except Exception as error:
-        _BOT2_PYRO_START_ERROR = error
-        BOT2_LOGGER.exception("BOT2 PYROGRAM ENGINE START FAILED")
-        _BOT2_PYRO_READY.set()
         try:
-            clip2_admin_send(
-                "🔴 BOT 2 PYROGRAM START FAILED\\n"
-                f"Error: {str(error)[:1800]}"
+            BOT2_LOGGER.info(
+                "BOT2 PYROGRAM START ATTEMPT %s/%s",
+                attempt, max_attempts
             )
-        except Exception:
-            BOT2_LOGGER.exception("FAILED TO REPORT PYROGRAM START ERROR")
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            client = Client(
+                name="bot2_group_video_downloader",
+                api_id=api_id,
+                api_hash=api_hash,
+                bot_token=bot_token,
+                in_memory=True,
+                no_updates=True
+            )
+
+            # Publish the current attempt's objects only while this thread
+            # owns their lifecycle. They are cleared if this attempt fails.
+            _BOT2_PYRO_CLIENT = client
+            _BOT2_PYRO_LOOP = loop
+
+            # Preserve compatibility with the installed Pyrogram API:
+            # start() may return an awaitable or may complete synchronously.
+            start_result = client.start()
+            if inspect.isawaitable(start_result):
+                loop.run_until_complete(start_result)
+
+            if not getattr(client, "is_connected", False):
+                raise RuntimeError(
+                    "BOT2_PYROGRAM_START_RETURNED_WITHOUT_CONNECTION"
+                )
+
+            # The client is genuinely connected; only now expose READY.
+            _BOT2_PYRO_START_ERROR = None
+            _BOT2_PYRO_READY.set()
+
+            BOT2_LOGGER.info(
+                "BOT2 PYROGRAM CLIENT STARTED — GROUP MESSAGE DOWNLOAD READY"
+            )
+            clip2_admin_send(
+                "✅ BOT 2 PYROGRAM CLIENT STARTED\\n"
+                "✅ MTProto connection established\\n"
+                f"✅ Startup succeeded on attempt {attempt}/{max_attempts}\\n"
+                "✅ Can fetch original group messages by chat_id/message_id"
+            )
+
+            # Keep this event loop alive for download/get_messages coroutines.
+            loop.run_forever()
+            return
+
+        except Exception as error:
+            last_error = error
+            _BOT2_PYRO_START_ERROR = error
+
+            BOT2_LOGGER.exception(
+                "BOT2 PYROGRAM START FAILED — attempt %s/%s",
+                attempt, max_attempts
+            )
+
+            # Best-effort cleanup of a partially initialized client.
+            if client is not None:
+                try:
+                    stop_result = client.stop()
+                    if inspect.isawaitable(stop_result) and loop is not None:
+                        loop.run_until_complete(stop_result)
+                except Exception:
+                    BOT2_LOGGER.warning(
+                        "Pyrogram cleanup after failed startup was unsuccessful",
+                        exc_info=True
+                    )
+
+            _BOT2_PYRO_CLIENT = None
+            _BOT2_PYRO_LOOP = None
+
+            if loop is not None:
+                try:
+                    if not loop.is_closed():
+                        loop.close()
+                except Exception:
+                    BOT2_LOGGER.warning(
+                        "Failed to close Pyrogram retry event loop",
+                        exc_info=True
+                    )
+
+            if attempt < max_attempts:
+                delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+                clip2_admin_send(
+                    "🟠 BOT 2 PYROGRAM START RETRY\\n"
+                    f"Attempt: {attempt}/{max_attempts}\\n"
+                    f"Error: {str(error)[:900]}\\n"
+                    f"Next retry in {delay} seconds."
+                )
+                time.sleep(delay)
+
+    # All attempts failed. Signal the waiting startup function exactly once.
+    _BOT2_PYRO_CLIENT = None
+    _BOT2_PYRO_LOOP = None
+    _BOT2_PYRO_START_ERROR = last_error or RuntimeError(
+        "BOT2_PYROGRAM_START_FAILED_WITH_UNKNOWN_ERROR"
+    )
+    _BOT2_PYRO_READY.set()
+
+    BOT2_LOGGER.error(
+        "BOT2 PYROGRAM ENGINE FAILED AFTER %s ATTEMPTS: %s",
+        max_attempts, _BOT2_PYRO_START_ERROR
+    )
+    try:
+        clip2_admin_send(
+            "🔴 BOT 2 PYROGRAM START FAILED AFTER ALL RETRIES\\n"
+            f"Attempts: {max_attempts}\\n"
+            f"Error: {str(_BOT2_PYRO_START_ERROR)[:1800]}"
+        )
+    except Exception:
+        BOT2_LOGGER.exception("FAILED TO REPORT PYROGRAM START ERROR")
 
 
-def bot2_start_pyrogram_engine(timeout=180):
+def bot2_start_pyrogram_engine(timeout=300):
     global _BOT2_PYRO_THREAD
+    global _BOT2_PYRO_START_ERROR
+    global _BOT2_PYRO_CLIENT
+    global _BOT2_PYRO_LOOP
 
     with _BOT2_PYRO_START_LOCK:
         if _BOT2_PYRO_READY.is_set():
             if _BOT2_PYRO_START_ERROR:
-                raise RuntimeError(
-                    "BOT2_PYROGRAM_START_FAILED: "
-                    + str(_BOT2_PYRO_START_ERROR)
-                )
-            if _BOT2_PYRO_CLIENT is not None:
+                # Permit a later explicit call to start a fresh retry cycle
+                # after the previous startup thread has completely stopped.
+                if _BOT2_PYRO_THREAD is not None and _BOT2_PYRO_THREAD.is_alive():
+                    raise RuntimeError(
+                        "BOT2_PYROGRAM_START_FAILED: "
+                        + str(_BOT2_PYRO_START_ERROR)
+                    )
+                _BOT2_PYRO_READY.clear()
+                _BOT2_PYRO_START_ERROR = None
+                _BOT2_PYRO_CLIENT = None
+                _BOT2_PYRO_LOOP = None
+            elif (
+                _BOT2_PYRO_CLIENT is not None
+                and _BOT2_PYRO_LOOP is not None
+                and _BOT2_PYRO_LOOP.is_running()
+                and getattr(_BOT2_PYRO_CLIENT, "is_connected", False)
+            ):
                 return True
+            else:
+                # Stale READY state: allow the engine to be started again.
+                _BOT2_PYRO_READY.clear()
+                _BOT2_PYRO_START_ERROR = None
+                _BOT2_PYRO_CLIENT = None
+                _BOT2_PYRO_LOOP = None
 
         if _BOT2_PYRO_THREAD is None or not _BOT2_PYRO_THREAD.is_alive():
             api_id_raw = os.getenv("API_ID") or globals().get("API_ID")
-            api_hash = (os.getenv("API_HASH") or globals().get("API_HASH") or "").strip()
+            api_hash = (
+                os.getenv("API_HASH") or globals().get("API_HASH") or ""
+            ).strip()
             bot_token = (
                 os.getenv("BOT_TOKEN")
                 or globals().get("BOT_TOKEN")
@@ -2272,8 +2376,13 @@ def bot2_start_pyrogram_engine(timeout=180):
             + str(_BOT2_PYRO_START_ERROR)
         )
 
-    if _BOT2_PYRO_CLIENT is None or _BOT2_PYRO_LOOP is None:
-        raise RuntimeError("BOT2_PYROGRAM_CLIENT_OR_LOOP_MISSING")
+    if (
+        _BOT2_PYRO_CLIENT is None
+        or _BOT2_PYRO_LOOP is None
+        or not _BOT2_PYRO_LOOP.is_running()
+        or not getattr(_BOT2_PYRO_CLIENT, "is_connected", False)
+    ):
+        raise RuntimeError("BOT2_PYROGRAM_CLIENT_OR_LOOP_NOT_READY")
 
     return True
 
@@ -3524,7 +3633,7 @@ def clip2_startup():
         )
 
         bot2_start_pyrogram_engine(
-            timeout=int(os.getenv("BOT2_PYROGRAM_START_TIMEOUT", "180"))
+            timeout=int(os.getenv("BOT2_PYROGRAM_START_TIMEOUT", "300"))
         )
 
         clip2_admin_send(
