@@ -608,7 +608,8 @@ def clip2_admin_send(message):
 
         return bot.send_message(
             int(ADMIN_ID),
-            str(message)[:3900]
+            str(message)[:3900],
+            parse_mode=None  # Diagnostic text/tracebacks must be sent as plain text.
         )
 
     except Exception:
