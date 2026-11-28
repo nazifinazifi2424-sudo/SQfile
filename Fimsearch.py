@@ -323,29 +323,13 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True)
 
 
 # ============================================================
-# INDEPENDENT GEMINI PHOTO MOVIE TEST — COMPLETE SYSTEM
-#
-# FIXED VERSION
-# - Google Search grounding
-# - All unique models from existing GEMINI_MODELS
-# - Genuine hard 90-second wall-clock timeout per model
-# - Timed-out request process is terminated (not left running)
-# - Every model answer and every error is sent to the user
-# - Continues after errors, empty answers, and timeouts
-# - Private users; no ADMIN_ID required
-#
-# DOES NOT TOUCH:
-# BOT2 WORKERS / TASK QUEUE / DATABASE /
-# EXISTING MOVIE SCANNER / EXISTING CONSENSUS SYSTEM
-#
-# REQUIREMENTS ALREADY PRESENT IN YOUR MAIN BOT:
-#   bot
-#   GEMINI_API_KEY
-#   GEMINI_MODELS
-#   logger (optional; Python logging is used as fallback)
-#
-# Also ensure: pip install requests pyTelegramBotAPI
-# Paste after `bot`, `GEMINI_API_KEY`, and `GEMINI_MODELS` exist.
+# INDEPENDENT GEMINI MOVIE TEST — GOOGLE SEARCH EDITION
+# ALL 14 UNIQUE MODELS MUST BE TESTED
+# NEVER STOP AFTER FIRST SUCCESS
+# GOOGLE SEARCH GROUNDING ENABLED
+# EVERY MODEL ERROR / RESPONSE SENT TO THE TESTING USER
+# PRIVATE CHAT | NO ADMIN ID
+# DOES NOT TOUCH BOT2 TASKS / WORKERS / DATABASE
 # ============================================================
 
 import uuid
@@ -354,140 +338,85 @@ import requests
 import base64
 import html
 import time
-import logging
 import json
 import re
-import sys
-import subprocess
+import logging
 
 from telebot import types
 
 
 # ============================================================
-# 1. CONFIGURATION
+# CONFIGURATION
 # ============================================================
 
 MOVIE_TEST_MAX_PHOTOS = 10
 MOVIE_TEST_ALBUM_WAIT = 3.0
 
-# This is a real wall-clock deadline enforced by the parent process.
-MOVIE_TEST_MODEL_HARD_TIMEOUT = 90
-
-# The request inside the child process has its own shorter network limits.
-# The parent process still enforces the full 90-second hard deadline.
-MOVIE_TEST_CONNECT_TIMEOUT = 15
-MOVIE_TEST_READ_TIMEOUT = 70
-MOVIE_TEST_TIMEOUT = (
-    MOVIE_TEST_CONNECT_TIMEOUT,
-    MOVIE_TEST_READ_TIMEOUT
-)
-
-MOVIE_TEST_ENABLE_GOOGLE_SEARCH = True
-
-MOVIE_TEST_MAX_ANSWER_LENGTH = 3000
-MOVIE_TEST_MAX_ERROR_LENGTH = 1800
-MOVIE_TEST_MAX_SOURCES = 8
-MOVIE_TEST_MAX_PHOTO_BYTES = 20 * 1024 * 1024
+# Connect timeout = 20 seconds
+# Read timeout = 120 seconds
+MOVIE_TEST_TIMEOUT = (20, 120)
 
 MOVIE_TEST_SESSIONS = {}
 MOVIE_TEST_LOCK = threading.RLock()
 
+# Preserve the existing model order, but remove duplicate names.
+MOVIE_TEST_MODELS = list(dict.fromkeys(GEMINI_MODELS))
+
 
 # ============================================================
-# 2. LOGGING AND SAFE TEXT
+# SAFE TEXT
 # ============================================================
 
-def movie_test_log(message, *args):
+def movie_test_safe(value, limit=3000):
+    return html.escape(str(value or "")[:limit])
+
+
+def movie_test_split_text(text, limit=3500):
+    text = str(text or "")
+
+    if not text:
+        return ["(Babu rubutu)"]
+
+    return [
+        text[i:i + limit]
+        for i in range(0, len(text), limit)
+    ]
+
+
+# ============================================================
+# SEND MESSAGE TO THE USER WHO SENT THE PHOTOS
+# NEVER USE ADMIN_ID
+# ============================================================
+
+def movie_test_send_user(chat_id, text, parse_mode="HTML"):
+
     try:
-        logger.info(message, *args)
-    except Exception:
-        logging.info(message, *args)
-
-
-def movie_test_exception(message, *args):
-    try:
-        logger.exception(message, *args)
-    except Exception:
-        logging.exception(message, *args)
-
-
-def movie_test_safe(value, limit=1500):
-    return html.escape(str(value or "")[:limit], quote=True)
-
-
-def movie_test_plain_text(value):
-    """Convert HTML-formatted Telegram text to safe plain text for long chunks."""
-    value = str(value or "")
-    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.I)
-    value = re.sub(r"</(p|div|li|h[1-6])\s*>", "\n", value, flags=re.I)
-    value = re.sub(r"<a\s+href=['\"]([^'\"]+)['\"][^>]*>(.*?)</a>",
-                   r"\2 (\1)", value, flags=re.I | re.S)
-    value = re.sub(r"<[^>]+>", "", value)
-    return html.unescape(value)
-
-
-# ============================================================
-# 3. TELEGRAM MESSAGES
-# ============================================================
-
-def movie_test_send_user(chat_id, text):
-    """
-    Send HTML when it fits in one Telegram message.
-    For long messages, convert to plain text before splitting so tags
-    can never be cut in half and cause Telegram parse errors.
-    """
-    try:
-        text = str(text or "")
-        if not text:
-            return None
-
-        if len(text) <= 3900:
-            try:
-                return bot.send_message(
-                    chat_id,
-                    text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True
-                )
-            except Exception:
-                # If a dynamic source/title broke HTML, retry as plain text.
-                return bot.send_message(
-                    chat_id,
-                    movie_test_plain_text(text)[:3900],
-                    disable_web_page_preview=True
-                )
-
-        plain = movie_test_plain_text(text)
-        last_message = None
-
-        while plain:
-            if len(plain) <= 3900:
-                chunk, plain = plain, ""
-            else:
-                cut = plain.rfind("\n", 0, 3900)
-                if cut < 1000:
-                    cut = 3900
-                chunk, plain = plain[:cut], plain[cut:].lstrip()
-
-            last_message = bot.send_message(
-                chat_id,
-                chunk,
-                disable_web_page_preview=True
-            )
-
-        return last_message
+        return bot.send_message(
+            chat_id,
+            str(text)[:4000],
+            parse_mode=parse_mode,
+            disable_web_page_preview=True
+        )
 
     except Exception as error:
-        movie_test_exception("MOVIE TEST TELEGRAM SEND ERROR")
-        movie_test_log("TELEGRAM SEND DETAILS: %s", str(error)[:500])
+
+        logger.exception(
+            "MOVIE TEST TELEGRAM SEND ERROR | chat=%s | %s",
+            chat_id,
+            str(error)[:500]
+        )
+
         return None
 
 
 def movie_test_debug(chat_id, text, message_id=None):
+
     try:
-        text = str(text or "")[:3900]
+
+        text = str(text)[:3900]
 
         if message_id:
+
             try:
                 bot.edit_message_text(
                     text,
@@ -496,29 +425,44 @@ def movie_test_debug(chat_id, text, message_id=None):
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
-                return message_id
-            except Exception:
-                # Telegram may reject an unchanged message or invalid markup.
-                pass
 
-        sent = movie_test_send_user(chat_id, text)
+                return message_id
+
+            except Exception as edit_error:
+
+                logger.warning(
+                    "MOVIE TEST PROGRESS EDIT FAILED | %s",
+                    str(edit_error)[:300]
+                )
+
+        sent = movie_test_send_user(
+            chat_id,
+            text,
+            parse_mode="HTML"
+        )
+
         return sent.message_id if sent else message_id
 
     except Exception:
-        movie_test_exception("MOVIE TEST DEBUG DELIVERY ERROR")
+
+        logger.exception("MOVIE TEST DEBUG ERROR")
         return message_id
 
 
 # ============================================================
-# 4. SESSION KEY
+# SESSION KEY
 # ============================================================
 
 def movie_test_session_key(message):
-    return (message.chat.id, message.from_user.id)
+
+    return (
+        message.chat.id,
+        message.from_user.id
+    )
 
 
 # ============================================================
-# 5. RECEIVE PHOTOS
+# RECEIVE PHOTOS
 # ============================================================
 
 @bot.message_handler(
@@ -530,80 +474,99 @@ def movie_test_session_key(message):
     )
 )
 def movie_test_receive_photo(message):
+
     try:
+
         key = movie_test_session_key(message)
 
         with MOVIE_TEST_LOCK:
-            session = MOVIE_TEST_SESSIONS.get(key)
 
-            if session and session.get("processing"):
-                bot.reply_to(
-                    message,
-                    "⏳ Ana nazarin hotunanka yanzu. Jira a kammala."
-                )
-                return
-
-            if session is None or session.get("prompt_sent"):
-                session = {
+            session = MOVIE_TEST_SESSIONS.setdefault(
+                key,
+                {
                     "photos": [],
                     "timer": None,
                     "token": uuid.uuid4().hex[:12],
                     "prompt_sent": False,
                     "processing": False
                 }
-                MOVIE_TEST_SESSIONS[key] = session
+            )
+
+            if session["processing"]:
+
+                bot.reply_to(
+                    message,
+                    "⏳ Ana gwajin hotunanka yanzu. Jira a kammala."
+                )
+                return
+
+            if session["prompt_sent"]:
+
+                session["photos"] = []
+                session["prompt_sent"] = False
+                session["token"] = uuid.uuid4().hex[:12]
 
             if len(session["photos"]) >= MOVIE_TEST_MAX_PHOTOS:
+
                 bot.reply_to(
                     message,
                     f"⚠️ Iyakar hotuna ita ce {MOVIE_TEST_MAX_PHOTOS}."
                 )
                 return
 
-            session["photos"].append(message.photo[-1].file_id)
+            session["photos"].append(
+                message.photo[-1].file_id
+            )
 
             old_timer = session.get("timer")
+
             if old_timer:
                 old_timer.cancel()
 
             token = session["token"]
+
             timer = threading.Timer(
                 MOVIE_TEST_ALBUM_WAIT,
                 movie_test_ask_confirmation,
                 args=(key, token)
             )
+
             timer.daemon = True
             session["timer"] = timer
             timer.start()
 
-            photo_count = len(session["photos"])
-
-        movie_test_log(
-            "PHOTO RECEIVED | user=%s | count=%s",
+        logger.info(
+            "MOVIE TEST PHOTO RECEIVED | user=%s | count=%s",
             message.from_user.id,
-            photo_count
+            len(session["photos"])
         )
 
     except Exception as error:
-        movie_test_exception("MOVIE TEST PHOTO RECEIVE ERROR")
+
+        logger.exception("MOVIE TEST PHOTO RECEIVE ERROR")
+
         movie_test_send_user(
             message.chat.id,
-            "❌ <b>PHOTO RECEIVE ERROR</b>\n"
+            "❌ PHOTO RECEIVE ERROR\n"
             + movie_test_safe(error, 1000)
         )
 
 
 # ============================================================
-# 6. YES / NO CONFIRMATION
+# ASK YES / NO
 # ============================================================
 
 def movie_test_ask_confirmation(key, token):
+
     try:
+
         with MOVIE_TEST_LOCK:
+
             session = MOVIE_TEST_SESSIONS.get(key)
 
             if not session or session["token"] != token:
                 return
+
             if not session["photos"] or session["prompt_sent"]:
                 return
 
@@ -611,6 +574,7 @@ def movie_test_ask_confirmation(key, token):
             photo_count = len(session["photos"])
 
         markup = types.InlineKeyboardMarkup(row_width=2)
+
         markup.add(
             types.InlineKeyboardButton(
                 "✅ YES",
@@ -628,194 +592,1073 @@ def movie_test_ask_confirmation(key, token):
                 "🎬 <b>GANO SUNAN FIM</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"📸 Na karɓi hotuna: {photo_count}\n\n"
-                "Kana son in bincika waɗannan hotunan domin gano sunan fim ɗin?"
+                "Kana son in bincika waɗannan hotunan "
+                "domin gano sunan fim ɗin?"
             ),
             reply_markup=markup,
             parse_mode="HTML"
         )
 
     except Exception as error:
-        movie_test_exception("MOVIE TEST CONFIRMATION ERROR")
+
+        logger.exception("MOVIE TEST CONFIRMATION ERROR")
+
         movie_test_send_user(
             key[0],
-            "❌ <b>CONFIRMATION ERROR</b>\n"
+            "❌ CONFIRMATION ERROR\n"
             + movie_test_safe(error, 1000)
         )
 
 
 # ============================================================
-# 7. DOWNLOAD PHOTOS
+# DOWNLOAD PHOTOS ONCE
+# ALL MODELS RECEIVE THE SAME IMAGE DATA
 # ============================================================
 
 def movie_test_download_photos(photo_ids, user_chat_id, progress_id):
-    downloaded_parts = []
-    total = len(photo_ids)
+
+    parts = []
 
     movie_test_debug(
         user_chat_id,
         (
-            "📥 <b>MATAKI 1 — SAUKAR DA HOTUNA</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"Hotuna: {total}\nAna sauke hotunan daga Telegram..."
+            "📥 <b>ANA SAUKAR DA HOTUNA</b>\n"
+            f"Hotuna: {len(photo_ids)}\n"
+            "Ana shirya hotunan domin models 14."
         ),
         progress_id
     )
 
     for index, photo_id in enumerate(photo_ids, start=1):
-        started = time.monotonic()
+
+        started = time.time()
 
         try:
+
             file_info = bot.get_file(photo_id)
-            image_bytes = bot.download_file(file_info.file_path)
+
+            image_bytes = bot.download_file(
+                file_info.file_path
+            )
 
             if not image_bytes:
-                raise RuntimeError("Telegram ya dawo da empty image.")
+                raise RuntimeError("Telegram returned empty image.")
 
-            if len(image_bytes) > MOVIE_TEST_MAX_PHOTO_BYTES:
-                raise RuntimeError(
-                    f"Hoto ya yi girma: {len(image_bytes)} bytes; "
-                    f"iyaka {MOVIE_TEST_MAX_PHOTO_BYTES} bytes."
-                )
+            encoded = base64.b64encode(
+                image_bytes
+            ).decode("ascii")
 
-            # Detect actual image type instead of labelling every image JPEG.
-            if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                mime_type = "image/png"
-            elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
-                mime_type = "image/webp"
-            else:
-                mime_type = "image/jpeg"
-
-            downloaded_parts.append({
+            parts.append({
                 "inline_data": {
-                    "mime_type": mime_type,
-                    "data": base64.b64encode(image_bytes).decode("ascii")
+                    "mime_type": "image/jpeg",
+                    "data": encoded
                 }
             })
 
-            movie_test_log(
-                "PHOTO DOWNLOADED | %s/%s | bytes=%s | seconds=%.2f",
-                index, total, len(image_bytes), time.monotonic() - started
-            )
-
-            movie_test_debug(
-                user_chat_id,
-                (
-                    "📥 <b>ANA SAUKAR DA HOTUNA</b>\n"
-                    f"An sauke: {index}/{total}\n"
-                    f"Girman hoto: {len(image_bytes):,} bytes\n"
-                    "✅ Ana ci gaba..."
-                ),
-                progress_id
+            logger.info(
+                "MOVIE TEST PHOTO DOWNLOADED | %s/%s | bytes=%s | seconds=%.2f",
+                index,
+                len(photo_ids),
+                len(image_bytes),
+                time.time() - started
             )
 
         except Exception as error:
-            movie_test_exception("MOVIE TEST PHOTO DOWNLOAD FAILED")
+
             raise RuntimeError(
-                f"PHOTO DOWNLOAD FAILED {index}/{total}: {str(error)[:700]}"
+                f"PHOTO DOWNLOAD FAILED {index}/{len(photo_ids)}: "
+                f"{str(error)[:700]}"
             )
 
-    return downloaded_parts
+    return parts
 
 
 # ============================================================
-# 8. PROMPT
+# COMMON PROMPT
+# SAME PROMPT FOR EVERY MODEL
 # ============================================================
 
-def movie_test_build_prompt():
-    return """
-You are an expert movie identification assistant.
+MOVIE_TEST_PROMPT = """
+Duba waɗannan hotunan gaba ɗaya.
 
-Look carefully at ALL attached images together.
-Identify the EXACT movie shown in the images.
+Za ka iya gane ainihin sunan fim ɗin?
 
-IMPORTANT:
-1. Examine the faces of the actors carefully.
-2. Compare actors with known movie casts.
-3. Examine costumes, scenes, locations and visual details.
-4. Do not identify a movie only because its historical setting
-   resembles another movie.
-5. Do not guess based only on genre or costumes.
-6. Use Google Search when necessary to verify the movie.
-7. Search using visible actors, scenes and visual clues.
-8. Compare search results with the actual images.
-9. Never invent movie titles or actor names.
-10. If uncertain, clearly state that you are uncertain.
+Ka yi nazarin fuskokin jarumai, tufafi, wurare,
+yanayin fim, abubuwan da ke faruwa da duk wasu alamomi.
 
-Return:
-- Movie title
-- Release year, if verified
-- Main actor, if verified
-- Short explanation of the visual evidence
+Idan kana buƙatar tabbatar da fim ɗin, yi amfani da
+Google Search ka kwatanta hotunan da bayanan fina-finai
+da hotunan da aka wallafa a yanar gizo.
 
-The most important task is identifying the EXACT movie.
+Ka guji ɗaukar fim a matsayin wani fim kawai saboda
+suna da irin tufafi, tarihi ko yanayin labari.
+
+Ka fi mayar da hankali kan ainihin jarumai da
+alamomin da za su bambanta wannan fim da sauran fina-finai.
+
+Ka faɗi sunan fim ɗin da shekararsa idan ka iya.
+Ka bayyana dalilin da ya sa ka zaɓi wannan fim.
+
+Idan ba ka tabbatar ba, ka faɗi hakan a fili.
+Kada ka ƙirƙiri amsa.
 """
 
 
 # ============================================================
-# 9. EXTRACT GOOGLE SEARCH SOURCES
-# ============================================================
-
-def movie_test_extract_sources(data):
-    sources = []
-
-    try:
-        candidates = data.get("candidates") or []
-        for candidate in candidates:
-            metadata = candidate.get("groundingMetadata") or {}
-            chunks = metadata.get("groundingChunks") or []
-
-            for chunk in chunks:
-                web_data = chunk.get("web") or {}
-                title = web_data.get("title") or "Google Search source"
-                uri = web_data.get("uri") or ""
-
-                if uri and not any(s["uri"] == uri for s in sources):
-                    sources.append({"title": title, "uri": uri})
-
-                if len(sources) >= MOVIE_TEST_MAX_SOURCES:
-                    return sources
-
-    except Exception as error:
-        movie_test_log("SOURCE EXTRACTION ERROR: %s", str(error)[:300])
-
-    return sources
-
-
-# ============================================================
-# 10. EXTRACT MODEL ANSWER
+# EXTRACT GEMINI ANSWER
 # ============================================================
 
 def movie_test_extract_answer(data):
+
+    answers = []
+
+    candidates = data.get("candidates") or []
+
+    for candidate in candidates:
+
+        content = candidate.get("content") or {}
+
+        for part in content.get("parts", []):
+
+            if part.get("text"):
+                answers.append(str(part["text"]))
+
+    return "\n".join(answers).strip()
+
+
+# ============================================================
+# EXTRACT GOOGLE SEARCH INFORMATION
+# ============================================================
+
+def movie_test_extract_grounding(data):
+
+    grounding = {}
+
     candidates = data.get("candidates") or []
 
     if not candidates:
-        feedback = data.get("promptFeedback") or {}
-        reason = feedback.get("blockReason", "NO_CANDIDATES")
-        raise RuntimeError(f"NO CANDIDATES | BLOCK REASON: {reason}")
+        return grounding
 
-    candidate = candidates[0]
-    content = candidate.get("content") or {}
-    response_parts = content.get("parts") or []
+    metadata = (
+        candidates[0].get("groundingMetadata")
+        or candidates[0].get("grounding_metadata")
+        or {}
+    )
 
-    answer = "\n".join(
-        part.get("text", "")
-        for part in response_parts
-        if isinstance(part, dict) and part.get("text")
-    ).strip()
+    queries = (
+        metadata.get("webSearchQueries")
+        or metadata.get("web_search_queries")
+        or []
+    )
 
-    finish_reason = candidate.get("finishReason", "UNKNOWN")
-    return answer, finish_reason
+    chunks = (
+        metadata.get("groundingChunks")
+        or metadata.get("grounding_chunks")
+        or []
+    )
+
+    sources = []
+
+    for chunk in chunks:
+
+        web_data = chunk.get("web") or {}
+
+        uri = web_data.get("uri") or web_data.get("url")
+        title = web_data.get("title") or "Source"
+
+        if uri:
+            sources.append({
+                "title": title,
+                "url": uri
+            })
+
+    grounding["queries"] = queries
+    grounding["sources"] = sources
+
+    return grounding
 
 
 # ============================================================
-# 11. GEMINI CHILD PROCESS — REAL HARD TIMEOUT
+# FORMAT ERROR RESPONSE
 # ============================================================
-# The original thread.join(90) did NOT stop the HTTP request.
-# This version runs each HTTP request in a separate Python process.
-# At 90 seconds the parent kills that process before trying next model.
+
+def movie_test_get_api_error(response):
+
+    try:
+
+        data = response.json()
+
+        error_data = data.get("error") or {}
+
+        code = error_data.get(
+            "code",
+            response.status_code
+        )
+
+        status = error_data.get(
+            "status",
+            "UNKNOWN_STATUS"
+        )
+
+        message = error_data.get(
+            "message",
+            response.text[:1500]
+        )
+
+        return (
+            f"HTTP CODE: {code}\n"
+            f"STATUS: {status}\n"
+            f"MESSAGE: {message}"
+        )
+
+    except Exception:
+
+        return (
+            f"HTTP CODE: {response.status_code}\n"
+            f"RESPONSE: {response.text[:1500]}"
+        )
 
 
+# ============================================================
+# SEND EVERY MODEL ERROR TO THE TESTING USER
+# ============================================================
 
+def movie_test_report_error(
+    chat_id,
+    model_name,
+    index,
+    total,
+    error_type,
+    detail,
+    elapsed=None
+):
+
+    timing = (
+        f"\n⏱ Lokaci: {elapsed:.1f}s"
+        if elapsed is not None
+        else ""
+    )
+
+    report = (
+        "⚠️ <b>GEMINI MODEL ERROR</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Model: <code>{movie_test_safe(model_name)}</code>\n"
+        f"Ci gaba: {index}/{total}\n"
+        f"Error type: <code>{movie_test_safe(error_type)}</code>"
+        f"{timing}\n\n"
+        f"<b>Dalili:</b>\n"
+        f"<code>{movie_test_safe(detail, 2200)}</code>\n\n"
+        "➡️ Ana ci gaba da model na gaba."
+    )
+
+    movie_test_send_user(
+        chat_id,
+        report
+    )
+
+
+# ============================================================
+# SEND EVERY MODEL ANSWER TO THE TESTING USER
+# ============================================================
+
+def movie_test_report_answer(
+    chat_id,
+    model_name,
+    index,
+    total,
+    answer,
+    elapsed,
+    grounding
+):
+
+    sources = grounding.get("sources") or []
+    queries = grounding.get("queries") or []
+
+    header = (
+        "🎬 <b>SAKAMAKON GEMINI MODEL</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 Model: <code>{movie_test_safe(model_name)}</code>\n"
+        f"📊 Model: {index}/{total}\n"
+        f"⏱ Lokaci: {elapsed:.1f}s\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    body = (
+        "<b>AMSA:</b>\n"
+        + movie_test_safe(answer, 2500)
+    )
+
+    footer = ""
+
+    if queries:
+
+        footer += "\n\n<b>🔎 Google Search queries:</b>\n"
+
+        for query in queries[:5]:
+            footer += (
+                "• "
+                + movie_test_safe(query, 250)
+                + "\n"
+            )
+
+    if sources:
+
+        footer += "\n<b>🌐 Sources:</b>\n"
+
+        for source in sources[:5]:
+
+            title = movie_test_safe(
+                source.get("title"),
+                100
+            )
+
+            url = source.get("url", "")
+
+            if url.startswith(("https://", "http://")):
+
+                footer += (
+                    f'• <a href="{html.escape(url, quote=True)}">'
+                    f"{title}</a>\n"
+                )
+
+    complete = header + body + footer
+
+    movie_test_send_user(
+        chat_id,
+        complete[:3900]
+    )
+
+
+# ============================================================
+# TEST ALL MODELS — NEVER STOP AFTER SUCCESS
+# ============================================================
+
+def movie_test_call_gemini(
+    photo_ids,
+    user_chat_id,
+    progress_id
+):
+
+    if not GEMINI_API_KEY:
+
+        raise RuntimeError(
+            "GEMINI_API_KEY bai kasance a Render Environment ba."
+        )
+
+    models = list(MOVIE_TEST_MODELS)
+
+    if not models:
+        raise RuntimeError("GEMINI_MODELS babu models.")
+
+    total_models = len(models)
+
+    logger.info(
+        "MOVIE TEST START | user=%s | unique_models=%s",
+        user_chat_id,
+        total_models
+    )
+
+    # Download photos once.
+    image_parts = movie_test_download_photos(
+        photo_ids,
+        user_chat_id,
+        progress_id
+    )
+
+    # Prepare identical request parts for every model.
+    common_parts = [
+        {"text": MOVIE_TEST_PROMPT}
+    ] + image_parts
+
+    successes = []
+    failures = []
+
+    movie_test_debug(
+        user_chat_id,
+        (
+            "🌐 <b>GOOGLE SEARCH GROUNDING AN KUNNA</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📸 Hotuna: {len(photo_ids)}\n"
+            f"🤖 Models: {total_models}\n\n"
+            "Muhimmi: Ba zan tsaya bayan model na farko ba.\n"
+            "Dukkan models za su samu damar gwaji.\n"
+            "Duk amsa da kuskure za a turo maka."
+        ),
+        progress_id
+    )
+
+    # --------------------------------------------------------
+    # EVERY MODEL IS TESTED, EVEN AFTER A VALID ANSWER
+    # --------------------------------------------------------
+
+    for index, model_name in enumerate(models, start=1):
+
+        model_started = time.time()
+
+        movie_test_debug(
+            user_chat_id,
+            (
+                "🔄 <b>ANA GWADA MODEL</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"Model: <code>{movie_test_safe(model_name)}</code>\n"
+                f"Ci gaba: {index}/{total_models}\n"
+                f"Nasara: {len(successes)}\n"
+                f"Errors: {len(failures)}\n\n"
+                "🔎 Google Search grounding: ON\n"
+                "⏳ Ana jiran amsa..."
+            ),
+            progress_id
+        )
+
+        try:
+
+            url = (
+                "https://generativelanguage.googleapis.com/"
+                "v1beta/models/"
+                + model_name
+                + ":generateContent"
+            )
+
+            request_body = {
+                "contents": [{
+                    "role": "user",
+                    "parts": common_parts
+                }],
+                "tools": [{
+                    "googleSearch": {}
+                }],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 1200
+                }
+            }
+
+            response = requests.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": GEMINI_API_KEY
+                },
+                json=request_body,
+                timeout=MOVIE_TEST_TIMEOUT
+            )
+
+            elapsed = time.time() - model_started
+
+            logger.info(
+                "MOVIE TEST API RESPONSE | model=%s | status=%s | seconds=%.2f",
+                model_name,
+                response.status_code,
+                elapsed
+            )
+
+            # ------------------------------------------------
+            # HTTP ERRORS: REPORT AND CONTINUE
+            # ------------------------------------------------
+
+            if response.status_code != 200:
+
+                detail = movie_test_get_api_error(response)
+
+                failures.append({
+                    "model": model_name,
+                    "type": f"HTTP_{response.status_code}",
+                    "detail": detail
+                })
+
+                movie_test_report_error(
+                    user_chat_id,
+                    model_name,
+                    index,
+                    total_models,
+                    f"HTTP_{response.status_code}",
+                    detail,
+                    elapsed
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # JSON RESPONSE
+            # ------------------------------------------------
+
+            try:
+
+                data = response.json()
+
+            except Exception as error:
+
+                detail = (
+                    "JSON DECODE ERROR: "
+                    + str(error)
+                    + "\nRAW RESPONSE:\n"
+                    + response.text[:1000]
+                )
+
+                failures.append({
+                    "model": model_name,
+                    "type": "JSON_DECODE_ERROR",
+                    "detail": detail
+                })
+
+                movie_test_report_error(
+                    user_chat_id,
+                    model_name,
+                    index,
+                    total_models,
+                    "JSON_DECODE_ERROR",
+                    detail,
+                    elapsed
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # EXTRACT ANSWER
+            # ------------------------------------------------
+
+            answer = movie_test_extract_answer(data)
+
+            candidates = data.get("candidates") or []
+
+            if not candidates:
+
+                prompt_feedback = (
+                    data.get("promptFeedback")
+                    or {}
+                )
+
+                block_reason = prompt_feedback.get(
+                    "blockReason",
+                    "NO_CANDIDATES"
+                )
+
+                detail = (
+                    "MODEL RETURNED NO CANDIDATES\n"
+                    + json.dumps(
+                        prompt_feedback,
+                        ensure_ascii=False
+                    )[:1200]
+                )
+
+                failures.append({
+                    "model": model_name,
+                    "type": str(block_reason),
+                    "detail": detail
+                })
+
+                movie_test_report_error(
+                    user_chat_id,
+                    model_name,
+                    index,
+                    total_models,
+                    str(block_reason),
+                    detail,
+                    elapsed
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # EMPTY RESPONSE
+            # ------------------------------------------------
+
+            if not answer:
+
+                finish_reason = (
+                    candidates[0].get("finishReason")
+                    or "UNKNOWN"
+                )
+
+                detail = (
+                    "MODEL RETURNED EMPTY TEXT\n"
+                    f"FINISH REASON: {finish_reason}\n"
+                    + json.dumps(
+                        data,
+                        ensure_ascii=False
+                    )[:1000]
+                )
+
+                failures.append({
+                    "model": model_name,
+                    "type": "EMPTY_RESPONSE",
+                    "detail": detail
+                })
+
+                movie_test_report_error(
+                    user_chat_id,
+                    model_name,
+                    index,
+                    total_models,
+                    "EMPTY_RESPONSE",
+                    detail,
+                    elapsed
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # SUCCESS: REPORT ANSWER
+            # DO NOT RETURN — CONTINUE TO NEXT MODEL
+            # ------------------------------------------------
+
+            grounding = movie_test_extract_grounding(data)
+
+            successes.append({
+                "model": model_name,
+                "answer": answer,
+                "elapsed": elapsed,
+                "grounding": grounding
+            })
+
+            logger.info(
+                "MOVIE TEST MODEL ANSWER | model=%s | seconds=%.2f | answer_chars=%s",
+                model_name,
+                elapsed,
+                len(answer)
+            )
+
+            movie_test_report_answer(
+                user_chat_id,
+                model_name,
+                index,
+                total_models,
+                answer,
+                elapsed,
+                grounding
+            )
+
+            # IMPORTANT:
+            # Never return here.
+            # Continue testing all remaining models.
+
+            continue
+
+        # ----------------------------------------------------
+        # TIMEOUT ERROR
+        # ----------------------------------------------------
+
+        except requests.exceptions.Timeout as error:
+
+            elapsed = time.time() - model_started
+
+            detail = (
+                f"REQUEST TIMEOUT: {str(error)}\n"
+                f"Timeout settings: {MOVIE_TEST_TIMEOUT}"
+            )
+
+            failures.append({
+                "model": model_name,
+                "type": "TIMEOUT",
+                "detail": detail
+            })
+
+            movie_test_report_error(
+                user_chat_id,
+                model_name,
+                index,
+                total_models,
+                "TIMEOUT",
+                detail,
+                elapsed
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # CONNECTION / NETWORK ERROR
+        # ----------------------------------------------------
+
+        except requests.exceptions.ConnectionError as error:
+
+            elapsed = time.time() - model_started
+
+            detail = (
+                "CONNECTION ERROR:\n"
+                + str(error)
+            )
+
+            failures.append({
+                "model": model_name,
+                "type": "CONNECTION_ERROR",
+                "detail": detail
+            })
+
+            movie_test_report_error(
+                user_chat_id,
+                model_name,
+                index,
+                total_models,
+                "CONNECTION_ERROR",
+                detail,
+                elapsed
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # OTHER REQUEST ERRORS
+        # ----------------------------------------------------
+
+        except requests.exceptions.RequestException as error:
+
+            elapsed = time.time() - model_started
+
+            detail = (
+                "REQUEST EXCEPTION:\n"
+                + str(error)
+            )
+
+            failures.append({
+                "model": model_name,
+                "type": "REQUEST_EXCEPTION",
+                "detail": detail
+            })
+
+            movie_test_report_error(
+                user_chat_id,
+                model_name,
+                index,
+                total_models,
+                "REQUEST_EXCEPTION",
+                detail,
+                elapsed
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # ANY OTHER ERROR
+        # ----------------------------------------------------
+
+        except Exception as error:
+
+            elapsed = time.time() - model_started
+
+            detail = (
+                "UNEXPECTED MODEL ERROR:\n"
+                + str(error)
+            )
+
+            failures.append({
+                "model": model_name,
+                "type": "UNEXPECTED_ERROR",
+                "detail": detail
+            })
+
+            logger.exception(
+                "MOVIE TEST UNEXPECTED MODEL ERROR | %s",
+                model_name
+            )
+
+            movie_test_report_error(
+                user_chat_id,
+                model_name,
+                index,
+                total_models,
+                "UNEXPECTED_ERROR",
+                detail,
+                elapsed
+            )
+
+            continue
+
+    # ========================================================
+    # ALL MODELS HAVE NOW BEEN TESTED
+    # ========================================================
+
+    return {
+        "total": total_models,
+        "successes": successes,
+        "failures": failures
+    }
+
+
+# ============================================================
+# BACKGROUND TEST
+# ============================================================
+
+def movie_test_run(
+    key,
+    token,
+    photo_ids,
+    progress_id
+):
+
+    started = time.time()
+
+    try:
+
+        movie_test_debug(
+            key[0],
+            (
+                "🚀 <b>AN FARA GWADIN GEMINI</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"📸 Hotuna: {len(photo_ids)}\n"
+                f"🤖 Models: {len(MOVIE_TEST_MODELS)}\n"
+                "🌐 Google Search grounding: ON\n\n"
+                "Dukkan models za a gwada."
+            ),
+            progress_id
+        )
+
+        result = movie_test_call_gemini(
+            photo_ids,
+            key[0],
+            progress_id
+        )
+
+        total_time = time.time() - started
+
+        successes = result["successes"]
+        failures = result["failures"]
+
+        success_lines = []
+        failure_lines = []
+
+        for item in successes:
+
+            success_lines.append(
+                "✅ "
+                + item["model"]
+                + f" ({item['elapsed']:.1f}s)"
+            )
+
+        for item in failures:
+
+            failure_lines.append(
+                "❌ "
+                + item["model"]
+                + " — "
+                + item["type"]
+            )
+
+        summary = (
+            "🏁 <b>AN KAMMALA GWADIN DUKKAN MODELS</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 Jimillar models: {result['total']}\n"
+            f"✅ Models da suka dawo da rubutu: {len(successes)}\n"
+            f"❌ Models da suka samu error: {len(failures)}\n"
+            f"⏱ Jimillar lokaci: {total_time:.1f}s\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        if success_lines:
+
+            summary += "\n<b>NASARORI:</b>\n"
+
+            summary += "\n".join(success_lines[:20])
+
+        if failure_lines:
+
+            summary += "\n\n<b>ERRORS:</b>\n"
+
+            summary += "\n".join(failure_lines[:20])
+
+        summary += (
+            "\n\n✅ <b>Ba a tsallake ko model ɗaya saboda "
+            "wani model ya riga ya bayar da amsa ba.</b>"
+        )
+
+        movie_test_debug(
+            key[0],
+            summary,
+            progress_id
+        )
+
+        logger.info(
+            "MOVIE TEST COMPLETED | user=%s | models=%s | success=%s | failed=%s | seconds=%.2f",
+            key[1],
+            result["total"],
+            len(successes),
+            len(failures),
+            total_time
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "MOVIE TEST FINAL ERROR | user=%s",
+            key[1]
+        )
+
+        movie_test_debug(
+            key[0],
+            (
+                "❌ <b>GWADIN YA SAMU MATSALA</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"<code>{movie_test_safe(error, 2500)}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏱ Lokaci: {time.time() - started:.1f}s"
+            ),
+            progress_id
+        )
+
+    finally:
+
+        with MOVIE_TEST_LOCK:
+
+            current = MOVIE_TEST_SESSIONS.get(key)
+
+            if current and current["token"] == token:
+                MOVIE_TEST_SESSIONS.pop(key, None)
+
+        logger.info(
+            "MOVIE TEST SESSION FINISHED | user=%s | seconds=%.2f",
+            key[1],
+            time.time() - started
+        )
+
+
+# ============================================================
+# YES / NO CALLBACK
+# ============================================================
+
+@bot.callback_query_handler(
+    func=lambda call: (
+        call.data
+        and call.data.startswith("mvtest:")
+    )
+)
+def movie_test_callback(call):
+
+    try:
+
+        parts = call.data.split(":", 2)
+
+        if len(parts) != 3:
+
+            bot.answer_callback_query(
+                call.id,
+                "Button ɗin bai cika ba."
+            )
+            return
+
+        _, action, token = parts
+
+        key = (
+            call.message.chat.id,
+            call.from_user.id
+        )
+
+        with MOVIE_TEST_LOCK:
+
+            session = MOVIE_TEST_SESSIONS.get(key)
+
+            if not session or session["token"] != token:
+
+                bot.answer_callback_query(
+                    call.id,
+                    "Wannan gwajin ya ƙare."
+                )
+                return
+
+            if session["processing"]:
+
+                bot.answer_callback_query(
+                    call.id,
+                    "Ana gudanar da gwajin yanzu."
+                )
+                return
+
+            if action == "no":
+
+                timer = session.get("timer")
+
+                if timer:
+                    timer.cancel()
+
+                MOVIE_TEST_SESSIONS.pop(key, None)
+
+                bot.answer_callback_query(
+                    call.id,
+                    "An soke gwajin."
+                )
+
+                bot.edit_message_text(
+                    "❌ An soke gwajin gano fim.\n"
+                    "Za ka iya sake aika hotuna.",
+                    key[0],
+                    call.message.message_id
+                )
+
+                return
+
+            if action != "yes":
+
+                bot.answer_callback_query(
+                    call.id,
+                    "Ba a gane zaɓin ba."
+                )
+                return
+
+            photo_ids = list(session["photos"])
+
+            if not photo_ids:
+
+                bot.answer_callback_query(
+                    call.id,
+                    "Babu hotuna."
+                )
+                return
+
+            session["processing"] = True
+
+            timer = session.get("timer")
+
+            if timer:
+                timer.cancel()
+
+        bot.answer_callback_query(
+            call.id,
+            "An fara gwajin dukkan models."
+        )
+
+        progress = movie_test_debug(
+            key[0],
+            (
+                "✅ <b>AN TABBATAR</b>\n"
+                "⏳ Ana fara gwajin models 14..."
+            ),
+            call.message.message_id
+        )
+
+        thread = threading.Thread(
+            target=movie_test_run,
+            args=(
+                key,
+                token,
+                photo_ids,
+                progress
+            ),
+            daemon=True,
+            name="independent-movie-test"
+        )
+
+        thread.start()
+
+    except Exception as error:
+
+        logger.exception("MOVIE TEST CALLBACK ERROR")
+
+        try:
+            bot.answer_callback_query(
+                call.id,
+                "An samu kuskure."
+            )
+        except Exception:
+            pass
+
+        movie_test_send_user(
+            call.message.chat.id,
+            "❌ CALLBACK ERROR\n"
+            + movie_test_safe(error, 1000)
+        )
+
+
+# ============================================================
+# END INDEPENDENT GEMINI MOVIE TEST
+# ============================================================
 
 
 
