@@ -319,6 +319,498 @@ def send_debug(message):
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True)
 
+
+
+
+# ============================================================
+# INDEPENDENT GEMINI PHOTO MOVIE TEST
+# DOES NOT TOUCH BOT2 TASK / WORKER / DATABASE SYSTEM
+# PRIVATE CHAT — USER CAN TEST WITHOUT BEING ADMIN
+# ============================================================
+
+import uuid
+import threading
+import requests
+import base64
+import html
+import time
+
+from telebot import types
+
+
+# ---------------- CONFIG ----------------
+
+MOVIE_TEST_MAX_PHOTOS = 10
+MOVIE_TEST_ALBUM_WAIT = 2.5
+MOVIE_TEST_TIMEOUT = (20, 180)
+
+MOVIE_TEST_SESSIONS = {}
+MOVIE_TEST_LOCK = threading.RLock()
+
+
+# ---------------- SESSION KEY ----------------
+
+def movie_test_session_key(message):
+    return (message.chat.id, message.from_user.id)
+
+
+# ---------------- RECEIVE PHOTOS ----------------
+
+@bot.message_handler(
+    content_types=["photo"],
+    func=lambda m: (
+        m.chat is not None
+        and m.chat.type == "private"
+        and m.from_user is not None
+    )
+)
+def movie_test_receive_photo(message):
+
+    try:
+        key = movie_test_session_key(message)
+
+        with MOVIE_TEST_LOCK:
+
+            session = MOVIE_TEST_SESSIONS.setdefault(
+                key,
+                {
+                    "photos": [],
+                    "timer": None,
+                    "token": uuid.uuid4().hex[:12],
+                    "prompt_sent": False,
+                    "processing": False
+                }
+            )
+
+            if session["processing"]:
+                bot.reply_to(
+                    message,
+                    "⏳ Ana nazarin hotunanka yanzu. Jira a kammala."
+                )
+                return
+
+            if session["prompt_sent"]:
+                session["photos"] = []
+                session["prompt_sent"] = False
+                session["token"] = uuid.uuid4().hex[:12]
+
+            if len(session["photos"]) >= MOVIE_TEST_MAX_PHOTOS:
+                bot.reply_to(
+                    message,
+                    f"⚠️ Iyakar gwajin hotuna ita ce {MOVIE_TEST_MAX_PHOTOS}."
+                )
+                return
+
+            # Keep the highest-resolution Telegram photo.
+            photo_id = message.photo[-1].file_id
+            session["photos"].append(photo_id)
+
+            # Reset timer so Telegram media albums are collected together.
+            old_timer = session.get("timer")
+            if old_timer:
+                old_timer.cancel()
+
+            token = session["token"]
+
+            timer = threading.Timer(
+                MOVIE_TEST_ALBUM_WAIT,
+                movie_test_ask_confirmation,
+                args=(key, token)
+            )
+
+            timer.daemon = True
+            session["timer"] = timer
+            timer.start()
+
+    except Exception as error:
+        logger.exception("MOVIE TEST PHOTO RECEIVE ERROR")
+        bot.reply_to(
+            message,
+            f"❌ An samu kuskure wajen karɓar hoto: {str(error)[:500]}"
+        )
+
+
+# ---------------- ASK YES / NO ----------------
+
+def movie_test_ask_confirmation(key, token):
+
+    try:
+        with MOVIE_TEST_LOCK:
+
+            session = MOVIE_TEST_SESSIONS.get(key)
+
+            if not session:
+                return
+
+            if session["token"] != token:
+                return
+
+            if not session["photos"] or session["prompt_sent"]:
+                return
+
+            session["prompt_sent"] = True
+            photo_count = len(session["photos"])
+
+        markup = types.InlineKeyboardMarkup(row_width=2)
+
+        markup.add(
+            types.InlineKeyboardButton(
+                "✅ YES",
+                callback_data=f"mvtest:yes:{token}"
+            ),
+            types.InlineKeyboardButton(
+                "❌ NO",
+                callback_data=f"mvtest:no:{token}"
+            )
+        )
+
+        bot.send_message(
+            key[0],
+            (
+                "🎬 **GANO SUNAN FIM**\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"📸 Na karɓi hotuna: {photo_count}\n\n"
+                "Kana son in bincika waɗannan hotunan "
+                "domin gano sunan fim ɗin?"
+            ),
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
+
+    except Exception:
+        logger.exception("MOVIE TEST CONFIRMATION ERROR")
+
+
+# ---------------- GEMINI IMAGE REQUEST ----------------
+
+def movie_test_call_gemini(photo_ids, user_chat_id):
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY bai kasance a Render Environment ba."
+        )
+
+    parts = [{
+        "text": (
+            "Duba waɗannan hotunan gaba ɗaya. "
+            "Za ka iya gane wanne fim ne?\n\n"
+            "Ka yi nazarin duk hotunan tare. "
+            "Ka gano ainihin sunan fim ɗin idan ka iya. "
+            "Kada ka ƙirƙiri amsa idan ba ka tabbatar ba. "
+            "Idan ba ka gane shi ba, ka faɗi hakan a fili."
+        )
+    }]
+
+    # Download every selected Telegram photo.
+    for photo_id in photo_ids:
+
+        file_info = bot.get_file(photo_id)
+        image_bytes = bot.download_file(file_info.file_path)
+
+        if not image_bytes:
+            raise RuntimeError("An kasa sauke ɗaya daga cikin hotunan.")
+
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(
+                    image_bytes
+                ).decode("ascii")
+            }
+        })
+
+    request_body = {
+        "contents": [{
+            "role": "user",
+            "parts": parts
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 600
+        }
+    }
+
+    failures = []
+
+    # Try all configured models in order.
+    for index, model_name in enumerate(GEMINI_MODELS, start=1):
+
+        try:
+            logger.info(
+                "MOVIE TEST | Trying model %s/%s: %s",
+                index,
+                len(GEMINI_MODELS),
+                model_name
+            )
+
+            url = (
+                "https://generativelanguage.googleapis.com/"
+                "v1beta/models/"
+                + model_name
+                + ":generateContent"
+            )
+
+            response = requests.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": GEMINI_API_KEY
+                },
+                json=request_body,
+                timeout=MOVIE_TEST_TIMEOUT
+            )
+
+            if response.status_code != 200:
+
+                try:
+                    detail = response.json().get(
+                        "error", {}
+                    ).get("message", response.text[:500])
+                except Exception:
+                    detail = response.text[:500]
+
+                failures.append(
+                    f"{model_name}: HTTP {response.status_code}: {detail}"
+                )
+
+                logger.warning(
+                    "MOVIE TEST MODEL ERROR | %s | HTTP %s",
+                    model_name,
+                    response.status_code
+                )
+
+                continue
+
+            data = response.json()
+
+            candidates = data.get("candidates") or []
+
+            if not candidates:
+                failures.append(
+                    f"{model_name}: NO_CANDIDATES"
+                )
+                continue
+
+            response_parts = (
+                candidates[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+
+            answer = "\n".join(
+                part.get("text", "")
+                for part in response_parts
+                if part.get("text")
+            ).strip()
+
+            if not answer:
+                failures.append(
+                    f"{model_name}: EMPTY_RESPONSE"
+                )
+                continue
+
+            logger.info(
+                "MOVIE TEST SUCCESS | model=%s",
+                model_name
+            )
+
+            return answer, model_name
+
+        except requests.exceptions.RequestException as error:
+
+            failures.append(
+                f"{model_name}: NETWORK ERROR: {str(error)[:300]}"
+            )
+
+            logger.warning(
+                "MOVIE TEST NETWORK ERROR | %s",
+                model_name
+            )
+
+            continue
+
+        except Exception as error:
+
+            failures.append(
+                f"{model_name}: ERROR: {str(error)[:300]}"
+            )
+
+            logger.exception(
+                "MOVIE TEST MODEL FAILED | %s",
+                model_name
+            )
+
+            continue
+
+    raise RuntimeError(
+        "DUKKAN MODELS 14 SUN SAMU AMINTACCEN AMSA.\n"
+        + "\n".join(failures[-14:])
+    )
+
+
+# ---------------- RUN TEST IN BACKGROUND ----------------
+
+def movie_test_run(key, token, photo_ids):
+
+    try:
+
+        bot.send_message(
+            key[0],
+            "🔍 Ana aika hotunan zuwa Gemini...\n"
+            "⏳ Jira, ina gwada models 14."
+        )
+
+        answer, model_name = movie_test_call_gemini(
+            photo_ids,
+            key[0]
+        )
+
+        safe_answer = html.escape(answer[:3500])
+        safe_model = html.escape(model_name)
+
+        bot.send_message(
+            key[0],
+            (
+                "🎬 <b>SAKAMAKON GANO FIM</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{safe_answer}\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 Model: <code>{safe_model}</code>\n"
+                "✅ Gwajin ya kammala."
+            ),
+            parse_mode="HTML"
+        )
+
+    except Exception as error:
+
+        logger.exception("MOVIE TEST FINAL ERROR")
+
+        bot.send_message(
+            key[0],
+            (
+                "❌ <b>AN KASA GANO FIM</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"{html.escape(str(error)[:2500])}\n"
+                "━━━━━━━━━━━━━━━━━━━━"
+            ),
+            parse_mode="HTML"
+        )
+
+    finally:
+
+        with MOVIE_TEST_LOCK:
+            current = MOVIE_TEST_SESSIONS.get(key)
+
+            if current and current["token"] == token:
+                MOVIE_TEST_SESSIONS.pop(key, None)
+
+
+# ---------------- YES / NO CALLBACK ----------------
+
+@bot.callback_query_handler(
+    func=lambda call: (
+        call.data
+        and call.data.startswith("mvtest:")
+    )
+)
+def movie_test_callback(call):
+
+    try:
+
+        action, token = call.data.split(":", 2)[1:]
+
+        key = (
+            call.message.chat.id,
+            call.from_user.id
+        )
+
+        with MOVIE_TEST_LOCK:
+
+            session = MOVIE_TEST_SESSIONS.get(key)
+
+            if not session or session["token"] != token:
+                bot.answer_callback_query(
+                    call.id,
+                    "Wannan gwajin ya ƙare."
+                )
+                return
+
+            if session["processing"]:
+                bot.answer_callback_query(
+                    call.id,
+                    "Ana gudanar da gwajin yanzu."
+                )
+                return
+
+            if action == "no":
+                MOVIE_TEST_SESSIONS.pop(key, None)
+
+                bot.answer_callback_query(
+                    call.id,
+                    "An soke gwajin."
+                )
+
+                bot.edit_message_text(
+                    "❌ An soke gwajin gano fim."
+                    "\nZa ka iya sake aika hotuna idan kana so.",
+                    key[0],
+                    call.message.message_id
+                )
+                return
+
+            if action != "yes":
+                return
+
+            photo_ids = list(session["photos"])
+
+            if not photo_ids:
+                bot.answer_callback_query(
+                    call.id,
+                    "Babu hotuna."
+                )
+                return
+
+            session["processing"] = True
+
+        bot.answer_callback_query(
+            call.id,
+            "An fara gwajin."
+        )
+
+        bot.edit_message_text(
+            "✅ An tabbatar.\n"
+            "🔍 Ana fara gwajin Gemini models 14...",
+            key[0],
+            call.message.message_id
+        )
+
+        threading.Thread(
+            target=movie_test_run,
+            args=(key, token, photo_ids),
+            daemon=True,
+            name="independent-movie-test"
+        ).start()
+
+    except Exception:
+        logger.exception("MOVIE TEST CALLBACK ERROR")
+
+        try:
+            bot.answer_callback_query(
+                call.id,
+                "An samu kuskure."
+            )
+        except Exception:
+            pass
+
+
+# ============================================================
+# END INDEPENDENT GEMINI PHOTO MOVIE TEST
+# ============================================================
+
+
+
+
+
 # BOT 2 — INSTANT GROUP MESSAGE LISTENER + DEBUG
 # CLIP_CHANNEL_VIDEO VARIABLE REMAINS UNCHANGED
 # ==================================================
