@@ -324,21 +324,16 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True)
 
 
 # ============================================================
-# INDEPENDENT GEMINI PHOTO MOVIE TEST — COMPARISON EDITION
+# INDEPENDENT GEMINI PHOTO MOVIE TEST
+# ALL ORIGINAL MODELS + GOOGLE SEARCH
 #
-# TEST A:
-#   ALL EXISTING 14 GEMINI MODELS — IMAGE ONLY
+# ALL MODELS:
+#   IMAGE + GOOGLE SEARCH ON
 #
-# TEST B:
-#   GEMINI ROBOTICS ER 1.6 — IMAGE + GOOGLE SEARCH
-#
-# EXTRA MODELS:
-#   GEMMA 4 E2B / E4B / 12B — REPORTED AS NOT HOSTED
-#   GEMINI 3.1 FLASH LIVE PREVIEW — REPORTED AS SEPARATE API
-#
-# PRIVATE USERS | TELEGRAM DEBUG TO ORIGINAL USER
-# USES EXISTING RENDER GEMINI_API_KEY
-# USES EXISTING GEMINI_MODELS WITHOUT MODIFYING IT
+# PRIVATE USERS
+# TELEGRAM DEBUG TO ORIGINAL USER
+# USES EXISTING GEMINI_API_KEY
+# USES EXISTING GEMINI_MODELS
 # DOES NOT TOUCH BOT2 WORKERS / TASKS / DATABASE
 # ============================================================
 
@@ -348,7 +343,6 @@ import requests
 import base64
 import time
 import json
-import html
 import logging
 
 from telebot import types
@@ -369,15 +363,7 @@ MOVIE_TEST_TIMEOUT = (
     MOVIE_TEST_READ_TIMEOUT
 )
 
-MOVIE_TEST_MAX_OUTPUT_TOKENS = 1200
-
-MOVIE_TEST_ROBOTICS_MODEL = (
-    "gemini-robotics-er-1.6-preview"
-)
-
-MOVIE_TEST_LIVE_MODEL = (
-    "gemini-3.1-flash-live-preview"
-)
+MOVIE_TEST_MAX_OUTPUT_TOKENS = 1500
 
 MOVIE_TEST_SESSIONS = {}
 MOVIE_TEST_LOCK = threading.RLock()
@@ -386,13 +372,6 @@ MOVIE_TEST_LOCK = threading.RLock()
 # ============================================================
 # 2. SAFE HELPERS
 # ============================================================
-
-def movie_test_safe(value, limit=3000):
-
-    return html.escape(
-        str(value or "")[:limit]
-    )
-
 
 def movie_test_session_key(message):
 
@@ -419,13 +398,13 @@ def movie_test_log(event, **fields):
 
     except Exception:
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST LOGGER FAILURE"
         )
 
 
 # ============================================================
-# 3. TELEGRAM DEBUG DELIVERY
+# 3. TELEGRAM MESSAGE DELIVERY
 # ============================================================
 
 def movie_test_debug(
@@ -452,7 +431,7 @@ def movie_test_debug(
 
             except Exception:
 
-                logger.exception(
+                logging.exception(
                     "MOVIE TEST EDIT MESSAGE FAILED"
                 )
 
@@ -465,9 +444,8 @@ def movie_test_debug(
 
     except Exception:
 
-        logger.exception(
-            "MOVIE TEST TELEGRAM DEBUG FAILED | chat=%s",
-            chat_id
+        logging.exception(
+            "MOVIE TEST DEBUG DELIVERY FAILED"
         )
 
         return message_id
@@ -481,7 +459,6 @@ def movie_test_send_long(
     text = str(text or "")
 
     if not text:
-
         text = "(Babu sakamako)"
 
     chunks = [
@@ -500,23 +477,11 @@ def movie_test_send_long(
 
         except Exception:
 
-            logger.exception(
-                "MOVIE TEST LONG MESSAGE FAILED | chat=%s",
-                chat_id
+            logging.exception(
+                "MOVIE TEST LONG MESSAGE FAILED"
             )
 
-            try:
-
-                bot.send_message(
-                    chat_id,
-                    "An kasa aika wani bangare na sakamakon gwajin."
-                )
-
-            except Exception:
-
-                logger.exception(
-                    "MOVIE TEST FALLBACK MESSAGE FAILED"
-                )
+            break
 
 
 # ============================================================
@@ -567,7 +532,6 @@ def movie_test_receive_photo(message):
                 old_timer = session.get("timer")
 
                 if old_timer:
-
                     old_timer.cancel()
 
                 session["photos"] = []
@@ -590,7 +554,6 @@ def movie_test_receive_photo(message):
             old_timer = session.get("timer")
 
             if old_timer:
-
                 old_timer.cancel()
 
             token = session["token"]
@@ -604,7 +567,6 @@ def movie_test_receive_photo(message):
             timer.daemon = True
 
             session["timer"] = timer
-
             timer.start()
 
             photo_count = len(session["photos"])
@@ -617,7 +579,7 @@ def movie_test_receive_photo(message):
 
     except Exception as error:
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST PHOTO RECEIVE ERROR"
         )
 
@@ -631,13 +593,13 @@ def movie_test_receive_photo(message):
 
         except Exception:
 
-            logger.exception(
-                "MOVIE TEST PHOTO ERROR MESSAGE FAILED"
+            logging.exception(
+                "MOVIE TEST PHOTO ERROR DELIVERY FAILED"
             )
 
 
 # ============================================================
-# 5. ASK USER YES / NO
+# 5. ASK YES / NO
 # ============================================================
 
 def movie_test_ask_confirmation(
@@ -652,19 +614,15 @@ def movie_test_ask_confirmation(
             session = MOVIE_TEST_SESSIONS.get(key)
 
             if not session:
-
                 return
 
             if session["token"] != token:
-
                 return
 
             if not session["photos"]:
-
                 return
 
             if session["prompt_sent"]:
-
                 return
 
             session["prompt_sent"] = True
@@ -709,7 +667,7 @@ def movie_test_ask_confirmation(
 
     except Exception:
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST CONFIRMATION ERROR"
         )
 
@@ -747,13 +705,9 @@ def movie_test_download_photos(
         start=1
     ):
 
-        started = time.time()
-
         try:
 
-            file_info = bot.get_file(
-                photo_id
-            )
+            file_info = bot.get_file(photo_id)
 
             image_bytes = bot.download_file(
                 file_info.file_path
@@ -765,27 +719,19 @@ def movie_test_download_photos(
                     "Telegram ya dawo da empty image."
                 )
 
-            downloaded.append(
-                image_bytes
-            )
+            downloaded.append(image_bytes)
 
             movie_test_log(
                 "PHOTO_DOWNLOADED",
                 index=index,
                 total=len(photo_ids),
-                bytes=len(image_bytes),
-                seconds=round(
-                    time.time() - started,
-                    2
-                )
+                bytes=len(image_bytes)
             )
 
         except Exception as error:
 
-            logger.exception(
-                "MOVIE TEST PHOTO DOWNLOAD FAILED | %s/%s",
-                index,
-                len(photo_ids)
+            logging.exception(
+                "MOVIE TEST PHOTO DOWNLOAD FAILED"
             )
 
             raise RuntimeError(
@@ -797,93 +743,134 @@ def movie_test_download_photos(
 
 
 # ============================================================
-# 7. BUILD GEMINI REQUEST
+# 7. BUILD REQUEST — GOOGLE SEARCH ALWAYS ON
 # ============================================================
 
 def movie_test_build_request(
-    image_bytes_list,
-    use_google_search=False
+    image_bytes_list
 ):
 
     parts = []
 
-    # Images first.
+    # Add all supplied images.
     for image_bytes in image_bytes_list:
 
         parts.append({
+
             "inline_data": {
+
                 "mime_type": "image/jpeg",
+
                 "data": base64.b64encode(
                     image_bytes
                 ).decode("ascii")
+
             }
+
         })
 
+    # Identification instructions.
     parts.append({
+
         "text": """
-You are an expert Indian movie identification system.
+You are an expert movie identification researcher.
 
-Study ALL supplied images together.
+Your task is to identify the EXACT movie shown in ALL
+the supplied images.
 
-Identify the exact movie shown in these images.
+GOOGLE SEARCH IS ENABLED.
+Use Google Search to investigate visual clues and verify
+the possible movie title.
 
-IMPORTANT INSTRUCTIONS:
+IMPORTANT RULES:
 
-1. Do not guess a movie merely because its historical
-   setting, costumes, or story resembles another film.
+1. Study ALL supplied images together.
 
-2. Pay close attention to the actual faces of actors.
+2. Identify actors, faces, costumes, locations,
+   weapons, buildings, and distinctive scenes.
 
-3. Compare the same actor across different images.
+3. Do not identify a movie only because its historical
+   setting resembles another movie.
 
-4. Use visual evidence from every supplied image.
+4. Compare visual clues from different images.
 
-5. Do not invent actors, movie titles, or release years.
+5. Use Google Search to verify actors, scenes,
+   movie posters, film stills, and other clues.
 
-6. If you are uncertain, clearly say that you are uncertain.
+6. Search for combinations of actors and visual details
+   when the exact movie is not immediately clear.
 
-7. If you recognize the exact movie, provide its title,
-   release year, and main actor.
+7. Do not invent search results or claim that a source
+   confirms something when it does not.
 
-8. Do not claim that you searched Google unless actual
-   Google Search grounding information is returned.
+8. Do not invent movie titles, actors, or release years.
 
-Return your best answer naturally.
+9. If several movies are possible, compare them and
+   explain which one best matches the images.
 
-This is a movie identification task, not a request
-to describe the images only.
+10. If the evidence is insufficient, clearly say so.
+    Do not pretend to be certain.
+
+11. Give the most likely exact movie title,
+    release year, and main actors when supported.
+
+12. Explain the strongest visual evidence.
+
+13. Separate verified information from your own inference.
+
+Return your answer in a clear format:
+
+MOVIE TITLE:
+RELEASE YEAR:
+MAIN ACTORS:
+VISUAL EVIDENCE:
+SEARCH VERIFICATION:
+CONFIDENCE:
+
+This is a movie identification task.
+Do not merely describe the images.
 """
     })
 
     request_body = {
 
         "contents": [
+
             {
+
                 "role": "user",
+
                 "parts": parts
+
             }
+
+        ],
+
+        "tools": [
+
+            {
+
+                "google_search": {}
+
+            }
+
         ],
 
         "generationConfig": {
+
             "temperature": 0.2,
+
             "maxOutputTokens": MOVIE_TEST_MAX_OUTPUT_TOKENS
+
         }
 
     }
-
-    if use_google_search:
-
-        request_body["tools"] = [
-            {
-                "google_search": {}
-            }
-        ]
 
     return request_body
 
 
 # ============================================================
-# 8. EXTRACT GEMINI RESPONSE
+# 8. EXTRACT RESPONSE
 # ============================================================
 
 def movie_test_extract_response(data):
@@ -893,17 +880,20 @@ def movie_test_extract_response(data):
     if not candidates:
 
         prompt_feedback = (
-            data.get("promptFeedback")
-            or {}
+            data.get("promptFeedback") or {}
         )
 
         return "", {
+
             "finish_reason": "NO_CANDIDATES",
+
             "block_reason": prompt_feedback.get(
                 "blockReason",
                 "UNKNOWN"
             ),
+
             "grounding": {}
+
         }
 
     candidate = candidates[0]
@@ -919,14 +909,9 @@ def movie_test_extract_response(data):
         text = part.get("text")
 
         if text:
+            answer_parts.append(str(text))
 
-            answer_parts.append(
-                str(text)
-            )
-
-    answer = "\n".join(
-        answer_parts
-    ).strip()
+    answer = "\n".join(answer_parts).strip()
 
     grounding = (
         candidate.get("groundingMetadata")
@@ -966,7 +951,7 @@ def movie_test_extract_response(data):
 
 
 # ============================================================
-# 9. FORMAT SEARCH DETAILS
+# 9. FORMAT GOOGLE SEARCH DETAILS
 # ============================================================
 
 def movie_test_format_grounding(metadata):
@@ -1001,7 +986,11 @@ def movie_test_format_grounding(metadata):
 
         for source in sources[:8]:
 
-            web_data = source.get("web") or {}
+            web_data = (
+                source.get("web")
+                or source.get("webSearchResult")
+                or {}
+            )
 
             title = web_data.get(
                 "title",
@@ -1013,9 +1002,11 @@ def movie_test_format_grounding(metadata):
                 ""
             )
 
-            lines.append(
-                f"- {title}\n{uri}"
-            )
+            if uri:
+
+                lines.append(
+                    f"- {title}\n{uri}"
+                )
 
     if not lines:
 
@@ -1027,7 +1018,7 @@ def movie_test_format_grounding(metadata):
 
 
 # ============================================================
-# 10. TEST ONE MODEL
+# 10. TEST ONE MODEL — SEARCH ON
 # ============================================================
 
 def movie_test_one_model(
@@ -1035,8 +1026,7 @@ def movie_test_one_model(
     request_body,
     user_chat_id,
     index,
-    total,
-    test_label
+    total
 ):
 
     started = time.time()
@@ -1044,8 +1034,6 @@ def movie_test_one_model(
     result = {
 
         "model": model_name,
-
-        "test": test_label,
 
         "status": "ERROR",
 
@@ -1073,10 +1061,12 @@ def movie_test_one_model(
     movie_test_debug(
         user_chat_id,
         (
-            f"{test_label}\n"
+            "GEMINI IMAGE + GOOGLE SEARCH\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Model: {model_name}\n"
             f"Gwaji: {index}/{total}\n"
+            "Images: ON\n"
+            "Google Search: ON\n"
             "Ana jiran amsar model..."
         )
     )
@@ -1088,8 +1078,11 @@ def movie_test_one_model(
             url,
 
             headers={
+
                 "Content-Type": "application/json",
+
                 "x-goog-api-key": GEMINI_API_KEY
+
             },
 
             json=request_body,
@@ -1112,7 +1105,7 @@ def movie_test_one_model(
         )
 
         # ----------------------------------------------------
-        # HTTP ERRORS
+        # HTTP ERROR
         # ----------------------------------------------------
 
         if response.status_code != 200:
@@ -1140,10 +1133,15 @@ def movie_test_one_model(
                 )
 
                 full_error = (
+
                     f"HTTP: {response.status_code}\n"
+
                     f"CODE: {error_code}\n"
+
                     f"STATUS: {error_status}\n"
+
                     f"MESSAGE: {error_message}"
+
                 )
 
             except Exception:
@@ -1164,6 +1162,8 @@ def movie_test_one_model(
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     f"Model: {model_name}\n"
                     f"Gwaji: {index}/{total}\n"
+                    f"Images: ON\n"
+                    f"Google Search: ON\n"
                     f"Lokaci: {elapsed:.1f}s\n\n"
                     f"{full_error}\n\n"
                     "Ana ci gaba da model na gaba."
@@ -1173,7 +1173,7 @@ def movie_test_one_model(
             return result
 
         # ----------------------------------------------------
-        # PARSE JSON
+        # PARSE RESPONSE JSON
         # ----------------------------------------------------
 
         try:
@@ -1184,17 +1184,14 @@ def movie_test_one_model(
 
             result["status"] = "INVALID_JSON"
 
-            result["error"] = (
-                f"HTTP 200 but invalid JSON: {str(error)}\n"
-                f"BODY: {response.text[:1500]}"
-            )
+            result["error"] = str(error)
 
             movie_test_send_long(
                 user_chat_id,
                 (
                     "INVALID GEMINI JSON\n"
                     f"Model: {model_name}\n"
-                    f"{result['error']}\n"
+                    f"Error: {str(error)[:1000]}\n"
                     "Ana ci gaba da model na gaba."
                 )
             )
@@ -1249,10 +1246,12 @@ def movie_test_one_model(
             result["status"] = "INCOMPLETE_MAX_TOKENS"
 
         elif finish_reason in (
+
             "SAFETY",
             "RECITATION",
             "BLOCKLIST",
             "PROHIBITED_CONTENT"
+
         ):
 
             result["status"] = "BLOCKED_OR_RESTRICTED"
@@ -1267,7 +1266,8 @@ def movie_test_one_model(
             result=result["status"],
             finish_reason=finish_reason,
             answer_chars=len(answer),
-            seconds=round(elapsed, 2)
+            seconds=round(elapsed, 2),
+            grounding=metadata.get("grounding_present")
         )
 
         grounding_text = movie_test_format_grounding(
@@ -1284,7 +1284,9 @@ def movie_test_one_model(
                 f"Status: {result['status']}\n"
                 f"HTTP: 200\n"
                 f"Lokaci: {elapsed:.1f}s\n"
-                f"Finish reason: {finish_reason}\n\n"
+                f"Finish reason: {finish_reason}\n"
+                f"Google Search metadata: "
+                f"{'YES' if metadata.get('grounding_present') else 'NOT RETURNED'}\n\n"
                 "AMSA:\n"
                 "--------------------\n"
                 f"{answer[:4500]}\n"
@@ -1303,7 +1305,7 @@ def movie_test_one_model(
 
         result["error"] = str(error)
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST MODEL TIMEOUT | %s",
             model_name
         )
@@ -1314,7 +1316,7 @@ def movie_test_one_model(
                 "GEMINI TIMEOUT\n"
                 f"Model: {model_name}\n"
                 f"Lokaci: {result['seconds']:.1f}s\n"
-                f"Error: {str(error)[:1500]}\n"
+                f"Error: {str(error)[:1200]}\n"
                 "Ana ci gaba da model na gaba."
             )
         )
@@ -1329,7 +1331,7 @@ def movie_test_one_model(
 
         result["error"] = str(error)
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST NETWORK ERROR | %s",
             model_name
         )
@@ -1339,7 +1341,7 @@ def movie_test_one_model(
             (
                 "NETWORK ERROR\n"
                 f"Model: {model_name}\n"
-                f"Error: {str(error)[:1500]}\n"
+                f"Error: {str(error)[:1200]}\n"
                 "Ana ci gaba da model na gaba."
             )
         )
@@ -1354,7 +1356,7 @@ def movie_test_one_model(
 
         result["error"] = str(error)
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST UNEXPECTED ERROR | %s",
             model_name
         )
@@ -1364,7 +1366,7 @@ def movie_test_one_model(
             (
                 "UNEXPECTED MODEL ERROR\n"
                 f"Model: {model_name}\n"
-                f"Error: {str(error)[:1500]}\n"
+                f"Error: {str(error)[:1200]}\n"
                 "Ana ci gaba da model na gaba."
             )
         )
@@ -1373,8 +1375,7 @@ def movie_test_one_model(
 
 
 # ============================================================
-# 11. RUN TEST A — ALL ORIGINAL 14 MODELS
-# IMAGE ONLY — NO SEARCH
+# 11. RUN ALL ORIGINAL MODELS — GOOGLE SEARCH ON
 # ============================================================
 
 def movie_test_run_original_models(
@@ -1394,8 +1395,8 @@ def movie_test_run_original_models(
             "GEMINI_MODELS babu models."
         )
 
-    # Preserve the original model names.
-    # Remove duplicates only for the test list.
+    # Keep existing model names unchanged.
+    # Remove duplicate entries for this test only.
     models = list(
         dict.fromkeys(GEMINI_MODELS)
     )
@@ -1405,19 +1406,19 @@ def movie_test_run_original_models(
     movie_test_debug(
         user_chat_id,
         (
-            "TEST A — ORIGINAL GEMINI MODELS\n"
+            "TEST — ALL ORIGINAL GEMINI MODELS\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"Models: {total}\n"
             "Images: ON\n"
-            "Google Search: OFF\n\n"
+            "Google Search: ON\n\n"
             "Za a gwada duk models daya bayan daya.\n"
             "Ko wani ya bada amsa, ba za a tsaya ba."
         )
     )
 
+    # Build one request body and reuse the same images.
     request_body = movie_test_build_request(
-        image_bytes_list,
-        use_google_search=False
+        image_bytes_list
     )
 
     results = []
@@ -1432,8 +1433,7 @@ def movie_test_run_original_models(
             request_body=request_body,
             user_chat_id=user_chat_id,
             index=index,
-            total=total,
-            test_label="TEST A — IMAGE ONLY"
+            total=total
         )
 
         results.append(result)
@@ -1442,99 +1442,12 @@ def movie_test_run_original_models(
 
 
 # ============================================================
-# 12. RUN TEST B — ROBOTICS ER 1.6
-# IMAGE + GOOGLE SEARCH
-# ============================================================
-
-def movie_test_run_robotics_search(
-    image_bytes_list,
-    user_chat_id
-):
-
-    model_name = MOVIE_TEST_ROBOTICS_MODEL
-
-    movie_test_debug(
-        user_chat_id,
-        (
-            "TEST B — ROBOTICS ER 1.6\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Images: ON\n"
-            "Google Search: ON\n"
-            "Ana gwada Robotics ER 1.6 da Search."
-        )
-    )
-
-    request_body = movie_test_build_request(
-        image_bytes_list,
-        use_google_search=True
-    )
-
-    result = movie_test_one_model(
-        model_name=model_name,
-        request_body=request_body,
-        user_chat_id=user_chat_id,
-        index=1,
-        total=1,
-        test_label="TEST B — IMAGE + GOOGLE SEARCH"
-    )
-
-    return result
-
-
-# ============================================================
-# 13. ADDITIONAL MODELS — HONEST STATUS
-# ============================================================
-
-def movie_test_additional_model_report(
-    user_chat_id
-):
-
-    report = """
-ADDITIONAL MODEL CHECK
-━━━━━━━━━━━━━━━━━━━━
-
-1. GEMMA 4 E2B
-Status: NOT RUN
-Reason: Open-weight model. Requires a separate model-hosting
-environment or local inference server.
-
-2. GEMMA 4 E4B
-Status: NOT RUN
-Reason: Open-weight model. Requires a separate model-hosting
-environment or local inference server.
-
-3. GEMMA 4 12B
-Status: NOT RUN
-Reason: Open-weight model. Requires a separate model-hosting
-environment or local inference server.
-
-4. GEMINI 3.1 FLASH LIVE PREVIEW
-Status: NOT RUN IN THIS TEST
-Reason: Uses the Live API / WebSocket protocol.
-It is not a normal generateContent model.
-
-5. GEMINI ROBOTICS ER 1.6
-Status: TESTED SEPARATELY
-Reason: Image + Google Search test is performed in Test B.
-
-NOTE:
-No fake model IDs or fake successful results are used.
-"""
-
-    movie_test_send_long(
-        user_chat_id,
-        report
-    )
-
-
-# ============================================================
-# 14. FINAL SUMMARY
+# 12. FINAL SUMMARY
 # ============================================================
 
 def movie_test_make_summary(
     user_chat_id,
-    test_a_results,
-    test_b_result,
+    results,
     started
 ):
 
@@ -1544,21 +1457,23 @@ def movie_test_make_summary(
     incomplete = 0
     errors = 0
 
-    lines = []
+    lines = [
 
-    lines.append(
-        "FINAL MOVIE TEST REPORT"
-    )
+        "FINAL MOVIE TEST REPORT",
 
-    lines.append(
-        "━━━━━━━━━━━━━━━━━━━━"
-    )
+        "━━━━━━━━━━━━━━━━━━━━",
 
-    lines.append(
-        f"Original models tested: {len(test_a_results)}"
-    )
+        f"Models tested: {len(results)}",
 
-    for item in test_a_results:
+        "Images: ON",
+
+        "Google Search: ON",
+
+        ""
+
+    ]
+
+    for item in results:
 
         status = item["status"]
 
@@ -1579,47 +1494,28 @@ def movie_test_make_summary(
             f"{item['seconds']:.1f}s"
         )
 
-    lines.append("")
-    lines.append(
-        "ROBOTICS ER 1.6 SEARCH TEST"
-    )
+    lines.extend([
 
-    if test_b_result:
+        "",
 
-        lines.append(
-            f"Status: {test_b_result['status']}"
-        )
+        "RESULT COUNTS",
 
-        lines.append(
-            f"Time: {test_b_result['seconds']:.1f}s"
-        )
+        f"SUCCESS: {success}",
 
-    lines.append("")
-    lines.append(
-        "RESULT COUNTS"
-    )
+        f"INCOMPLETE: {incomplete}",
 
-    lines.append(
-        f"SUCCESS: {success}"
-    )
+        f"ERROR / EMPTY / BLOCKED: {errors}",
 
-    lines.append(
-        f"INCOMPLETE: {incomplete}"
-    )
+        f"TOTAL TIME: {total_seconds:.1f}s",
 
-    lines.append(
-        f"ERROR / EMPTY / BLOCKED: {errors}"
-    )
+        "",
 
-    lines.append(
-        f"TOTAL TIME: {total_seconds:.1f}s"
-    )
+        "An gwada duk unique models da suke cikin "
+        "GEMINI_MODELS ba tare da canza list din ba.",
 
-    lines.append("")
-    lines.append(
-        "An gwada duk original models da suke cikin "
-        "GEMINI_MODELS ba tare da canza list din ba."
-    )
+        "Google Search an kunna shi a request na kowane model."
+
+    ])
 
     movie_test_send_long(
         user_chat_id,
@@ -1629,7 +1525,7 @@ def movie_test_make_summary(
     movie_test_log(
         "FINAL_REPORT",
         user=user_chat_id,
-        tested=len(test_a_results),
+        tested=len(results),
         success=success,
         incomplete=incomplete,
         errors=errors,
@@ -1638,7 +1534,7 @@ def movie_test_make_summary(
 
 
 # ============================================================
-# 15. BACKGROUND TEST RUNNER
+# 13. BACKGROUND TEST RUNNER
 # ============================================================
 
 def movie_test_run(
@@ -1664,46 +1560,36 @@ def movie_test_run(
                 "AN FARA GWADIN FIM\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 f"Hotuna: {len(photo_ids)}\n"
+                "Images: ON\n"
+                "Google Search: ON\n"
                 "Ana shirya gwajin..."
             ),
             progress_id
         )
 
-        # Download once. Reuse for every model.
+        # Download photos only once.
         image_bytes_list = movie_test_download_photos(
             photo_ids,
             key[0],
             progress_id
         )
 
-        # TEST A
-        test_a_results = movie_test_run_original_models(
+        # Test all models with Google Search ON.
+        results = movie_test_run_original_models(
             image_bytes_list,
-            key[0]
-        )
-
-        # TEST B
-        test_b_result = movie_test_run_robotics_search(
-            image_bytes_list,
-            key[0]
-        )
-
-        # Additional model status.
-        movie_test_additional_model_report(
             key[0]
         )
 
         # Final summary.
         movie_test_make_summary(
             user_chat_id=key[0],
-            test_a_results=test_a_results,
-            test_b_result=test_b_result,
+            results=results,
             started=started
         )
 
     except Exception as error:
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST FINAL FAILURE | user=%s",
             key[1]
         )
@@ -1713,7 +1599,7 @@ def movie_test_run(
             (
                 "MOVIE TEST GENERAL FAILURE\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                f"Error: {str(error)[:3000]}\n"
+                f"Error: {str(error)[:2500]}\n"
                 f"Elapsed: {time.time() - started:.1f}s\n"
                 "Ka iya sake gwadawa da hotuna."
             )
@@ -1730,7 +1616,6 @@ def movie_test_run(
                 timer = current.get("timer")
 
                 if timer:
-
                     timer.cancel()
 
                 MOVIE_TEST_SESSIONS.pop(
@@ -1749,7 +1634,7 @@ def movie_test_run(
 
 
 # ============================================================
-# 16. YES / NO CALLBACK
+# 14. YES / NO CALLBACK
 # ============================================================
 
 @bot.callback_query_handler(
@@ -1816,7 +1701,6 @@ def movie_test_callback(call):
                 timer = session.get("timer")
 
                 if timer:
-
                     timer.cancel()
 
                 MOVIE_TEST_SESSIONS.pop(
@@ -1865,7 +1749,6 @@ def movie_test_callback(call):
             timer = session.get("timer")
 
             if timer:
-
                 timer.cancel()
 
         bot.answer_callback_query(
@@ -1878,8 +1761,9 @@ def movie_test_callback(call):
             (
                 "AN TABBATAR\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "Test A: Original models 14 — image only\n"
-                "Test B: Robotics ER 1.6 — Search grounding\n"
+                "All original models\n"
+                "Images: ON\n"
+                "Google Search: ON\n"
                 "Ana fara gwaji..."
             ),
             call.message.message_id
@@ -1901,7 +1785,7 @@ def movie_test_callback(call):
 
     except Exception as error:
 
-        logger.exception(
+        logging.exception(
             "MOVIE TEST CALLBACK FAILURE"
         )
 
@@ -1926,7 +1810,7 @@ def movie_test_callback(call):
 
         except Exception:
 
-            logger.exception(
+            logging.exception(
                 "MOVIE TEST CALLBACK ERROR DELIVERY FAILED"
             )
 
